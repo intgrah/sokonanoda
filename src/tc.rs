@@ -281,11 +281,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let ConstructorData { inductive_name, num_params, num_fields, .. } = self.env.get_constructor(&name)?;
         if args.len() == (*num_params + *num_fields) as usize && self.env.can_be_struct(inductive_name) {
             let (x_type, y_type) = (self.infer(x, InferOnly), self.infer(y, InferOnly));
-            if self.def_eq(x_type, y_type) {
+            if self.def_eq(x_type, y_type, false) {
                 for i in (*num_params as usize)..args.len() {
                     let proj = self.ctx.mk_proj(*inductive_name, i - *num_params as usize, x);
                     let rhs = args[i];
-                    if !self.def_eq(proj, rhs) {
+                    if !self.def_eq(proj, rhs, false) {
                         return None
                     }
                 }
@@ -305,7 +305,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 if name == self.ctx.export_file.name_cache.string_of_list? {
                     // levels should be empty
                     let lhs = self.str_lit_to_ctor_reducing(ptr)?;
-                    return Some(self.def_eq(lhs, y))
+                    return Some(self.def_eq(lhs, y, false))
                 }
             }
         }
@@ -334,7 +334,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return None
         }
         let y_type = self.infer(y, InferOnly);
-        Some(self.def_eq(x_ty, y_type))
+        Some(self.def_eq(x_ty, y_type, false))
     }
 
     fn do_nat_bin(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, op: NatBinOp) -> Option<ExprPtr<'t>> {
@@ -827,7 +827,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return Some(x == y)
         }
         if let (Some(x_pred), Some(y_pred)) = (self.ctx.pred_of_nat_succ(x), self.ctx.pred_of_nat_succ(y)) {
-            Some(self.def_eq(x_pred, y_pred))
+            Some(self.def_eq(x_pred, y_pred, false))
         } else {
             None
         }
@@ -855,7 +855,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         {
             let t1 = self.ctx.inst(t1, locals.as_slice());
             let t2 = self.ctx.inst(t2, locals.as_slice());
-            if self.def_eq(t1, t2) {
+            if self.def_eq(t1, t2, false) {
                 locals.push(self.ctx.mk_dbj_level(binder_name, binder_style, t1));
                 x = body1;
                 y = body2;
@@ -867,7 +867,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
         let x = self.ctx.inst(x, locals.as_slice());
         let y = self.ctx.inst(y, locals.as_slice());
-        let r = self.def_eq(x, y);
+        let r = self.def_eq(x, y, false);
         self.ctx.dbj_level_counter -= u16::try_from(locals.len()).unwrap();
         Some(r)
     }
@@ -875,7 +875,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn def_eq_proj(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         match self.ctx.read_expr_pair(x, y) {
             (Proj { idx: idx_l, structure: structure_l, .. }, Proj { idx: idx_r, structure: structure_r, .. }) =>
-                idx_l == idx_r && self.def_eq(structure_l, structure_r),
+                idx_l == idx_r && self.def_eq(structure_l, structure_r, false),
             _ => false,
         }
     }
@@ -883,7 +883,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn def_eq_local(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         match self.ctx.read_expr_pair(x, y) {
             (Local { id: x_id, binder_type: tx, .. }, Local { id: y_id, binder_type: ty, .. }) =>
-                x_id == y_id && self.def_eq(tx, ty),
+                x_id == y_id && self.def_eq(tx, ty, false),
             _ => false,
         }
     }
@@ -910,21 +910,21 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return false
         }
 
-        let args_eq = args1.into_iter().zip(args2).all(|(xx, yy)| self.def_eq(xx, yy));
+        let args_eq = args1.into_iter().zip(args2).all(|(xx, yy)| self.def_eq(xx, yy, true));
 
         if !args_eq {
             return false
         }
 
-        if !self.def_eq(f1, f2) {
+        if !self.def_eq(f1, f2, false) {
             return false
         }
         true
     }
 
-    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { assert!(self.def_eq(u, v)) }
+    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { assert!(self.def_eq(u, v, false)) }
 
-    pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
+    pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, check : bool) -> bool {
         if let Some(easy) = self.def_eq_quick_check(x, y) {
             return easy
         }
@@ -943,7 +943,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return easy
         }
 
-        let result = if self.proof_irrel_eq(x_n, y_n) {
+        let result = if self.proof_irrel_eq(x_n, y_n, check) {
             true
         } else {
             match self.lazy_delta_step(x_n, y_n) {
@@ -955,7 +955,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         let (xn0, yn0) = (x_n, y_n);
                         let (x_n, y_n) = (self.whnf_no_unfolding(xn0), self.whnf_no_unfolding(yn0));
                         if x_n != xn0 || y_n != yn0 {
-                            self.def_eq(x_n, y_n)
+                            self.def_eq(x_n, y_n, check)
                         } else {
                             self.def_eq_app(x_n, y_n)
                                 || self.try_eta_expansion(x_n, y_n)
@@ -997,7 +997,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let new_ctor_app = self.mk_nullary_ctor(major_ty, rec.num_params as usize)?;
                 // This sometimes has free variables.
                 let new_type = self.infer(new_ctor_app, InferOnly);
-                if self.def_eq(major_ty, new_type) {
+                if self.def_eq(major_ty, new_type, false) {
                     Some(new_ctor_app)
                 } else {
                     None
@@ -1196,7 +1196,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     (Const { levels: l_levels, .. }, Const { levels: r_levels, .. })
                         if l_args.len() == r_args.len()
                             && !self.failure_cache_contains(x, y)
-                            && l_args.iter().copied().zip(r_args.iter().copied()).all(|(x, y)| self.def_eq(x, y))
+                            && l_args.iter().copied().zip(r_args.iter().copied()).all(|(x, y)| self.def_eq(x, y, true))
                             && self.ctx.eq_antisymm_many(l_levels, r_levels) =>
                         Some(FoundEqResult(true)),
                     (Const { .. }, Const { .. }) => {
@@ -1226,9 +1226,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         if (!self.ctx.has_fvars(x) && !self.ctx.has_fvars(y)) || self.ctx.eager_mode {
             if let Some(xprime) = self.try_reduce_nat(x) {
-                return Some(DeltaResult::FoundEqResult(self.def_eq(xprime, y)))
+                return Some(DeltaResult::FoundEqResult(self.def_eq(xprime, y, false)))
             } else if let Some(yprime) = self.try_reduce_nat(y) {
-                return Some(DeltaResult::FoundEqResult(self.def_eq(x, yprime)))
+                return Some(DeltaResult::FoundEqResult(self.def_eq(x, yprime, false)))
             }
         }
         None
@@ -1298,12 +1298,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         (self.is_proposition(infd).0, infd)
     }
 
-    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
+    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, check: bool) -> bool {
         match self.is_proof(x) {
             (false, _) => false,
-            (true, _l_type) => match self.is_proof(y) {
+            (true, l_type) => match self.is_proof(y) {
                 (false, _) => false,
-                (true, _r_type) => true,
+                (true, r_type) => check || self.def_eq(l_type, r_type, false),
             },
         }
     }
@@ -1319,7 +1319,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let v0 = self.ctx.mk_var(0);
                 let new_body = self.ctx.mk_app(y, v0);
                 let new_lambda = self.ctx.mk_lambda(binder_name, binder_style, binder_type, new_body);
-                return self.def_eq(x, new_lambda)
+                return self.def_eq(x, new_lambda, false)
             }
         }
         false
