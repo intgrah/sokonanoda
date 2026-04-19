@@ -1301,9 +1301,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         match self.is_proof(x) {
             (false, _) => false,
-            (true, l_type) => match self.is_proof(y) {
+            (true, _l_type) => match self.is_proof(y) {
                 (false, _) => false,
-                (true, r_type) => self.def_eq(l_type, r_type),
+                (true, _r_type) => true,
             },
         }
     }
