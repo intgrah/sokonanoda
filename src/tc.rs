@@ -924,7 +924,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { assert!(self.def_eq(u, v, false)) }
 
-    pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, skipPropCheck: bool) -> bool {
+    pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, skip_prop_check: bool) -> bool {
         if let Some(easy) = self.def_eq_quick_check(x, y) {
             return easy
         }
@@ -943,7 +943,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return easy
         }
 
-        let result = if self.proof_irrel_eq(x_n, y_n, skipPropCheck) {
+        let result = if self.proof_irrel_eq(x_n, y_n, skip_prop_check) {
             true
         } else {
             match self.lazy_delta_step(x_n, y_n) {
@@ -955,7 +955,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         let (xn0, yn0) = (x_n, y_n);
                         let (x_n, y_n) = (self.whnf_no_unfolding(xn0), self.whnf_no_unfolding(yn0));
                         if x_n != xn0 || y_n != yn0 {
-                            self.def_eq(x_n, y_n, skipPropCheck)
+                            self.def_eq(x_n, y_n, skip_prop_check)
                         } else {
                             self.def_eq_app(x_n, y_n)
                                 || self.try_eta_expansion(x_n, y_n)
@@ -967,7 +967,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 }
             }
         };
-        if result {
+        if result && !skip_prop_check {
             self.tc_cache.eq_cache.union(x, y);
         }
         result
@@ -1298,12 +1298,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         (self.is_proposition(infd).0, infd)
     }
 
-    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, skipPropCheck: bool) -> bool {
+    fn proof_irrel_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, skip_prop_check: bool) -> bool {
         match self.is_proof(x) {
             (false, _) => false,
             (true, l_type) => match self.is_proof(y) {
                 (false, _) => false,
-                (true, r_type) => skipPropCheck || self.def_eq(l_type, r_type, false),
+                (true, r_type) => skip_prop_check || self.def_eq(l_type, r_type, false),
             },
         }
     }
