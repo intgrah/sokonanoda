@@ -1,6 +1,8 @@
 # About
 
-This is an external type checker for the [Lean 4](https://lean-lang.org/) programming language and theorem prover. You can read more about what an external type checker is and why you might want to use one in [this book](https://ammkrn.github.io/type_checking_in_lean4/).
+This is an experimental fork of the external type checker [nanoda_lib](https://github.com/ammkrn/nanoda_lib) for the [Lean 4](https://lean-lang.org/) programming language and theorem prover. You can read more about what an external type checker is and why you might want to use one in [this book](https://ammkrn.github.io/type_checking_in_lean4/).
+
+The purpose of this fork is to evaluate the impact of a small optimization in the Lean kernel arena. When nanoda compares proof terms for definitional equality, it also compares their types. I believe that comparing the types might be unnecessary at least in some situations.
 
 # Usage
 
