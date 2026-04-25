@@ -6,7 +6,8 @@ use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
-use indexmap::{IndexMap, IndexSet};
+use indexmap::{Equivalent, IndexMap, IndexSet};
+use indexmap::map::Entry as IndexMapEntry;
 use num_bigint::BigUint;
 use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
@@ -27,11 +28,39 @@ use serde::Deserialize;
 pub(crate) const fn default_true() -> bool { true }
 
 pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
+pub(crate) type UniqueIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<UniqueHasher>>;
 pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
 pub(crate) type UniqueHashMap<K, V> = HashMap<K, V, BuildHasherDefault<UniqueHasher>>;
+
+#[derive(Debug)]
+pub struct ExprIndexSet<'a> {
+    map: UniqueIndexMap<Expr<'a>, ()>,
+}
+
+impl<'a> ExprIndexSet<'a> {
+    fn new() -> Self { Self { map: UniqueIndexMap::with_hasher(Default::default()) } }
+
+    pub(crate) fn insert_full(&mut self, value: Expr<'a>) -> (usize, bool) {
+        let (idx, old) = self.map.insert_full(value, ());
+        (idx, old.is_none())
+    }
+
+    pub(crate) fn get_index(&self, idx: usize) -> Option<&Expr<'a>> { self.map.get_index(idx).map(|(expr, &())| expr) }
+
+    pub(crate) fn get_index_of<Q>(&self, value: &Q) -> Option<usize>
+    where
+        Q: ?Sized + std::hash::Hash + Equivalent<Expr<'a>>,
+    {
+        self.map.get_index_of(value)
+    }
+
+    pub(crate) fn len(&self) -> usize { self.map.len() }
+
+    pub(crate) fn entry(&mut self, value: Expr<'a>) -> IndexMapEntry<'_, Expr<'a>, ()> { self.map.entry(value) }
+}
 
 /// An integer pointer to a kernel item, which can be in either the export file's
 /// persistent dag, or the type checking context's temporary dag. The integer pointer
@@ -87,6 +116,36 @@ pub type NamePtr<'a> = Ptr<&'a Name<'a>>;
 pub type LevelPtr<'a> = Ptr<&'a Level<'a>>;
 pub type ExprPtr<'a> = Ptr<&'a Expr<'a>>;
 pub type BigUintPtr<'a> = Ptr<&'a BigUint>;
+
+fn is_expr_local_only(e: Expr<'_>) -> bool {
+    match e {
+        Expr::StringLit { ptr, .. } => ptr.dag_marker() == DagMarker::TcCtx,
+        Expr::NatLit { ptr, .. } => ptr.dag_marker() == DagMarker::TcCtx,
+        Expr::Proj { ty_name, structure, .. } =>
+            ty_name.dag_marker() == DagMarker::TcCtx || structure.dag_marker() == DagMarker::TcCtx,
+        Expr::Var { .. } => false,
+        Expr::Sort { level, .. } => level.dag_marker() == DagMarker::TcCtx,
+        Expr::Const { name, levels, .. } => name.dag_marker() == DagMarker::TcCtx || levels.dag_marker() == DagMarker::TcCtx,
+        Expr::App { fun, arg, .. } => fun.dag_marker() == DagMarker::TcCtx || arg.dag_marker() == DagMarker::TcCtx,
+        Expr::Pi { binder_name, binder_type, body, .. } => {
+            binder_name.dag_marker() == DagMarker::TcCtx
+                || binder_type.dag_marker() == DagMarker::TcCtx
+                || body.dag_marker() == DagMarker::TcCtx
+        }
+        Expr::Lambda { binder_name, binder_type, body, .. } => {
+            binder_name.dag_marker() == DagMarker::TcCtx
+                || binder_type.dag_marker() == DagMarker::TcCtx
+                || body.dag_marker() == DagMarker::TcCtx
+        }
+        Expr::Let { binder_name, binder_type, val, body, .. } => {
+            binder_name.dag_marker() == DagMarker::TcCtx
+                || binder_type.dag_marker() == DagMarker::TcCtx
+                || val.dag_marker() == DagMarker::TcCtx
+                || body.dag_marker() == DagMarker::TcCtx
+        }
+        Expr::Local { .. } => true,
+    }
+}
 
 pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> { FxIndexMap::with_hasher(Default::default()) }
 
@@ -390,12 +449,19 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Store an `Expr`, getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element. Checks the longer-lived storage first.
+    /// element.
     pub fn alloc_expr(&mut self, e: Expr<'t>) -> ExprPtr<'t> {
-        if let Some(idx) = self.export_file.dag.exprs.get_index_of(&e) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.exprs.insert_full(e).0)
+        match self.dag.exprs.entry(e) {
+            IndexMapEntry::Occupied(entry) => Ptr::from(DagMarker::TcCtx, entry.index()),
+            IndexMapEntry::Vacant(entry) => {
+                if !is_expr_local_only(*entry.key()) {
+                    if let Some(idx) = self.export_file.dag.exprs.get_index_of(entry.key()) {
+                        return Ptr::from(DagMarker::ExportFile, idx)
+                    }
+                }
+                let entry = entry.insert_entry(());
+                Ptr::from(DagMarker::TcCtx, entry.index())
+            }
         }
     }
 
@@ -671,7 +737,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 pub struct LeanDag<'a> {
     pub names: UniqueIndexSet<Name<'a>>,
     pub levels: UniqueIndexSet<Level<'a>>,
-    pub exprs: UniqueIndexSet<Expr<'a>>,
+    pub exprs: ExprIndexSet<'a>,
     pub uparams: FxIndexSet<Arc<[LevelPtr<'a>]>>,
     pub strings: FxIndexSet<CowStr<'a>>,
     pub bignums: Option<FxIndexSet<BigUint>>,
@@ -688,7 +754,7 @@ impl<'a> LeanDag<'a> {
         let mut out = Self {
             names: new_unique_index_set(),
             levels: new_unique_index_set(),
-            exprs: new_unique_index_set(),
+            exprs: ExprIndexSet::new(),
             uparams: new_fx_index_set(),
             strings: new_fx_index_set(),
             bignums: if config.nat_extension { Some(new_fx_index_set()) } else { None },
@@ -997,4 +1063,3 @@ struct ExitStatus {
     tc_err: Option<String>,
     pp_err: Option<String>
 }
-
