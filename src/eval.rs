@@ -1327,7 +1327,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     pub(crate) fn str_lit_to_ctor_val(&mut self, s: StringPtr<'t>) -> Option<V<'t>> {
         let ctor_expr = self.ctx.str_lit_to_constructor(s)?;
         let empty = self.empty_env();
-        Some(self.eval(empty, ctor_expr))
+        let v = self.eval(empty, ctor_expr);
+        Some(self.whnf_head(v))
     }
 
     fn nat_lit_to_ctor_val(&mut self, n: BigUintPtr<'t>) -> Option<V<'t>> {
