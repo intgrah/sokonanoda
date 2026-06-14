@@ -109,7 +109,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// Return `uparams [ks |-> vs]` for a list of uparams
     pub fn subst_levels(&mut self, uparams: LevelsPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelsPtr<'t> {
         let out =
-            self.read_levels(uparams).clone().iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
+            self.read_levels(uparams).iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
         self.alloc_levels(std::sync::Arc::from(out))
     }
 
@@ -244,8 +244,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool { self.leq(l, r) && self.leq(r, l) }
 
     pub fn eq_antisymm_many(&mut self, xs: LevelsPtr<'t>, ys: LevelsPtr<'t>) -> bool {
-        let xs = self.read_levels(xs).clone();
-        let ys = self.read_levels(ys).clone();
+        let xs = self.read_levels(xs);
+        let ys = self.read_levels(ys);
         if xs.len() != ys.len() {
             return false
         }
