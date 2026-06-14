@@ -1,10 +1,10 @@
 
 [package]
-name = "nanoda_lib"
-version = "0.4.9-beta"
+name = "sokonanoda"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/ammkrn/nanoda_lib"
+repository = "https://github.com/intgrah/sokonanoda"
 description = "A type checker for the Lean 4 programming language and theorem prover"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -30,8 +30,9 @@ num-traits = "0.2.17"
 semver = "1.0.27"
 serde_json = "1.0.111"
 serde = { version = "1.0.228", features = ["derive"] }
+bumpalo = { version = "3.16", features = ["collections"] }
 
 [[bin]]
-name = "nanoda_bin"
+name = "sokonanoda"
 path = "src/main.rs"
 bench = false

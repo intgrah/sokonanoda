@@ -49,7 +49,7 @@ pub(crate) fn test_export_file_should_panic<A>(config_path: Option<&Path>, f: im
 }
 
 pub(crate) fn test_ctx<'p, A>(path: Option<&Path>, f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-    test_export_file(path, |export_file| export_file.with_ctx(f))
+    test_export_file(path, |export_file| export_file.with_ctx(|ctx, _arena| f(ctx)))
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
@@ -113,7 +113,7 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
     use rand::thread_rng;
     test_export_file(None, |export| {
         let mut rng = thread_rng();
-        export.with_ctx(|ctx| {
+        export.with_ctx(|ctx, _arena| {
             for size in 0..100 {
                 for _ in 0..100 {
                     let s = rand_string(&mut rng, size);

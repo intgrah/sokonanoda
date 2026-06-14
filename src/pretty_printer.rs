@@ -348,7 +348,7 @@ impl<'p> ExportFile<'p> {
     pub fn pp_selected_declars(&self, pp_destination: Option<&mut PpDestination>) -> Vec<Box<dyn std::error::Error>> {
         let mut errs = Vec::new();
         if let Some(pp_destination) = pp_destination {
-            self.with_ctx(|ctx| {
+            self.with_ctx(|ctx, _arena| {
                 let mut pp_declars = Vec::new();
                 if let Some(pp_declar_strings) = self.config.pp_declars.as_ref() {
                     for declar_name in pp_declar_strings.iter() {
@@ -366,7 +366,7 @@ impl<'p> ExportFile<'p> {
     
                 }
                 for (ss, pp_declar) in pp_declars {
-                    if let Some(s) = ctx.with_pp(|pp| pp.pp_declar(pp_declar)) {
+                    if let Some(s) = ctx.with_pp(_arena, |pp| pp.pp_declar(pp_declar)) {
                         if let Err(e) = pp_destination.write_line(s, self.config.pp_options.declar_sep.as_ref().map(|x| x.as_str()).unwrap_or("\n\n")) {
                             errs.push(e)
                         }
@@ -390,10 +390,11 @@ impl<'p> ExportFile<'p> {
 
 pub struct PrettyPrinter<'x, 't, 'p> {
     pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
+    pub(crate) arena: &'t bumpalo::Bump,
 }
 
 impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
-    pub(crate) fn new(ctx: &'x mut TcCtx<'t, 'p>) -> Self { Self { ctx } }
+    pub(crate) fn new(ctx: &'x mut TcCtx<'t, 'p>, arena: &'t bumpalo::Bump) -> Self { Self { ctx, arena } }
 
     pub(crate) fn options(&self) -> &PpOptions { &self.ctx.export_file.config.pp_options }
 
@@ -612,7 +613,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
     /// Does this expression infer as a `Pi` with any binder style other than `Default`
     fn is_implicit_fun(&mut self, fun: ExprPtr<'t>) -> bool {
-        self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| {
+        let arena = self.arena;
+        self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| {
             let ty = tc.infer_then_whnf(fun, crate::tc::InferFlag::InferOnly);
             match tc.ctx.read_expr(ty) {
                 Pi { binder_style, .. } => binder_style != BinderStyle::Default,
@@ -734,7 +736,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_expr_aux(&mut self, e: ExprPtr<'t>) -> Parenable {
-        if !self.options().proofs && self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proof(e).0) {
+        let arena = self.arena;
+        if !self.options().proofs && self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proof(e).0) {
             DocPtr::from("_").as_unparenable()
         } else {
             match self.ctx.read_expr(e) {
@@ -810,7 +813,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
         let instd = self.ctx.inst(val, named_binder_tys.as_slice());
         let pp_val = {
-            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
+            let arena = self.arena;
+            let is_prop = self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
             line()
                 .concat(if is_prop && !self.options().proofs {
                     DocPtr::from("_")

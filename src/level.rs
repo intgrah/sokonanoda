@@ -54,6 +54,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
         match self.read_level(ptr) {
+            Zero | Param(..) => return ptr,
+            _ => {}
+        }
+        if let Some(cached) = self.expr_cache.simplify_cache.get(&ptr).copied() {
+            return cached;
+        }
+        let result = match self.read_level(ptr) {
             Zero | Param(..) => ptr,
             Succ(val, ..) => {
                 let val = self.simplify(val);
@@ -77,7 +84,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                   }
                 }
             }
-        }
+        };
+        self.expr_cache.simplify_cache.insert(ptr, result);
+        result
     }
 
     /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.

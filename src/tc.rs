@@ -1,4 +1,3 @@
-use crate::env::ReducibilityHint;
 use crate::env::{ConstructorData, Declar, DeclarInfo, Env, InductiveData, RecRule, RecursorData};
 use crate::expr::Expr;
 use crate::level::Level;
@@ -7,23 +6,12 @@ use crate::util::{
     nat_xor, nat_shr, nat_shl, ExportFile, ExprPtr, LevelPtr, 
     LevelsPtr, NamePtr, TcCache, TcCtx, StringPtr
 };
+use crate::value::{env_empty, E, V};
 use std::error::Error;
 use num_traits::pow::Pow;
 
-use DeltaResult::*;
 use Expr::*;
 use InferFlag::*;
-
-/// Communicates the result of lazy delta reduction during definitional equality
-/// checking; if we can no longer unfold any definitions, and we weren't already
-/// able to show that the expressions were equal using a cheap method, then we return
-/// `Exhaused(x, y)`, and continue with more expensive checks. If we were able to cheaply
-/// determine that two expressions are or are not equal, we return `FoundEqResult`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeltaResult<'a> {
-    FoundEqResult(bool),
-    Exhausted(ExprPtr<'a>, ExprPtr<'a>),
-}
 
 /// An enum for type safety and convenience; used during nat literal reduction, and also for testing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,12 +58,17 @@ pub struct TypeChecker<'x, 't, 'p> {
     /// field's type are being exclusively borrowed.
     pub(crate) env: &'x Env<'x, 't>,
     /// The caches for things like inference, reduction, and equality checking.
-    pub(crate) tc_cache: TcCache<'t>,
+    pub(crate) tc_cache: TcCache<'t, 't>,
+    pub(crate) arena: &'t bumpalo::Bump,
+    pub(crate) empty_env: std::cell::OnceCell<E<'t>>,
+    pub(crate) empty_spine: crate::value::S<'t>,
+    pub(crate) local_v_cache: Vec<Option<V<'t>>>,
     /// If this type checker is being used to check a simple declaration, this field will
     /// contain the universe parameters of that declaration. This is used in a couple of places
     /// to make sure that all of the universe paramters actually used in a declaration `d` are
     /// properly represented in the declaration's uparams info.
     pub(crate) declar_info: Option<DeclarInfo<'t>>,
+    pub(crate) nat_extension: bool,
 }
 
 impl<'p> ExportFile<'p> {
@@ -85,7 +78,7 @@ impl<'p> ExportFile<'p> {
         match d {
             Axiom { .. } => self.with_tc_and_declar(*d.info(), |tc| tc.check_declar_info(d).unwrap()),
             Inductive(..) => self.check_inductive_declar(d),
-            Quot { .. } => self.with_ctx(|ctx| crate::quot::check_quot(ctx, d)),
+            Quot { .. } => self.with_ctx(|ctx, arena| crate::quot::check_quot(ctx, arena, d)),
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } =>
                 self.with_tc_and_declar(*d.info(), |tc| {
                     tc.check_declar_info(d).unwrap();
@@ -107,9 +100,18 @@ impl<'p> ExportFile<'p> {
 
     /// Check all declarations in this export file using a single thread.
     pub(crate) fn check_all_declars_serial(&self) {
-        for declar in self.declars.values() {
-            self.check_declar(declar);
-        }
+        std::thread::scope(|sco| {
+            std::thread::Builder::new()
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(sco, || {
+                    for declar in self.declars.values() {
+                        self.check_declar(declar);
+                    }
+                })
+                .unwrap()
+                .join()
+                .expect("serial checker thread panicked");
+        });
     }
 
     /// Check all declarations in this export file, spawning `num_threads` as
@@ -154,10 +156,31 @@ impl<'p> ExportFile<'p> {
 }
 
 impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
-    pub fn new(dag: &'x mut TcCtx<'t, 'p>, env: &'x Env<'x, 't>, declar_info: Option<DeclarInfo<'t>>) -> Self {
+    pub fn new(
+        dag: &'x mut TcCtx<'t, 'p>,
+        env: &'x Env<'x, 't>,
+        arena: &'t bumpalo::Bump,
+        declar_info: Option<DeclarInfo<'t>>,
+    ) -> Self {
         assert_eq!(dag.dbj_level_counter, 0);
-        Self { ctx: dag, env, tc_cache: TcCache::new(), declar_info } 
+        let nat_extension = dag.export_file.config.nat_extension;
+        Self {
+            ctx: dag,
+            env,
+            tc_cache: TcCache::new(),
+            arena,
+            empty_env: std::cell::OnceCell::new(),
+            empty_spine: crate::value::spine_empty(arena),
+            local_v_cache: Vec::new(),
+            declar_info,
+            nat_extension,
+        }
     }
+
+    pub(crate) fn empty_env(&self) -> E<'t> { self.empty_env.get_or_init(|| env_empty(self.arena)) }
+
+    #[inline]
+    pub(crate) fn empty_spine(&self) -> crate::value::S<'t> { self.empty_spine }
 
     /// Conduct the preliminary checks done on all declarations; a declaration
     /// must not contain duplicate universe parameters, mut not have free variables,
@@ -179,7 +202,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.ctx.debug_print(sort)
                 )))
             }
-        } 
+        }
         Ok(())
     }
 
@@ -272,69 +295,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
     }
 
-    fn try_eta_struct(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        matches!(self.try_eta_struct_aux(x, y), Some(true)) || matches!(self.try_eta_struct_aux(y, x), Some(true))
-    }
-
-    fn try_eta_struct_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        let (_, name, _, args) = self.ctx.unfold_const_apps(y)?;
-        let ConstructorData { inductive_name, num_params, num_fields, .. } = self.env.get_constructor(&name)?;
-        if args.len() == (*num_params + *num_fields) as usize && self.env.can_be_struct(inductive_name) {
-            let (x_type, y_type) = (self.infer(x, InferOnly), self.infer(y, InferOnly));
-            if self.def_eq(x_type, y_type, false) {
-                for i in (*num_params as usize)..args.len() {
-                    let proj = self.ctx.mk_proj(*inductive_name, i - *num_params as usize, x);
-                    let rhs = args[i];
-                    if !self.def_eq(proj, rhs, false) {
-                        return None
-                    }
-                }
-                return Some(true)
-            }
-        }
-        None
-    }
-
     fn str_lit_to_ctor_reducing(&mut self, x: StringPtr<'t>) -> Option<ExprPtr<'t>> {
         self.ctx.str_lit_to_constructor(x).map(|x| self.whnf(x))
-    }
-
-    fn try_string_lit_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        if let (StringLit { ptr, .. }, App { fun, .. }) = self.ctx.read_expr_pair(x, y) {
-            if let Some((name, _levels)) = self.ctx.try_const_info(fun) {
-                if name == self.ctx.export_file.name_cache.string_of_list? {
-                    // levels should be empty
-                    let lhs = self.str_lit_to_ctor_reducing(ptr)?;
-                    return Some(self.def_eq(lhs, y, false))
-                }
-            }
-        }
-        None
-    }
-
-    fn try_string_lit_expansion(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        if !self.ctx.export_file.config.string_extension {
-            return false
-        }
-        matches!(self.try_string_lit_expansion_aux(x, y), Some(true))
-            || matches!(self.try_string_lit_expansion_aux(y, x), Some(true))
-    }
-
-    // For structures that carry no additional information, elements with the same type are def_eq.
-    fn def_eq_unit(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        let x_ty = self.infer_then_whnf(x, InferOnly);
-        let (_, name, _levels, _) = self.ctx.unfold_const_apps(x_ty)?;
-        let InductiveData { num_indices, all_ctor_names, .. } = self.env.get_inductive(&name)?;
-        if all_ctor_names.len() != 1 || *num_indices != 0 {
-            return None
-        }
-        let ctor_name = &all_ctor_names[0];
-        let ctor = self.env.get_constructor(ctor_name)?;
-        if ctor.num_fields != 0 {
-            return None
-        }
-        let y_type = self.infer(y, InferOnly);
-        Some(self.def_eq(x_ty, y_type, false))
     }
 
     fn do_nat_bin(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, op: NatBinOp) -> Option<ExprPtr<'t>> {
@@ -358,7 +320,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Ble => self.ctx.bool_to_expr(arg1 <= arg2),
         }
     }
-    
+
     /// Try to reduce an expression `e` which is an application of `Nat.succ`,
     /// or an application of a supported binary operation. `e` must have no free
     /// variables.
@@ -414,8 +376,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         out
     }
 
-    fn reduce_proj(&mut self, idx: usize, structure: ExprPtr<'t>, cheap: bool) -> Option<ExprPtr<'t>> {
-        let mut structure = if cheap { self.whnf_no_unfolding_cheap_proj(structure) } else { self.whnf(structure) };
+    fn reduce_proj(&mut self, idx: usize, structure: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
+        let mut structure = self.whnf(structure);
         if let StringLit { ptr, .. } = self.ctx.read_expr(structure) {
             if let Some(s) = self.str_lit_to_ctor_reducing(ptr) {
                 structure = s;
@@ -456,17 +418,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         for i in 0..idx {
             ctor_ty = self.whnf(ctor_ty);
             match self.ctx.read_expr(ctor_ty) {
-                Pi { binder_type, body, .. } => {
+                Pi { binder_type, body, .. } =>
                     if self.ctx.num_loose_bvars(body) != 0 {
-                      if structure_ty_is_prop && !self.is_proposition(binder_type).0 {
-                          panic!("infer_proj prop")
-                      }
-                      let arg = self.ctx.mk_proj(inductive_info.name, i, structure);
-                      ctor_ty = self.ctx.inst(body, &[arg]);
+                        if structure_ty_is_prop && !self.is_proposition(binder_type).0 {
+                            panic!("infer_proj prop")
+                        }
+                        let arg = self.ctx.mk_proj(inductive_info.name, i, structure);
+                        ctor_ty = self.ctx.inst(body, &[arg]);
                     } else {
-                      ctor_ty = body;
-                    }
-                }
+                        ctor_ty = body;
+                    },
                 _ => panic!("Ran out of constructor telescope"),
             }
         }
@@ -484,11 +445,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     pub(crate) fn infer(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         if let Some(cached) = self.tc_cache.infer_cache_check.get(&e).copied() {
-            return cached
+            return cached;
         }
         if flag == InferFlag::InferOnly {
             if let Some(cached) = self.tc_cache.infer_cache_no_check.get(&e).copied() {
-                return cached
+                return cached;
             }
         }
         let r = match self.ctx.read_expr(e) {
@@ -540,15 +501,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     if flag == Check {
                         let arg_type = self.infer(arg, flag);
                         let binder_type = self.ctx.inst(binder_type, ctx.as_slice());
-                        let outer_scope_eager_setting = self.ctx.eager_mode;
-                        if self.ctx.is_eager_reduce_app(arg) {
-                            self.ctx.eager_mode = true;
-                        }
-                        // `arg_type` and `binder_type` get swapped here to accommodate the 
-                        // eager reduction branch in `def_eq` being focused on reducing the lhs.
                         self.assert_def_eq(binder_type, arg_type);
-                        // replace the outer scope's setting before next iteration
-                        self.ctx.eager_mode = outer_scope_eager_setting;
                     }
                     ctx.push(arg);
                     fun = body;
@@ -569,30 +522,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         self.ctx.inst(fun, ctx.as_slice())
     }
-
-    //fn infer_app(&mut self, e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
-    //    match self.ctx.read_expr(e) {
-    //        App {fun, arg, ..} => {
-    //            let fun_ty = self.infer_then_whnf(fun, flag);
-    //            match self.ctx.read_expr(fun_ty) {
-    //                Pi {binder_type, body, ..} => {
-    //                    if flag == InferFlag::Check {
-    //                        let arg_ty = self.infer(arg, flag);
-    //                        let outer_scope_eager_setting = self.ctx.eager_mode;
-    //                        if self.ctx.is_eager_reduce_app(arg) {
-    //                            self.ctx.eager_mode = true;
-    //                        }
-    //                        self.assert_def_eq(binder_type, arg_ty);
-    //                        self.ctx.eager_mode = outer_scope_eager_setting;
-    //                    }
-    //                    self.ctx.inst(body, &[arg])
-    //                },
-    //                _ => panic!()
-    //            }
-    //        },
-    //        _ => panic!()
-    //    }
-    //}
 
     fn infer_lambda(&mut self, mut e: ExprPtr<'t>, flag: InferFlag) -> ExprPtr<'t> {
         let mut locals = Vec::new();
@@ -662,13 +591,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let body = self.ctx.inst(body, &[val]);
         self.infer(body, flag)
     }
-    
+
     // Not well tested, used for introspection/debugging.
     #[allow(dead_code)]
     pub(crate) fn strong_reduce(&mut self, e: ExprPtr<'t>, reduce_types: bool, reduce_proofs: bool) -> ExprPtr<'t> {
         if (!reduce_types) || (!reduce_proofs) {
             let ty = self.infer(e, InferOnly);
-            if !reduce_types && matches!(self.ctx.read_expr(ty), Sort {..}) {
+            if !reduce_types && matches!(self.ctx.read_expr(ty), Sort { .. }) {
                 return e
             }
             if !reduce_proofs && self.is_proposition(ty).0 {
@@ -677,46 +606,46 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let e = self.whnf(e);
         if let Some(cached) = self.tc_cache.strong_cache.get(&(e, reduce_types, reduce_proofs)).copied() {
-            return cached
+            return cached;
         }
 
         let out = match self.ctx.read_expr(e) {
-            Expr::App {fun, arg, ..} => {
+            Expr::App { fun, arg, .. } => {
                 let f = self.strong_reduce(fun, reduce_types, reduce_proofs);
                 let arg = self.strong_reduce(arg, reduce_types, reduce_proofs);
                 self.ctx.mk_app(f, arg)
             }
-            Expr::Lambda {binder_name, binder_style, binder_type, body, ..} => {
+            Expr::Lambda { binder_name, binder_style, binder_type, body, .. } => {
                 let start_pos = self.ctx.dbj_level_counter;
                 let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
                 let instd = self.ctx.inst(body, &[local]);
                 let body = self.strong_reduce(instd, reduce_types, reduce_proofs);
                 let abstrd = self.ctx.abstr_levels(body, start_pos);
                 match self.ctx.read_expr(local) {
-                    Local {binder_name, binder_style, binder_type, ..} => {
+                    Local { binder_name, binder_style, binder_type, .. } => {
                         self.ctx.replace_dbj_level(local);
                         let t = self.ctx.abstr_levels(binder_type, start_pos);
                         self.ctx.mk_lambda(binder_name, binder_style, t, abstrd)
-                    },
-                    _ => panic!()
+                    }
+                    _ => panic!(),
                 }
             }
-            Expr::Pi {binder_name, binder_style, binder_type, body, ..} => {
+            Expr::Pi { binder_name, binder_style, binder_type, body, .. } => {
                 let start_pos = self.ctx.dbj_level_counter;
                 let local = self.ctx.mk_dbj_level(binder_name, binder_style, binder_type);
                 let instd = self.ctx.inst(body, &[local]);
                 let body = self.strong_reduce(instd, reduce_types, reduce_proofs);
                 let abstrd = self.ctx.abstr_levels(body, start_pos);
                 match self.ctx.read_expr(local) {
-                    Local {binder_name, binder_style, binder_type, ..} => {
+                    Local { binder_name, binder_style, binder_type, .. } => {
                         self.ctx.replace_dbj_level(local);
                         let t = self.ctx.abstr_levels(binder_type, start_pos);
                         self.ctx.mk_pi(binder_name, binder_style, t, abstrd)
-                    },
-                    _ => panic!()
+                    }
+                    _ => panic!(),
                 }
             }
-            Expr::Proj {ty_name, idx, structure, ..} => {
+            Expr::Proj { ty_name, idx, structure, .. } => {
                 let structure = self.strong_reduce(structure, reduce_types, reduce_proofs);
                 let x = self.ctx.mk_proj(ty_name, idx, structure);
                 let y = self.whnf(x);
@@ -725,9 +654,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 } else {
                     x
                 }
-                
             }
-            _ => e
+            _ => e,
         };
         self.tc_cache.strong_cache.insert((e, reduce_types, reduce_proofs), out);
         out
@@ -738,7 +666,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return e
         }
         if let Some(cached) = self.tc_cache.whnf_cache.get(&e).copied() {
-            return cached
+            return cached;
         }
         let mut cursor = e;
         loop {
@@ -749,25 +677,21 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 cursor = next_term;
             } else {
                 self.tc_cache.whnf_cache.insert(e, whnfd);
-                return whnfd
+                return whnfd;
             }
         }
     }
 
-    fn whnf_no_unfolding_cheap_proj(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> { self.whnf_no_unfolding_aux(e, true) }
-
-    pub fn whnf_no_unfolding(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> { self.whnf_no_unfolding_aux(e, false) }
-
-    fn whnf_no_unfolding_aux(&mut self, e: ExprPtr<'t>, cheap_proj: bool) -> ExprPtr<'t> {
+    pub fn whnf_no_unfolding(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
         if let Some(cached) = self.tc_cache.whnf_no_unfolding_cache.get(&e).copied() {
-            return cached
+            return cached;
         }
         let (e_fun, args) = self.ctx.unfold_apps(e);
         let (should_cache, eprime) = match self.ctx.read_expr(e_fun) {
             Proj { idx, structure, .. } =>
-                if let Some(e) = self.reduce_proj(idx, structure, cheap_proj) {
+                if let Some(e) = self.reduce_proj(idx, structure) {
                     let e = self.ctx.foldl_apps(e, args.into_iter());
-                    let e = self.whnf_no_unfolding_aux(e, cheap_proj);
+                    let e = self.whnf_no_unfolding(e);
                     (true, e)
                 } else {
                     (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
@@ -785,7 +709,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 }
                 e = self.ctx.inst(e, &args[..n_args]);
                 e = self.ctx.foldl_apps(e, args.into_iter().skip(n_args));
-                (true, self.whnf_no_unfolding_aux(e, cheap_proj))
+                (true, self.whnf_no_unfolding(e))
             }
             Lambda { .. } => {
                 debug_assert!(args.is_empty());
@@ -794,13 +718,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Let { val, body, .. } => {
                 let e = self.ctx.inst(body, &[val]);
                 let e = self.ctx.foldl_apps(e, args.into_iter());
-                (true, self.whnf_no_unfolding_aux(e, cheap_proj))
+                (true, self.whnf_no_unfolding(e))
             }
             Const { name, levels, .. } =>
                 if let Some(reduced) = self.reduce_quot(name, &args) {
-                    (true, self.whnf_no_unfolding_aux(reduced, cheap_proj))
+                    (true, self.whnf_no_unfolding(reduced))
                 } else if let Some(reduced) = self.reduce_rec(name, levels, &args) {
-                    (true, self.whnf_no_unfolding_aux(reduced, cheap_proj))
+                    (true, self.whnf_no_unfolding(reduced))
                 } else {
                     (false, self.ctx.foldl_apps(e_fun, args.into_iter()))
                 },
@@ -812,165 +736,34 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             App { .. } => panic!(),
             Local { .. } | NatLit { .. } | StringLit { .. } => (false, self.ctx.foldl_apps(e_fun, args.into_iter())),
         };
-        if should_cache && !cheap_proj {
+        if should_cache {
             self.tc_cache.whnf_no_unfolding_cache.insert(e, eprime);
         }
         eprime
     }
 
-    fn def_eq_nat(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        if self.ctx.is_nat_zero(x) && self.ctx.is_nat_zero(y) {
-            return Some(true)
-        }
-        if let (NatLit { .. }, NatLit { .. }) = (self.ctx.read_expr(x), self.ctx.read_expr(y)) {
-            assert!(self.ctx.export_file.config.nat_extension);
-            return Some(x == y)
-        }
-        if let (Some(x_pred), Some(y_pred)) = (self.ctx.pred_of_nat_succ(x), self.ctx.pred_of_nat_succ(y)) {
-            Some(self.def_eq(x_pred, y_pred, false))
-        } else {
-            None
+    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) {
+        if !self.def_eq(u, v, false) {
+            panic!("def_eq failed");
         }
     }
-
-    fn def_eq_binder_multi(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        if matches!(self.ctx.read_expr_pair(x, y), (Pi { .. }, Pi { .. }) | (Lambda { .. }, Lambda { .. })) {
-            self.def_eq_binder_aux(x, y)
-        } else {
-            None
-        }
-    }
-
-    #[allow(unused_parens)]
-    fn def_eq_binder_aux(&mut self, mut x: ExprPtr<'t>, mut y: ExprPtr<'t>) -> Option<bool> {
-        let mut locals = Vec::new();
-        while let (
-            Pi { binder_name, binder_style, binder_type: t1, body: body1, .. },
-            Pi { binder_type: t2, body: body2, .. },
-        )
-        | (
-            Lambda { binder_name, binder_style, binder_type: t1, body: body1, .. },
-            Lambda { binder_type: t2, body: body2, .. },
-        ) = self.ctx.read_expr_pair(x, y)
-        {
-            let t1 = self.ctx.inst(t1, locals.as_slice());
-            let t2 = self.ctx.inst(t2, locals.as_slice());
-            if self.def_eq(t1, t2, false) {
-                locals.push(self.ctx.mk_dbj_level(binder_name, binder_style, t1));
-                x = body1;
-                y = body2;
-            } else {
-                self.ctx.dbj_level_counter -= u16::try_from(locals.len()).unwrap();
-                return Some(false)
-            }
-        }
-
-        let x = self.ctx.inst(x, locals.as_slice());
-        let y = self.ctx.inst(y, locals.as_slice());
-        let r = self.def_eq(x, y, false);
-        self.ctx.dbj_level_counter -= u16::try_from(locals.len()).unwrap();
-        Some(r)
-    }
-
-    fn def_eq_proj(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        match self.ctx.read_expr_pair(x, y) {
-            (Proj { idx: idx_l, structure: structure_l, .. }, Proj { idx: idx_r, structure: structure_r, .. }) =>
-                idx_l == idx_r && self.def_eq(structure_l, structure_r, false),
-            _ => false,
-        }
-    }
-
-    fn def_eq_local(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        match self.ctx.read_expr_pair(x, y) {
-            (Local { id: x_id, binder_type: tx, .. }, Local { id: y_id, binder_type: ty, .. }) =>
-                x_id == y_id && self.def_eq(tx, ty, false),
-            _ => false,
-        }
-    }
-    fn def_eq_const(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        match self.ctx.read_expr_pair(x, y) {
-            (Const { name: x_name, levels: x_levels, .. }, Const { name: y_name, levels: y_levels, .. }) =>
-                x_name == y_name && self.ctx.eq_antisymm_many(x_levels, y_levels),
-            _ => false,
-        }
-    }
-
-    fn def_eq_app(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        let (f1, args1) = self.ctx.unfold_apps(x);
-        if args1.is_empty() {
-            return false
-        }
-
-        let (f2, args2) = self.ctx.unfold_apps(y);
-        if args2.is_empty() {
-            return false
-        }
-
-        if args1.len() != args2.len() {
-            return false
-        }
-
-        let args_eq = args1.into_iter().zip(args2).all(|(xx, yy)| self.def_eq(xx, yy, true));
-
-        if !args_eq {
-            return false
-        }
-
-        if !self.def_eq(f1, f2, false) {
-            return false
-        }
-        true
-    }
-
-    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) { assert!(self.def_eq(u, v, false)) }
 
     pub fn def_eq(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>, skip_prop_check: bool) -> bool {
-        if let Some(easy) = self.def_eq_quick_check(x, y) {
-            return easy
+        if x == y {
+            return true;
         }
-
-        let x_n = self.whnf_no_unfolding_cheap_proj(x);
-        let y_n = self.whnf_no_unfolding_cheap_proj(y);
-
-        if ((!self.ctx.has_fvars(x_n)) || self.ctx.eager_mode) && Some(y_n) == self.ctx.c_bool_true() {
-            let x_nn = self.whnf(x_n);
-            if Some(x_nn) == self.ctx.c_bool_true() {
-                return true
-            }
+        if self.tc_cache.eq_cache.check_uf_eq(x, y) {
+            return true;
         }
-
-        if let Some(easy) = self.def_eq_quick_check(x_n, y_n) {
-            return easy
+        if !skip_prop_check && self.proof_irrel_eq(x, y, skip_prop_check) {
+            self.tc_cache.eq_cache.union(x, y);
+            return true;
         }
-
-        let result = if self.proof_irrel_eq(x_n, y_n, skip_prop_check) {
-            true
-        } else {
-            match self.lazy_delta_step(x_n, y_n) {
-                FoundEqResult(short) => short,
-                Exhausted(x_n, y_n) => {
-                    if self.def_eq_const(x_n, y_n) || self.def_eq_local(x_n, y_n) || self.def_eq_proj(x_n, y_n) {
-                        true
-                    } else {
-                        let (xn0, yn0) = (x_n, y_n);
-                        let (x_n, y_n) = (self.whnf_no_unfolding(xn0), self.whnf_no_unfolding(yn0));
-                        if x_n != xn0 || y_n != yn0 {
-                            self.def_eq(x_n, y_n, skip_prop_check)
-                        } else {
-                            self.def_eq_app(x_n, y_n)
-                                || self.try_eta_expansion(x_n, y_n)
-                                || self.try_eta_struct(x_n, y_n)
-                                || self.try_string_lit_expansion(x_n, y_n)
-                                || matches!(self.def_eq_unit(x_n, y_n), Some(true))
-                        }
-                    }
-                }
-            }
-        };
-        if result && !skip_prop_check {
+        let r = self.def_eq_core(x, y);
+        if r {
             self.tc_cache.eq_cache.union(x, y);
         }
-        result
+        r
     }
 
     fn mk_nullary_ctor(&mut self, e: ExprPtr<'t>, num_params: usize) -> Option<ExprPtr<'t>> {
@@ -982,11 +775,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         Some(self.ctx.foldl_apps(new_const, args))
     }
 
-    fn to_ctor_when_k(
-        &mut self,
-        major: ExprPtr<'t>,
-        rec: &RecursorData<'t>,
-    ) -> Option<ExprPtr<'t>> {
+    fn to_ctor_when_k(&mut self, major: ExprPtr<'t>, rec: &RecursorData<'t>) -> Option<ExprPtr<'t>> {
         if !rec.is_k {
             return None
         }
@@ -1010,7 +799,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn is_ctor_app(&self, e: ExprPtr<'t>) -> Option<NamePtr<'t>> {
         if let Const { name, .. } = self.ctx.read_expr(self.ctx.unfold_apps_fun(e)) {
             if let Some(Declar::Constructor { .. }) = self.env.get_declar(&name) {
-                return Some(name)
+                return Some(name);
             }
         }
         None
@@ -1037,7 +826,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
     }
-    
+
     fn reduce_rec(
         &mut self,
         const_name: NamePtr<'t>,
@@ -1073,7 +862,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     pub fn reduce_quot(&mut self, c_name: NamePtr<'t>, args: &[ExprPtr<'t>]) -> Option<ExprPtr<'t>> {
-        if !matches!(self.env.get_declar(&c_name), Some(Declar::Quot {..})) {
+        if !matches!(self.env.get_declar(&c_name), Some(Declar::Quot { .. })) {
             return None
         }
         let (qmk, rest_idx) = if c_name == self.ctx.export_file.name_cache.quot_lift? {
@@ -1088,7 +877,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         {
             let (qmk_const, qmk_args) = self.ctx.unfold_apps(qmk);
             match self.ctx.read_expr(qmk_const) {
-                Const { name, .. } if name == self.ctx.export_file.name_cache.quot_mk? && qmk_args.len() == 3 => (),
+                Const { name, .. } if name == self.ctx.export_file.name_cache.quot_mk? && qmk_args.len() == 3 => {}
                 _ => return None,
             };
         }
@@ -1101,26 +890,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     // We only need the name and reducibility from this.
-    fn get_applied_def(&mut self, e: ExprPtr<'t>) -> Option<(NamePtr<'t>, ReducibilityHint)> {
-        if let Const { name, .. } = self.ctx.read_expr(self.ctx.unfold_apps_fun(e)) {
-            if let Some(Declar::Definition { info, hint, .. }) = self.env.get_declar(&name) {
-                return Some((info.name, *hint))
-            } else if let Some(Declar::Theorem { info, .. }) = self.env.get_declar(&name) {
-                return Some((info.name, ReducibilityHint::Opaque))
-            }
-        }
-        None
-    }
-
-    /// For an expression already known to be an applied definition, unfold
-    /// the definition and perform cheap reduction on the unfolded result.
-    fn delta(&mut self, e: ExprPtr<'t>) -> ExprPtr<'t> {
-        let unfolded = self.unfold_def(e).unwrap();
-        self.whnf_no_unfolding_cheap_proj(unfolded)
-    }
-
-    /// Try to unfold the base `Const` and re-fold applications, but don't
-    /// do any further reduction.
     fn unfold_def(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
         let (fun, args) = self.ctx.unfold_apps(e);
         let (name, levels) = self.ctx.try_const_info(fun)?;
@@ -1130,154 +899,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             Some(self.ctx.foldl_apps(def_val, args.into_iter()))
         } else {
             None
-        }
-    }
-
-    fn def_eq_sort(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        match self.ctx.read_expr_pair(x, y) {
-            (Sort { level: l, .. }, Sort { level: r, .. }) => Some(self.ctx.eq_antisymm(l, r)),
-            _ => None,
-        }
-    }
-
-    fn def_eq_quick_check(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<bool> {
-        if x == y {
-            return Some(true)
-        }
-        if self.tc_cache.eq_cache.check_uf_eq(x, y) {
-            return Some(true)
-        }
-        if let Some(r) = self.def_eq_sort(x, y) {
-            return Some(r)
-        }
-        if let Some(r) = self.def_eq_binder_multi(x, y) {
-            return Some(r)
-        }
-        None
-    }
-
-    fn failure_cache_contains(&self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        let pr = if x.get_hash() <= y.get_hash() { (x, y) } else { (y, x) };
-        self.tc_cache.failure_cache.contains(&pr)
-    }
-
-    fn failure_cache_insert(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) {
-        let pr = if x.get_hash() <= y.get_hash() { (x, y) } else { (y, x) };
-        self.tc_cache.failure_cache.insert(pr);
-    }
-
-    fn try_eq_const_app(
-        &mut self,
-        x: ExprPtr<'t>,
-        x_defname: NamePtr<'t>,
-        x_hint: ReducibilityHint,
-        y: ExprPtr<'t>,
-        y_defname: NamePtr<'t>,
-        y_hint: ReducibilityHint,
-    ) -> Option<DeltaResult<'t>> {
-        if x_defname != y_defname {
-            return None
-        }
-        if !matches!((x_hint, y_hint), (ReducibilityHint::Regular(..), ReducibilityHint::Regular(..))) {
-            return None
-        }
-        if x_hint != y_hint {
-            return None
-        }
-        if self.failure_cache_contains(x, y) {
-            return None
-        }
-
-        match self.ctx.read_expr_pair(x, y) {
-            (App { .. }, App { .. }) if (x_defname == y_defname) => {
-                let (l_fun, l_args) = self.ctx.unfold_apps(x);
-                let (r_fun, r_args) = self.ctx.unfold_apps(y);
-                match self.ctx.read_expr_pair(l_fun, r_fun) {
-                    (Const { levels: l_levels, .. }, Const { levels: r_levels, .. })
-                        if l_args.len() == r_args.len()
-                            && !self.failure_cache_contains(x, y)
-                            && l_args.iter().copied().zip(r_args.iter().copied()).all(|(x, y)| self.def_eq(x, y, true))
-                            && self.ctx.eq_antisymm_many(l_levels, r_levels) =>
-                        Some(FoundEqResult(true)),
-                    (Const { .. }, Const { .. }) => {
-                        self.failure_cache_insert(x, y);
-                        None
-                    }
-                    _ => panic!(),
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn try_unfold_proj_app(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        if let Proj { .. } = self.ctx.read_expr(self.ctx.unfold_apps_fun(e)) {
-            let eprime = self.whnf_no_unfolding(e);
-            if eprime != e {
-                return Some(eprime)
-            }
-        }
-        None
-    }
-
-    fn delta_try_nat(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> Option<DeltaResult<'t>> {
-        if let Some(short) = self.def_eq_nat(x, y) {
-            return Some(DeltaResult::FoundEqResult(short))
-        }
-        if (!self.ctx.has_fvars(x) && !self.ctx.has_fvars(y)) || self.ctx.eager_mode {
-            if let Some(xprime) = self.try_reduce_nat(x) {
-                return Some(DeltaResult::FoundEqResult(self.def_eq(xprime, y, false)))
-            } else if let Some(yprime) = self.try_reduce_nat(y) {
-                return Some(DeltaResult::FoundEqResult(self.def_eq(x, yprime, false)))
-            }
-        }
-        None
-    }
-
-    /// If `x` and/or `y` are definitions that need to be unfolded, try to lazily unfold
-    /// the "higher" definition to bring it closer to the lower one. Also try to efficiently
-    /// check for congruence if `x` and `y` apply the same definitions.
-    ///
-    /// After each reduction, check whether we can show definitional equality without having
-    /// to continue unfolding.
-    fn lazy_delta_step(&mut self, mut x: ExprPtr<'t>, mut y: ExprPtr<'t>) -> DeltaResult<'t> {
-        loop {
-            if let Some(r) = self.delta_try_nat(x, y) {
-                return r
-            }
-            let (r1, r2) = (self.get_applied_def(x), self.get_applied_def(y));
-            match (r1, r2) {
-                (None, None) => return Exhausted(x, y),
-                (Some(..), None) =>
-                    if let Some(yprime) = self.try_unfold_proj_app(y) {
-                        y = yprime;
-                    } else {
-                        x = self.delta(x);
-                    },
-                (None, Some(..)) =>
-                    if let Some(xprime) = self.try_unfold_proj_app(x) {
-                        x = xprime;
-                    } else {
-                        y = self.delta(y);
-                    },
-                (Some((_, l_hint)), Some((_, r_hint))) if l_hint.is_lt(&r_hint) => {
-                    y = self.delta(y);
-                }
-                (Some((_, l_hint)), Some((_, r_hint))) if r_hint.is_lt(&l_hint) => {
-                    x = self.delta(x);
-                }
-                (Some((x_name, l_hint)), Some((y_name, r_hint))) => {
-                    if let Some(r) = self.try_eq_const_app(x, x_name, l_hint, y, y_name, r_hint) {
-                        return r
-                    } else {
-                        x = self.delta(x);
-                        y = self.delta(y);
-                    }
-                }
-            }
-            if let Some(quick_result) = self.def_eq_quick_check(x, y) {
-                return FoundEqResult(quick_result)
-            }
         }
     }
 
@@ -1306,22 +927,5 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 (true, r_type) => skip_prop_check || self.def_eq(l_type, r_type, false),
             },
         }
-    }
-
-    fn try_eta_expansion(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        self.try_eta_expansion_aux(x, y) || self.try_eta_expansion_aux(y, x)
-    }
-
-    fn try_eta_expansion_aux(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
-        if let Lambda { .. } = self.ctx.read_expr(x) {
-            let y_ty = self.infer_then_whnf(y, InferOnly);
-            if let Pi { binder_name, binder_type, binder_style, .. } = self.ctx.read_expr(y_ty) {
-                let v0 = self.ctx.mk_var(0);
-                let new_body = self.ctx.mk_app(y, v0);
-                let new_lambda = self.ctx.mk_lambda(binder_name, binder_style, binder_type, new_body);
-                return self.def_eq(x, new_lambda, false)
-            }
-        }
-        false
     }
 }

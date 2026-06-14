@@ -1,17 +1,23 @@
-use crate::env::{DeclarMap, Env, NotationMap, EnvLimit};
-use crate::expr::{BinderStyle, Expr, FVarId};
-use crate::level::Level;
-use crate::name::Name;
+use crate::env::{DeclarInfo, DeclarMap, Env, EnvLimit, NotationMap};
+use crate::expr::{
+    BinderStyle, Expr, FVarId, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, LOCAL_HASH, NAT_LIT_HASH, PI_HASH,
+    PROJ_HASH, SORT_HASH, STRING_LIT_HASH, VAR_HASH,
+};
+use crate::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
+use crate::name::{Name, NUM_HASH, STR_HASH};
+use crate::parser::parse_export_file;
 use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
-use indexmap::{Equivalent, IndexMap, IndexSet};
+use crate::value::{E, S, V};
 use indexmap::map::Entry as IndexMapEntry;
+use indexmap::{Equivalent, IndexMap, IndexSet};
 use num_bigint::BigUint;
-use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
+use num_traits::{ Pow, identities::Zero };
 use rustc_hash::FxHasher;
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -23,7 +29,6 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use serde::Deserialize;
 
 pub(crate) const fn default_true() -> bool { true }
 
@@ -240,12 +245,9 @@ pub struct ExprCache<'t> {
     /// Caches (e, ks, vs) |-> output for level substitution.
     pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
     pub(crate) dsubst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-    /// Caches (e, offset) |-> output for abstraction (re-binding free variables).
-    /// This cache is reset before every new call to `inst`, so there's no need to
-    /// cache the sequence of free variables.
     pub(crate) abstr_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
-    /// A cache for (expr, starting deBruijn level, current deBruijn level)
     pub(crate) abstr_cache_levels: FxHashMap<(ExprPtr<'t>, u16, u16), ExprPtr<'t>>,
+    pub(crate) simplify_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
 }
 
 impl<'t> ExprCache<'t> {
@@ -256,6 +258,7 @@ impl<'t> ExprCache<'t> {
             subst_cache: new_fx_hash_map(),
             dsubst_cache: new_fx_hash_map(),
             abstr_cache_levels: new_fx_hash_map(),
+            simplify_cache: new_fx_hash_map(),
         }
     }
 }
@@ -279,37 +282,41 @@ impl<'p> ExportFile<'p> {
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
-        F: FnOnce(&mut TcCtx<'_, 'p>) -> A, {
+        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &'t bumpalo::Bump) -> A, {
+        let arena = bumpalo::Bump::new();
         let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
-        f(&mut ctx)
+        f(&mut ctx, &arena)
     }
 
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
+        let arena = bumpalo::Bump::new();
         let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(env_limit);
-        let mut tc = TypeChecker::new(&mut ctx, &env, None);
+        let mut tc = TypeChecker::new(&mut ctx, &env, &arena, None);
         f(&mut tc)
     }
 
-    pub fn with_tc_and_declar<F, A>(&self, d: crate::env::DeclarInfo<'p>, f: F) -> A
+    pub fn with_tc_and_declar<F, A>(&self, d: DeclarInfo<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
+        let arena = bumpalo::Bump::new();
         let mut dag = LeanDag::new(&self.config);
         let mut ctx = TcCtx::new(self, &mut dag);
         let env = self.new_env(EnvLimit::ByName(d.name));
-        let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
+        let mut tc = TypeChecker::new(&mut ctx, &env, &arena, Some(d));
         f(&mut tc)
     }
 
     pub fn with_pp<F, A>(&self, f: F) -> A
     where
         F: FnOnce(&mut PrettyPrinter<'_, '_, 'p>) -> A, {
-        self.with_ctx(|ctx| ctx.with_pp(f))
+        self.with_ctx(|ctx, arena| ctx.with_pp(arena, f))
     }
+
 }
 
 /// A structure representing the memory context used for an individual `TypeChecker`.
@@ -331,41 +338,39 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) unique_counter: u32,
     /// A cache for instantiation, free variable abstraction, and level substitution
     pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) eager_mode: bool
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn new(export_file: &'t ExportFile<'p>, tdag: &'t mut LeanDag<'t>) -> Self {
-        Self { 
-            export_file,
-            dag: tdag,
-            dbj_level_counter: 0u16,
-            unique_counter: 0u32,
-            expr_cache: ExprCache::new(),
-            eager_mode: false
-        }
+        Self { export_file, dag: tdag, dbj_level_counter: 0u16, unique_counter: 0u32, expr_cache: ExprCache::new() }
     }
 
-    pub fn with_tc<F, A>(&mut self, env_limit: EnvLimit<'p>, f: F) -> A
+    pub fn with_tc<F, A>(&mut self, arena: &'t bumpalo::Bump, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
         let env = self.export_file.new_env(env_limit);
-        let mut tc = TypeChecker::new(self, &env, None);
+        let mut tc = TypeChecker::new(self, &env, arena, None);
         f(&mut tc)
     }
 
-    pub fn with_tc_and_env_ext<'x, F, A>(&mut self, env_ext: &'x DeclarMap<'t>, env_limit: EnvLimit<'p>, f: F) -> A
+    pub fn with_tc_and_env_ext<'x, F, A>(
+        &mut self,
+        arena: &'t bumpalo::Bump,
+        env_ext: &'x DeclarMap<'t>,
+        env_limit: EnvLimit<'p>,
+        f: F,
+    ) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let env = crate::env::Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), &self.export_file.notations, env_limit);
-        let mut tc = TypeChecker::new(self, &env, None);
+        let env = Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), &self.export_file.notations, env_limit);
+        let mut tc = TypeChecker::new(self, &env, arena, None);
         f(&mut tc)
     }
 
-    pub fn with_pp<F, A>(&mut self, f: F) -> A
+    pub fn with_pp<F, A>(&mut self, arena: &'t bumpalo::Bump, f: F) -> A
     where
         F: FnOnce(&mut PrettyPrinter<'_, 't, 'p>) -> A, {
-        f(&mut PrettyPrinter::new(self))
+        f(&mut PrettyPrinter::new(self, arena))
     }
 
     pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> {
@@ -396,6 +401,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         match p.dag_marker() {
             DagMarker::ExportFile => self.export_file.dag.exprs.get_index(p.idx()).copied().unwrap(),
             DagMarker::TcCtx => self.dag.exprs.get_index(p.idx()).copied().unwrap(),
+        }
+    }
+
+    #[inline]
+    pub fn read_expr_ref(&self, p: ExprPtr<'t>) -> &Expr<'t> {
+        match p.dag_marker() {
+            DagMarker::ExportFile => self.export_file.dag.exprs.get_index(p.idx()).unwrap(),
+            DagMarker::TcCtx => self.dag.exprs.get_index(p.idx()).unwrap(),
         }
     }
 
@@ -516,7 +529,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn anonymous(&self) -> NamePtr<'t> { self.export_file.dag.anonymous() }
 
     pub fn str(&mut self, pfx: NamePtr<'t>, sfx: StringPtr<'t>) -> NamePtr<'t> {
-        let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+        let hash = hash64!(STR_HASH, pfx, sfx);
         self.alloc_name(Name::Str(pfx, sfx, hash))
     }
 
@@ -543,45 +556,45 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn zero(&self) -> LevelPtr<'t> { self.export_file.dag.zero() }
 
     pub fn num(&mut self, pfx: NamePtr<'t>, sfx: u64) -> NamePtr<'t> {
-        let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
+        let hash = hash64!(NUM_HASH, pfx, sfx);
         self.alloc_name(Name::Num(pfx, sfx, hash))
     }
 
     pub fn succ(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(crate::level::SUCC_HASH, l);
+        let hash = hash64!(SUCC_HASH, l);
         self.alloc_level(Level::Succ(l, hash))
     }
 
     pub fn max(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(crate::level::MAX_HASH, l, r);
+        let hash = hash64!(MAX_HASH, l, r);
         self.alloc_level(Level::Max(l, r, hash))
     }
     pub fn imax(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(crate::level::IMAX_HASH, l, r);
+        let hash = hash64!(IMAX_HASH, l, r);
         self.alloc_level(Level::IMax(l, r, hash))
     }
     pub fn param(&mut self, n: NamePtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(crate::level::PARAM_HASH, n);
+        let hash = hash64!(PARAM_HASH, n);
         self.alloc_level(Level::Param(n, hash))
     }
 
     pub fn mk_var(&mut self, dbj_idx: u16) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
+        let hash = hash64!(VAR_HASH, dbj_idx);
         self.alloc_expr(Expr::Var { dbj_idx, hash })
     }
 
     pub fn mk_sort(&mut self, level: LevelPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::SORT_HASH, level);
+        let hash = hash64!(SORT_HASH, level);
         self.alloc_expr(Expr::Sort { level, hash })
     }
 
     pub fn mk_const(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::CONST_HASH, name, levels);
+        let hash = hash64!(CONST_HASH, name, levels);
         self.alloc_expr(Expr::Const { name, levels, hash })
     }
 
     pub fn mk_app(&mut self, fun: ExprPtr<'t>, arg: ExprPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::APP_HASH, fun, arg);
+        let hash = hash64!(APP_HASH, fun, arg);
         let num_loose_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
         let has_fvars = self.has_fvars(fun) || self.has_fvars(arg);
         self.alloc_expr(Expr::App { fun, arg, num_loose_bvars, has_fvars, hash })
@@ -594,7 +607,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         body: ExprPtr<'t>,
     ) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_style, binder_type, body);
+        let hash = hash64!(LAMBDA_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
         self.alloc_expr(Expr::Lambda { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
@@ -607,7 +620,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         body: ExprPtr<'t>,
     ) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_style, binder_type, body);
+        let hash = hash64!(PI_HASH, binder_name, binder_style, binder_type, body);
         let num_loose_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
         let has_fvars = self.has_fvars(binder_type) || self.has_fvars(body);
         self.alloc_expr(Expr::Pi { binder_name, binder_style, binder_type, body, num_loose_bvars, has_fvars, hash })
@@ -619,9 +632,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
-        nondep: bool
+        nondep: bool,
     ) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
+        let hash = hash64!(LET_HASH, binder_name, binder_type, val, body, nondep);
         let num_loose_bvars = self
             .num_loose_bvars(binder_type)
             .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
@@ -630,7 +643,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: usize, structure: ExprPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
+        let hash = hash64!(PROJ_HASH, ty_name, idx, structure);
         let num_loose_bvars = self.num_loose_bvars(structure);
         let has_fvars = self.has_fvars(structure);
         self.alloc_expr(Expr::Proj { ty_name, idx, structure, num_loose_bvars, has_fvars, hash })
@@ -638,15 +651,15 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {
         if !self.export_file.config.string_extension {
-            return None
+            return None;
         }
-        let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
+        let hash = hash64!(STRING_LIT_HASH, string_ptr);
         Some(self.alloc_expr(Expr::StringLit { ptr: string_ptr, hash }))
     }
 
     pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> Option<ExprPtr<'t>> {
         if !self.export_file.config.string_extension {
-            return None
+            return None;
         }
         let string_ptr = self.alloc_string(s);
         self.mk_string_lit(string_ptr)
@@ -654,9 +667,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn mk_nat_lit(&mut self, num_ptr: BigUintPtr<'t>) -> Option<ExprPtr<'t>> {
         if !self.export_file.config.nat_extension {
-            return None
+            return None;
         }
-        let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
+        let hash = hash64!(NAT_LIT_HASH, num_ptr);
         Some(self.alloc_expr(Expr::NatLit { ptr: num_ptr, hash }))
     }
 
@@ -678,7 +691,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let level = self.dbj_level_counter;
         self.dbj_level_counter += 1;
         let id = FVarId::DbjLevel(level);
-        let hash = hash64!(crate::expr::LOCAL_HASH, binder_name, binder_style, binder_type, id);
+        let hash = hash64!(LOCAL_HASH, binder_name, binder_style, binder_type, id);
         self.alloc_expr(Expr::Local { binder_name, binder_style, binder_type, id, hash })
     }
 
@@ -693,7 +706,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         level: u16,
     ) -> ExprPtr<'t> {
         let id = FVarId::DbjLevel(level);
-        let hash = hash64!(crate::expr::LOCAL_HASH, binder_name, binder_style, binder_type, id);
+        let hash = hash64!(LOCAL_HASH, binder_name, binder_style, binder_type, id);
         self.alloc_expr(Expr::Local { binder_name, binder_style, binder_type, id, hash })
     }
 
@@ -708,7 +721,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let unique_id = self.unique_counter;
         self.unique_counter += 1;
         let id = FVarId::Unique(unique_id);
-        let hash = hash64!(crate::expr::LOCAL_HASH, binder_name, binder_style, binder_type, id);
+        let hash = hash64!(LOCAL_HASH, binder_name, binder_style, binder_type, id);
         self.alloc_expr(Expr::Local { binder_name, binder_style, binder_type, id, hash })
     }
 
@@ -787,19 +800,19 @@ impl<'a> LeanDag<'a> {
         let mut pfx = self.anonymous();
         for s in dot_separated_name.split('.') {
             if let Ok(num) = s.parse::<u64>() {
-                let hash = hash64!(crate::name::NUM_HASH, pfx, num);
+                let hash = hash64!(NUM_HASH, pfx, num);
                 if let Some(idx) = self.names.get_index_of(&Name::Num(pfx, num, hash)) {
                     pfx = Ptr::from(DagMarker::ExportFile, idx);
-                    continue
+                    continue;
                 }
             } else if let Some(sfx) = self.get_string_ptr(s) {
-                let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+                let hash = hash64!(STR_HASH, pfx, sfx);
                 if let Some(idx) = self.names.get_index_of(&Name::Str(pfx, sfx, hash)) {
                     pfx = Ptr::from(DagMarker::ExportFile, idx);
-                    continue
+                    continue;
                 }
             }
-            return None
+            return None;
         }
         Some(pfx)
     }
@@ -808,7 +821,6 @@ impl<'a> LeanDag<'a> {
     /// them since we need to retrieve them quite frequently.
     pub(crate) fn mk_name_cache(&self) -> NameCache<'a> {
         NameCache {
-            eager_reduce: self.find_name("eagerReduce"),
             quot: self.find_name("Quot"),
             quot_mk: self.find_name("Quot.mk"),
             quot_lift: self.find_name("Quot.lift"),
@@ -824,6 +836,8 @@ impl<'a> LeanDag<'a> {
             nat_pow: self.find_name("Nat.pow"),
             nat_mod: self.find_name("Nat.mod"),
             nat_div: self.find_name("Nat.div"),
+            nat_div_go: self.find_name("Nat.div.go"),
+            nat_mod_core_go: self.find_name("Nat.modCore.go"),
             nat_beq: self.find_name("Nat.beq"),
             nat_ble: self.find_name("Nat.ble"),
             nat_gcd: self.find_name("Nat.gcd"),
@@ -847,7 +861,6 @@ impl<'a> LeanDag<'a> {
 /// is present in the export file, otherwise they're `None`.
 #[derive(Debug, Clone, Copy)]
 pub struct NameCache<'p> {
-    pub(crate) eager_reduce: Option<NamePtr<'p>>,
     pub(crate) quot: Option<NamePtr<'p>>,
     pub(crate) quot_mk: Option<NamePtr<'p>>,
     pub(crate) quot_lift: Option<NamePtr<'p>>,
@@ -861,6 +874,8 @@ pub struct NameCache<'p> {
     pub(crate) nat_pow: Option<NamePtr<'p>>,
     pub(crate) nat_mod: Option<NamePtr<'p>>,
     pub(crate) nat_div: Option<NamePtr<'p>>,
+    pub(crate) nat_div_go: Option<NamePtr<'p>>,
+    pub(crate) nat_mod_core_go: Option<NamePtr<'p>>,
     pub(crate) nat_beq: Option<NamePtr<'p>>,
     pub(crate) nat_ble: Option<NamePtr<'p>>,
     pub(crate) nat_gcd: Option<NamePtr<'p>>,
@@ -881,19 +896,43 @@ pub struct NameCache<'p> {
     pub(crate) list_cons: Option<NamePtr<'p>>,
 }
 
-pub(crate) struct TcCache<'t> {
+pub(crate) struct TcCache<'a, 't> {
     pub(crate) infer_cache_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) infer_cache_no_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_no_unfolding_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) eq_cache: UnionFind<ExprPtr<'t>>,
     /// A cache of congruence failures during the lazy delta step procedure.
-    pub(crate) failure_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     /// Strong reduction is not used during type-checking, this is more of a library/inspection feature.
     pub(crate) strong_cache: UniqueHashMap<(ExprPtr<'t>, bool, bool), ExprPtr<'t>>,
+    pub(crate) unfold_const_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) rec_rule_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_head_type_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_head_value_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_result_level_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
+    pub(crate) conv_cache: FxHashSet<(usize, usize)>,
+    pub(crate) conv_cache_neg: FxHashSet<(usize, usize)>,
+    pub(crate) conv_cache_neg_probe: FxHashSet<(usize, usize)>,
+    pub(crate) probe_depth: u32,
+    pub(crate) closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
+    pub(crate) open_eval_cache: FxHashMap<(usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) open_eval_seen: FxHashSet<ExprPtr<'t>>,
+    pub(crate) bvar_hc: FxHashMap<(u32, usize), V<'a>>,
+    pub(crate) env_hc: FxHashMap<(usize, usize), E<'a>>,
+    pub(crate) spine_hc: FxHashMap<(usize, u8, u64, u64), S<'a>>,
+    pub(crate) lam_hc: FxHashMap<(ExprPtr<'t>, usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) pi_hc: FxHashMap<(usize, usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) rigid_hc: FxHashMap<(u8, u64, u64, usize), V<'a>>,
+    pub(crate) unfold_hc: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>, usize, usize), V<'a>>,
+    pub(crate) iota_stuck: FxHashSet<usize>,
+    pub(crate) struct_eta_cache: FxHashMap<(usize, NamePtr<'t>), Option<V<'a>>>,
+    pub(crate) iota_cache: FxHashMap<usize, V<'a>>,
+    pub(crate) canon_cache: FxHashMap<usize, V<'a>>,
+    pub(crate) content_hc: FxHashMap<(u8, u64), V<'a>>,
+    pub(crate) fvar_cache: FxHashMap<usize, bool>,
 }
 
-impl<'t> TcCache<'t> {
+impl<'a, 't> TcCache<'a, 't> {
     pub(crate) fn new() -> Self {
         Self {
             infer_cache_check: new_unique_hash_map(),
@@ -901,8 +940,32 @@ impl<'t> TcCache<'t> {
             whnf_cache: new_unique_hash_map(),
             whnf_no_unfolding_cache: new_unique_hash_map(),
             eq_cache: UnionFind::new(),
-            failure_cache: new_fx_hash_set(),
             strong_cache: new_unique_hash_map(),
+            unfold_const_cache: new_fx_hash_map(),
+            rec_rule_cache: new_fx_hash_map(),
+            const_head_type_cache: new_fx_hash_map(),
+            const_head_value_cache: new_fx_hash_map(),
+            const_result_level_cache: new_fx_hash_map(),
+            conv_cache: new_fx_hash_set(),
+            conv_cache_neg: new_fx_hash_set(),
+            conv_cache_neg_probe: new_fx_hash_set(),
+            probe_depth: 0,
+            closed_eval_cache: new_fx_hash_map(),
+            open_eval_cache: new_fx_hash_map(),
+            open_eval_seen: new_fx_hash_set(),
+            bvar_hc: new_fx_hash_map(),
+            env_hc: new_fx_hash_map(),
+            spine_hc: new_fx_hash_map(),
+            lam_hc: new_fx_hash_map(),
+            pi_hc: new_fx_hash_map(),
+            rigid_hc: new_fx_hash_map(),
+            unfold_hc: new_fx_hash_map(),
+            iota_stuck: new_fx_hash_set(),
+            struct_eta_cache: new_fx_hash_map(),
+            iota_cache: new_fx_hash_map(),
+            canon_cache: new_fx_hash_map(),
+            content_hc: new_fx_hash_map(),
+            fvar_cache: new_fx_hash_map(),
         }
     }
 
@@ -912,8 +975,30 @@ impl<'t> TcCache<'t> {
         self.whnf_cache.clear();
         self.whnf_no_unfolding_cache.clear();
         self.eq_cache.clear();
-        self.failure_cache.clear();
         self.strong_cache.clear();
+        self.unfold_const_cache.clear();
+        self.rec_rule_cache.clear();
+        self.const_head_type_cache.clear();
+        self.const_head_value_cache.clear();
+        self.const_result_level_cache.clear();
+        self.conv_cache.clear();
+        self.conv_cache_neg.clear();
+        self.conv_cache_neg_probe.clear();
+        self.env_hc.clear();
+        self.open_eval_cache.clear();
+        self.open_eval_seen.clear();
+        self.bvar_hc.clear();
+        self.spine_hc.clear();
+        self.lam_hc.clear();
+        self.pi_hc.clear();
+        self.rigid_hc.clear();
+        self.unfold_hc.clear();
+        self.iota_stuck.clear();
+        self.struct_eta_cache.clear();
+        self.iota_cache.clear();
+        self.canon_cache.clear();
+        self.content_hc.clear();
+        self.fvar_cache.clear();
     }
 }
 
@@ -941,19 +1026,19 @@ pub struct Config {
     #[serde(default)]
     pub num_threads: usize,
 
-    #[serde(default)] 
+    #[serde(default)]
     pub nat_extension: bool,
-    #[serde(default)] 
+    #[serde(default)]
     pub string_extension: bool,
 
     /// A list of declaration names the user wants to be pretty-printed back to them on termination.
     pub pp_declars: Option<Vec<String>>,
 
     /// Indicates what the typechecker should do when it's been asked to pretty-print a declaration
-    /// that is not actually in the environment. We give this option because that scenario is 
+    /// that is not actually in the environment. We give this option because that scenario is
     /// strongly indicative of a mismatch between what the user thinks is in the export file and
     /// what is actually in the export file.
-    /// If `true`, the typechecker will fail with a hard error. 
+    /// If `true`, the typechecker will fail with a hard error.
     /// If `false`, the typechecker will not fail just because of this.
     #[serde(default = "default_true")]
     pub unknown_pp_declar_hard_error: bool,
@@ -971,11 +1056,11 @@ pub struct Config {
     pub print_success_message: bool,
 
     /// If `true`, the typechecker will print the axioms actually admitted to the environment
-    /// when typechecking is finished. 
+    /// when typechecking is finished.
     #[serde(default = "default_true")]
     pub print_axioms: bool,
 
-    /// If set to `true`, will allow all axioms to be admitted to the environment. 
+    /// If set to `true`, will allow all axioms to be admitted to the environment.
     /// This is checked so as to be mutually exclusive with any of the axiom allow list/whitelist features.
     #[serde(default)]
     pub unsafe_permit_all_axioms: bool,
@@ -989,17 +1074,29 @@ impl TryFrom<&Path> for Config {
             Ok(config_file) => {
                 let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
                 if config.export_file_path.is_none() && !config.use_stdin {
-                    return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
+                    return Err(Box::from(
+                        "incompatible config options: must specify a path to an export file OR set `use_stdin: true`"
+                            .to_string(),
+                    ));
                 }
                 if config.export_file_path.is_some() && config.use_stdin {
-                    return Err(Box::from(format!("incompatible config options: if an export file path is given, `use_stdin` cannot be `true`")))
+                    return Err(Box::from(
+                        "incompatible config options: if an export file path is given, `use_stdin` cannot be `true`"
+                            .to_string(),
+                    ));
                 }
                 if config.unsafe_permit_all_axioms {
                     if config.unpermitted_axiom_hard_error {
-                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error")))
+                        return Err(Box::from(
+                            "incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error"
+                                .to_string(),
+                        ));
                     }
                     if config.permitted_axioms.is_some() {
-                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list")))
+                        return Err(Box::from(
+                            "incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list"
+                                .to_string(),
+                        ));
                     }
                 }
                 Ok(config)
@@ -1042,12 +1139,12 @@ impl Config {
     pub fn to_export_file<'a>(self) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
-                Ok(file) => crate::parser::parse_export_file(BufReader::new(file), self),
+                Ok(file) => parse_export_file(BufReader::new(file), self),
                 Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
             }
         } else if self.use_stdin {
             let reader = BufReader::new(std::io::stdin());
-            crate::parser::parse_export_file(reader, self)
+            parse_export_file(reader, self)
         } else {
             panic!("Configuration file must specify en export file path or \"use_stdin\": true")
         }
@@ -1061,5 +1158,5 @@ impl Config {
 #[derive(Debug, Clone)]
 struct ExitStatus {
     tc_err: Option<String>,
-    pp_err: Option<String>
+    pp_err: Option<String>,
 }

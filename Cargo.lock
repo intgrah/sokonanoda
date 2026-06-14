@@ -9,6 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
+name = "bumpalo"
+version = "3.20.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -64,21 +70,6 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
-
-[[package]]
-name = "nanoda_lib"
-version = "0.4.9-beta"
-dependencies = [
- "indexmap",
- "num-bigint",
- "num-integer",
- "num-traits",
- "rand",
- "rustc-hash",
- "semver",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "num-bigint"
@@ -224,6 +215,22 @@ dependencies = [
  "ryu",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "sokonanoda"
+version = "0.5.0"
+dependencies = [
+ "bumpalo",
+ "indexmap",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand",
+ "rustc-hash",
+ "semver",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

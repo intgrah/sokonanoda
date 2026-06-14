@@ -1,4 +1,4 @@
-use nanoda_lib::util::Config;
+use sokonanoda::util::Config;
 use std::error::Error;
 use std::path::Path;
 
@@ -59,7 +59,7 @@ impl std::fmt::Debug for MainError {
 
 const HELP_SHORT: &str = "run with `-h` or `--help` for help";
 const HELP_LONG: &str = concat!(
-    "nanoda_bin",
+    "sokonanoda",
     " ",
     env!("CARGO_PKG_VERSION"),
     "\n\n",

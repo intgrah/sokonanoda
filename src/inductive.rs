@@ -13,26 +13,26 @@ impl<'t, 'p: 't> ExportFile<'p> {
             }
             _ => panic!("expected inductive")
         };
-        self.with_ctx(|ctx| {
+        self.with_ctx(|ctx, arena| {
             // The **unmodified** types and constructors for all of the types in this mutual block.
-            let unmodified_tys_ctors = ctx.with_tc(env_limit, |tc| {
+            let unmodified_tys_ctors = ctx.with_tc(arena, env_limit, |tc| {
                 tc.check_declar_info(d).unwrap();
                 tc.collect_unmodified_mutuals(ind)
             });
 
             // Initialize the big chunk of state used throughout the process of checking
             // this inductive declaration.
-            let mut st = ctx.with_tc(env_limit, |tc| tc.specialize_nested(ind, unmodified_tys_ctors.clone()));
+            let mut st = ctx.with_tc(arena, env_limit, |tc| tc.specialize_nested(ind, unmodified_tys_ctors.clone()));
 
             // Check the (potentially modified) inductive specs against the base environment.
-            ctx.with_tc(env_limit, |tc| tc.check_inductive_specs(&mut st));
+            ctx.with_tc(arena, env_limit, |tc| tc.check_inductive_specs(&mut st));
 
             // The first temporary environment extension, containing any specialized
             // types to deal with nested inductives.
             let ind_ty_ext1 = ctx.mk_ind_tys_env_ext(&st);
 
             // Check the constructors against the environment with the base extension.
-            ctx.with_tc_and_env_ext(&ind_ty_ext1, env_limit, |tc| {
+            ctx.with_tc_and_env_ext(arena, &ind_ty_ext1, env_limit, |tc| {
                 for ind in st.all_inductives_incl_specialized.iter() {
                     for ctor in ind.ctors.iter() {
                         tc.check_ctor(&st, ind.name, ctor.ty)
@@ -44,7 +44,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
             let ctor_extension = ctx.mk_ctors_env_ext(&st, ind_ty_ext1);
 
             // The constructed recursors and rec rules
-            let recursors = ctx.with_tc_and_env_ext(&ctor_extension, env_limit, |tc| {
+            let recursors = ctx.with_tc_and_env_ext(arena, &ctor_extension, env_limit, |tc| {
                 tc.mk_elim_level(&mut st);
                 tc.init_k_target(&mut st);
                 tc.mk_majors(&mut st);
@@ -62,7 +62,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 out
             };
 
-            ctx.with_tc_and_env_ext(&recursor_extension, env_limit, |tc| {
+            ctx.with_tc_and_env_ext(arena, &recursor_extension, env_limit, |tc| {
                 if st.is_nested() {
                     tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names);
                 } else {
