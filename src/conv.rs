@@ -74,10 +74,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     Value::Rigid { head: RigidHead::BVar(la, _), spine: sx },
                     Value::Rigid { head: RigidHead::BVar(lb, _), spine: sy },
                 ) if la == lb => match (*sx, *sy) {
-                    (
-                        Spine::Snoc { prev: Spine::Empty, elim: Elim::App(va) },
-                        Spine::Snoc { prev: Spine::Empty, elim: Elim::App(vb) },
-                    ) => {
+                    (Spine::Snoc(Spine::Empty, Elim::App(va)), Spine::Snoc(Spine::Empty, Elim::App(vb))) => {
                         x = va;
                         y = vb;
                     }
@@ -391,7 +388,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn unify_spine<const RIGID: bool>(&mut self, depth: u32, sx: S<'t>, sy: S<'t>) -> bool {
         match (sx, sy) {
             (Spine::Empty, Spine::Empty) => true,
-            (Spine::Snoc { prev: pa, elim: ea }, Spine::Snoc { prev: pb, elim: eb }) => {
+            (Spine::Snoc(pa, ea), Spine::Snoc(pb, eb)) => {
                 if !self.unify_spine::<RIGID>(depth, pa, pb) {
                     return false;
                 }
@@ -516,12 +513,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if inductive_name != ind_name {
             return false;
         }
-        if yspine.len() != u32::from(num_params + num_fields) {
-            return false;
-        }
         let yargs: Vec<V<'t>> = match self.spine_apps(yspine) {
-            Some(v) => v,
-            None => return false,
+            Some(v) if v.len() == usize::from(num_params) + usize::from(num_fields) => v,
+            _ => return false,
         };
         for i in 0..usize::from(num_fields) {
             let proj = self.do_proj(ind_name, i, x);
@@ -595,7 +589,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         match v {
             Value::Rigid { head: RigidHead::Ctor(name, _), spine } => {
                 if Some(*name) == self.ctx.export_file.name_cache.nat_succ {
-                    if let Spine::Snoc { prev: Spine::Empty, elim: Elim::App(a) } = **spine {
+                    if let Spine::Snoc(Spine::Empty, Elim::App(a)) = **spine {
                         return Some(a);
                     }
                 }

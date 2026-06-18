@@ -103,42 +103,34 @@ pub enum Ctx<'a> {
 #[derive(Debug)]
 pub enum Spine<'a> {
     Empty,
-    Snoc { prev: S<'a>, elim: Elim<'a> },
+    Snoc(S<'a>, Elim<'a>),
 }
 
 impl<'a> Env<'a> {
     pub fn lookup(&self, mut idx: u16) -> Option<V<'a>> {
         let mut cur = self;
-        loop {
-            match cur {
-                Env::Nil => return None,
-                Env::Cons { v, parent, .. } => {
-                    if idx == 0 {
-                        return Some(*v);
-                    }
-                    idx -= 1;
-                    cur = parent;
-                }
+        while let Env::Cons { v, parent, .. } = cur {
+            if idx == 0 {
+                return Some(*v);
             }
+            idx -= 1;
+            cur = parent;
         }
+        None
     }
 }
 
 impl<'a> Ctx<'a> {
     pub fn lookup(&self, mut idx: u16) -> Option<V<'a>> {
         let mut cur = self;
-        loop {
-            match cur {
-                Ctx::Nil => return None,
-                Ctx::Cons { ty, parent } => {
-                    if idx == 0 {
-                        return Some(*ty);
-                    }
-                    idx -= 1;
-                    cur = parent;
-                }
+        while let Ctx::Cons { ty, parent } = cur {
+            if idx == 0 {
+                return Some(*ty);
             }
+            idx -= 1;
+            cur = parent;
         }
+        None
     }
 }
 
@@ -148,31 +140,35 @@ impl<'a> Spine<'a> {
     pub fn len(&self) -> u32 {
         let mut n = 0u32;
         let mut cur = self;
-        loop {
-            match cur {
-                Spine::Empty => return n,
-                Spine::Snoc { prev, .. } => {
-                    n += 1;
-                    cur = prev;
-                }
-            }
+        while let Spine::Snoc(prev, _) = cur {
+            n += 1;
+            cur = prev;
         }
+        n
     }
     pub fn to_vec<'b>(&'b self) -> Vec<&'b Elim<'a>> {
         let len = self.len() as usize;
         let mut out = Vec::with_capacity(len);
         let mut cur: &Spine<'a> = self;
-        loop {
-            match cur {
-                Spine::Empty => break,
-                Spine::Snoc { prev, elim } => {
-                    out.push(elim);
-                    cur = prev;
-                }
-            }
+        while let Spine::Snoc(prev, elim) = cur {
+            out.push(elim);
+            cur = prev;
         }
         out.reverse();
         out
+    }
+    pub fn get(&self, i: usize) -> Option<&Elim<'a>> {
+        let len = self.len() as usize;
+        let mut steps = len.checked_sub(i + 1)?;
+        let mut cur = self;
+        while let Spine::Snoc(prev, elim) = cur {
+            if steps == 0 {
+                return Some(elim);
+            }
+            steps -= 1;
+            cur = prev;
+        }
+        None
     }
 }
 
@@ -189,7 +185,7 @@ pub fn ctx_extend<'a>(arena: &'a ArenaRef<'a>, parent: C<'a>, ty: V<'a>) -> C<'a
 }
 pub fn spine_empty<'a>(arena: &'a ArenaRef<'a>) -> S<'a> { arena.alloc(Spine::Empty) }
 pub fn spine_snoc<'a>(arena: &'a ArenaRef<'a>, prev: S<'a>, elim: Elim<'a>) -> S<'a> {
-    arena.alloc(Spine::Snoc { prev, elim })
+    arena.alloc(Spine::Snoc(prev, elim))
 }
 
 pub fn mk_rigid<'a>(arena: &'a ArenaRef<'a>, head: RigidHead<'a>, spine: S<'a>) -> V<'a> {

@@ -143,7 +143,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn canon_spine(&mut self, spine: S<'t>) -> S<'t> {
         match spine {
             Spine::Empty => spine,
-            Spine::Snoc { prev, elim } => {
+            Spine::Snoc(prev, elim) => {
                 let cprev = self.canon_spine(prev);
                 let celim = match elim {
                     Elim::App(a) => {
@@ -550,14 +550,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if self.ctx.export_file.config.nat_extension {
             if let RigidHead::Ctor(name, _) = head {
                 if Some(name) == self.ctx.export_file.name_cache.nat_succ {
-                    let elims = spine.to_vec();
-                    if elims.len() == 1 {
-                        if let Elim::App(arg) = elims[0] {
-                            if let Some(n) = self.value_to_bignum_at(arg, false) {
-                                let succ_lit = n + 1u8;
-                                if let Some(p) = self.ctx.alloc_bignum(succ_lit) {
-                                    return value::mk_natlit(self.arena, p);
-                                }
+                    if let Spine::Snoc(Spine::Empty, Elim::App(arg)) = spine {
+                        if let Some(n) = self.value_to_bignum_at(arg, false) {
+                            let succ_lit = n + 1u8;
+                            if let Some(p) = self.ctx.alloc_bignum(succ_lit) {
+                                return value::mk_natlit(self.arena, p);
                             }
                         }
                     }
@@ -735,8 +732,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if let Some(ConstructorData { num_params, inductive_name, .. }) = self.env.get_constructor(ctor_name) {
                     if *inductive_name == ty_name {
                         let np = usize::from(*num_params);
-                        let elims = spine.to_vec();
-                        if let Some(Elim::App(field)) = elims.get(np + idx) {
+                        if let Some(Elim::App(field)) = spine.get(np + idx) {
                             return self.force_thunk(field);
                         }
                     }
@@ -1105,14 +1101,16 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn spine_apps(&mut self, spine: S<'t>) -> Option<Vec<V<'t>>> {
-        let elims = spine.to_vec();
-        let mut out = Vec::with_capacity(elims.len());
-        for e in elims {
-            match e {
+        let mut out = Vec::with_capacity(spine.len() as usize);
+        let mut cur: &Spine<'t> = spine;
+        while let Spine::Snoc(prev, elim) = cur {
+            match elim {
                 Elim::App(a) => out.push(self.force_thunk(a)),
                 Elim::Proj { .. } => return None,
             }
+            cur = prev;
         }
+        out.reverse();
         Some(out)
     }
 
@@ -1503,7 +1501,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 loop {
                     match s {
                         Spine::Empty => break,
-                        Spine::Snoc { prev, elim } => {
+                        Spine::Snoc(prev, elim) => {
                             if let Elim::App(a) = elim {
                                 if self.value_has_free_bvar(a) {
                                     found = true;
@@ -1537,8 +1535,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     if Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty() {
                         return Some(BigUint::from(succs));
                     }
-                    if Some(*name) == self.ctx.export_file.name_cache.nat_succ && spine.len() == 1 {
-                        if let Spine::Snoc { elim: Elim::App(a), .. } = spine {
+                    if Some(*name) == self.ctx.export_file.name_cache.nat_succ {
+                        if let Spine::Snoc(Spine::Empty, Elim::App(a)) = spine {
                             succs += 1;
                             cur = self.force_thunk(a);
                             continue;
