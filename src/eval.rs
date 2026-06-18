@@ -66,7 +66,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         u
     }
 
-    fn env_extend_hc(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
+    pub(crate) fn env_extend_hc(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
         let key = (parent as *const value::Env<'t> as usize, v as *const Value<'t> as usize);
         if let Some(e) = self.tc_cache.env_hc.get(&key) {
             return e;
@@ -233,6 +233,23 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         self.eval_no_cache(env, e)
     }
 
+    #[inline]
+    fn eval_arg(&mut self, env: E<'t>, arg: ExprPtr<'t>) -> V<'t> {
+        if matches!(
+            self.ctx.read_expr_ref(arg),
+            Expr::Var { .. }
+                | Expr::Sort { .. }
+                | Expr::Const { .. }
+                | Expr::NatLit { .. }
+                | Expr::StringLit { .. }
+                | Expr::Local { .. }
+        ) {
+            self.eval(env, arg)
+        } else {
+            value::mk_thunk(self.arena, env, arg)
+        }
+    }
+
     fn eval_no_cache(&mut self, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
         let first = *self.ctx.read_expr_ref(e);
         if let Expr::App { fun, arg, .. } = first {
@@ -326,6 +343,22 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     result = self.apply(f_val, result);
                 }
                 return result;
+            }
+            if matches!(self.ctx.read_expr_ref(fun), Expr::App { .. }) {
+                let mut rev = bumpalo::collections::Vec::new_in(self.arena);
+                rev.push(arg);
+                let mut head = fun;
+                while let &Expr::App { fun: hf, arg: ha, .. } = self.ctx.read_expr_ref(head) {
+                    rev.push(ha);
+                    head = hf;
+                }
+                let hv = self.eval(env, head);
+                let mut argv = bumpalo::collections::Vec::new_in(self.arena);
+                for k in (0..rev.len()).rev() {
+                    let a = self.eval_arg(env, rev[k]);
+                    argv.push(a);
+                }
+                return self.apply_spine(hv, &argv);
             }
             let f = self.eval(env, fun);
             let trivial = matches!(
@@ -542,6 +575,60 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn apply_v(&mut self, f: V<'t>, a: V<'t>) -> V<'t> { self.apply(f, a) }
+
+    pub(crate) fn apply_spine(&mut self, f: V<'t>, args: &[V<'t>]) -> V<'t> {
+        let mut f = f;
+        let mut i = 0;
+        while i < args.len() {
+            match f {
+                Value::Lam { body: clo, .. } => {
+                    let mut env = self.env_extend_hc(clo.env, args[i]);
+                    let mut cursor = clo.body;
+                    i += 1;
+                    while i < args.len() {
+                        if let &Expr::Lambda { body, .. } = self.ctx.read_expr_ref(cursor) {
+                            env = self.env_extend_hc(env, args[i]);
+                            cursor = body;
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    f = self.eval(env, cursor);
+                }
+                Value::Rigid { head, spine }
+                    if !(self.nat_extension
+                        && matches!(head, RigidHead::Ctor(n, _) if Some(*n) == self.ctx.export_file.name_cache.nat_succ)) =>
+                {
+                    let h = *head;
+                    let mut sp = *spine;
+                    while i < args.len() {
+                        let a = self.canonicalize_for_spine(args[i]);
+                        sp = self.spine_snoc_hc(sp, Elim::App(a));
+                        i += 1;
+                    }
+                    f = self.mk_rigid_hc(h, sp);
+                }
+                Value::Unfold { head, spine, head_value, .. }
+                    if !(self.nat_extension && self.is_nat_red_name(head.name)) =>
+                {
+                    let (hn, hl, hv) = (head.name, head.levels, *head_value);
+                    let mut sp = *spine;
+                    while i < args.len() {
+                        let a = self.canonicalize_for_spine(args[i]);
+                        sp = self.spine_snoc_hc(sp, Elim::App(a));
+                        i += 1;
+                    }
+                    f = self.mk_unfold_hc(hn, hl, sp, hv);
+                }
+                _ => {
+                    f = self.apply(f, args[i]);
+                    i += 1;
+                }
+            }
+        }
+        f
+    }
 
     pub(crate) fn apply_closure(&mut self, clo: &Closure<'t>, v: V<'t>) -> V<'t> {
         let clo_env = clo.env;
@@ -1050,12 +1137,28 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 },
             };
             let spine = *spine;
+            let elims = spine.to_vec();
             let mut cur = head_value;
-            for e in spine.to_vec() {
-                cur = match e {
-                    Elim::App(a) => self.apply(cur, a),
-                    Elim::Proj { ty_name, idx } => self.do_proj(*ty_name, *idx, cur),
-                };
+            let mut i = 0;
+            while i < elims.len() {
+                match elims[i] {
+                    Elim::App(_) => {
+                        let mut run = bumpalo::collections::Vec::new_in(self.arena);
+                        while i < elims.len() {
+                            if let Elim::App(a) = elims[i] {
+                                run.push(*a);
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        cur = self.apply_spine(cur, &run);
+                    }
+                    Elim::Proj { ty_name, idx } => {
+                        cur = self.do_proj(*ty_name, *idx, cur);
+                        i += 1;
+                    }
+                }
             }
             let _ = forced.set(cur);
             return cur;
@@ -1178,15 +1281,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
         };
         let nprefix = usize::from(rec.num_params + rec.num_motives + rec.num_minors);
-        for a in &args[..nprefix] {
-            result = self.apply_v(result, a);
-        }
-        for a in &ctor_args[num_extra..] {
-            result = self.apply_v(result, a);
-        }
-        for a in &args[rec.major_idx() + 1..] {
-            result = self.apply_v(result, a);
-        }
+        result = self.apply_spine(result, &args[..nprefix]);
+        result = self.apply_spine(result, &ctor_args[num_extra..]);
+        result = self.apply_spine(result, &args[rec.major_idx() + 1..]);
         Some(result)
     }
 

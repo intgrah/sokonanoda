@@ -1,7 +1,8 @@
 use crate::env::{ConstructorData, Declar, ReducibilityHint};
 use crate::tc::TypeChecker;
 use crate::util::{ExprPtr, LevelPtr, NamePtr};
-use crate::value::{self, Elim, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
+use crate::expr::Expr;
+use crate::value::{self, Closure, Elim, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
         (RigidHead::BVar(a, _), RigidHead::BVar(b, _)) => a == b,
@@ -177,14 +178,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if bx.body == by.body && std::ptr::eq(*dx, *dy) && Self::envs_ptr_equal(bx.env, by.env) {
                     return true;
                 }
-                if !self.unify::<RIGID>(depth, dx, dy) {
-                    return false;
-                }
-                let dx = *dx;
-                let fresh = self.mk_bvar_hc(depth, dx);
-                let vx = self.apply_closure_v(bx, fresh);
-                let vy = self.apply_closure_v(by, fresh);
-                self.unify::<RIGID>(depth + 1, vx, vy)
+                self.unify_pi_tele::<RIGID>(depth, *dx, bx, *dy, by)
             }
 
             (Value::Lam { body: bx, .. }, Value::Lam { body: by, .. }) => {
@@ -385,6 +379,47 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         match self.env.get_declar(&name) {
             Some(Declar::Definition { hint, .. }) => *hint,
             _ => ReducibilityHint::Opaque,
+        }
+    }
+
+    fn unify_pi_tele<const RIGID: bool>(
+        &mut self,
+        depth: u32,
+        dx: V<'t>,
+        bx: &Closure<'t>,
+        dy: V<'t>,
+        by: &Closure<'t>,
+    ) -> bool {
+        let mut envx = bx.env;
+        let mut envy = by.env;
+        let mut cx = bx.body;
+        let mut cy = by.body;
+        let mut dxv = dx;
+        let mut dyv = dy;
+        let mut d = depth;
+        loop {
+            if !self.unify::<RIGID>(d, dxv, dyv) {
+                return false;
+            }
+            let fresh = self.mk_bvar_hc(d, dxv);
+            envx = self.env_extend_hc(envx, fresh);
+            envy = self.env_extend_hc(envy, fresh);
+            d += 1;
+            let ex = *self.ctx.read_expr_ref(cx);
+            let ey = *self.ctx.read_expr_ref(cy);
+            match (ex, ey) {
+                (Expr::Pi { binder_type: bxt, body: cx2, .. }, Expr::Pi { binder_type: byt, body: cy2, .. }) => {
+                    dxv = self.eval(envx, bxt);
+                    dyv = self.eval(envy, byt);
+                    cx = cx2;
+                    cy = cy2;
+                }
+                _ => {
+                    let vx = self.eval(envx, cx);
+                    let vy = self.eval(envy, cy);
+                    return self.unify::<RIGID>(d, vx, vy);
+                }
+            }
         }
     }
 
