@@ -358,16 +358,18 @@ impl<'p> ExportFile<'p> {
                 }
                 if self.config.print_axioms {
                     for (declar_name, declar) in self.declars.iter() {
-                        if let Declar::Axiom {..} = declar {
+                        if let Declar::Axiom { .. } = declar {
                             let as_str = format!("{:?}", ctx.debug_print(*declar_name));
                             pp_declars.push((as_str, *declar_name));
                         }
                     }
-    
                 }
                 for (ss, pp_declar) in pp_declars {
                     if let Some(s) = ctx.with_pp(|pp| pp.pp_declar(pp_declar)) {
-                        if let Err(e) = pp_destination.write_line(s, self.config.pp_options.declar_sep.as_ref().map(|x| x.as_str()).unwrap_or("\n\n")) {
+                        if let Err(e) = pp_destination.write_line(
+                            s,
+                            self.config.pp_options.declar_sep.as_ref().map(|x| x.as_str()).unwrap_or("\n\n"),
+                        ) {
                             errs.push(e)
                         }
                     } else {
@@ -377,7 +379,6 @@ impl<'p> ExportFile<'p> {
                         )));
                     }
                 }
- 
             });
         } else {
             if self.config.print_axioms {
@@ -545,9 +546,9 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     /// `safe` in the sense that the name will be escaped if it doesn't follow the
-    /// usual convention for identifiers. 
+    /// usual convention for identifiers.
     ///
-    /// FIXME: We need to come back and update this when we have more "official" information 
+    /// FIXME: We need to come back and update this when we have more "official" information
     /// from upstream about how quoting interacts with elements like hygienic identifiers
     fn pp_name_safe(&self, n: NamePtr<'t>) -> DocPtr {
         let doc = self.name_to_string(n).as_str().into();
@@ -557,7 +558,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
             doc
         }
     }
-    
+
     /// Create a string from a name `n`, leaving the dot-separator in the output string.\
     ///
     /// Example: name_to_string(`Foo.Bar.Baz`) == "Foo.Bar.Baz"
@@ -759,18 +760,16 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                         .as_unparenable()
                 }
                 NatLit { ptr, .. } => DocPtr::from(self.ctx.read_bignum(ptr).unwrap().to_string()).as_unparenable(),
-                StringLit { ptr, .. } => {
-                    DocPtr::from("\"")
+                StringLit { ptr, .. } => DocPtr::from("\"")
                     .concat(DocPtr::from(self.ctx.read_string(ptr).as_ref()))
                     .concat(DocPtr::from("\""))
-                    .as_unparenable()
-                },
+                    .as_unparenable(),
             }
         }
     }
 
     fn pp_uparams(&mut self, levels: LevelsPtr<'t>) -> DocPtr {
-        let uparams = self.ctx.read_levels(levels).clone();
+        let uparams = self.ctx.read_levels(levels);
         if uparams.is_empty() {
             DocPtr::from("")
         } else {
@@ -810,7 +809,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
         let instd = self.ctx.inst(val, named_binder_tys.as_slice());
         let pp_val = {
-            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
+            let is_prop =
+                self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
             line()
                 .concat(if is_prop && !self.options().proofs {
                     DocPtr::from("_")

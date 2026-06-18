@@ -1,26 +1,25 @@
-use crate::env::{
-    ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint,
-};
+use crate::env::{ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint};
 use crate::expr::{BinderStyle, Expr};
 use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{
-    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, DagMarker, ExprPtr, FxHashMap, FxIndexMap,
-    LeanDag, LevelPtr, LevelsPtr, NamePtr, StringPtr,
+    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, Dag, ExprPtr, FxHashMap, FxIndexMap, LevelPtr, LevelsPtr,
+    NamePtr, StringPtr,
 };
 use num_bigint::BigUint;
-use serde::{ Deserialize, Deserializer };
 use serde::de::{Error as DeError, Visitor};
+use serde::{Deserialize, Deserializer};
+use std::borrow::Cow;
 use std::error::Error;
+use std::fmt;
 use std::io::BufRead;
 use std::sync::Arc;
-use std::borrow::Cow;
-use std::fmt;
+use stumpalo::ArenaRef;
 
 fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
-    const MIN_SEMVER : semver::Version = semver::Version::new(3, 1, 0);
-    const MAX_SEMVER : semver::Version = semver::Version::new(3, 2, 0);
+    const MIN_SEMVER: semver::Version = semver::Version::new(3, 1, 0);
+    const MAX_SEMVER: semver::Version = semver::Version::new(3, 2, 0);
     let export_file_semver = semver::Version::parse(&meta.format.version)?;
     if export_file_semver < MIN_SEMVER {
         return Err(Box::from(format!(
@@ -40,38 +39,48 @@ fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
 pub struct Parser<'a, R: BufRead> {
     buf_reader: R,
     line_num: usize,
-    dag: LeanDag<'a>,
+    /// The global bump arena allocations are interned into.
+    arena: &'a ArenaRef<'a>,
+    /// The global interning tables.
+    dag: Dag<'a>,
+    /// The anonymous name and level zero (back-referenced as index 0 of their kind).
+    anon: NamePtr<'a>,
+    zero: LevelPtr<'a>,
+    /// Export-file index -> pointer back-reference tables (parse-time only).
+    names_by_idx: Vec<NamePtr<'a>>,
+    levels_by_idx: Vec<LevelPtr<'a>>,
+    exprs_by_idx: Vec<ExprPtr<'a>>,
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
     notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
     config: Config,
     /// Tracks axiom names that were found in the export file, but not white-listed,
     /// for use when `unpermitted_axiom_hard_error: false`
     skipped: Vec<String>,
-    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>
+    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 struct LeanMeta<'a> {
     version: Cow<'a, str>,
-    githash: Cow<'a, str>
+    githash: Cow<'a, str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 struct ExporterMeta<'a> {
     name: Cow<'a, str>,
-    version: Cow<'a, str>
+    version: Cow<'a, str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 struct FormatMeta<'a> {
-    version: Cow<'a, str>
+    version: Cow<'a, str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct FileMeta<'a> {
     lean: LeanMeta<'a>,
     exporter: ExporterMeta<'a>,
-    format: FormatMeta<'a>
+    format: FormatMeta<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -84,59 +93,12 @@ enum BackRef {
     Ie(u32),
 }
 
-impl BackRef {
-    fn assert_in(self, (idx, inserted): (usize, bool)) {
-        if !inserted {
-            panic!("Attempted to insert duplicate Name");
-        }
-        let lhs = u32::try_from(idx).unwrap();
-        if self != BackRef::In(lhs) {
-            eprintln!(
-                "Declined: Name back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
-                BackRef::In(lhs),
-                self
-            );
-            std::process::exit(2);
-        }
-    }
-
-    fn assert_il(self, (idx, inserted): (usize, bool)) {
-        if !inserted {
-            panic!("Attempted to insert duplicate Level");
-        }
-        let lhs = u32::try_from(idx).unwrap();
-        if self != BackRef::Il(lhs) {
-            eprintln!(
-                "Declined: Level back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
-                BackRef::Il(lhs),
-                self
-            );
-            std::process::exit(2);
-        }
-    }
-
-    fn assert_ie(self, (idx, inserted): (usize, bool)) {
-        if !inserted {
-            panic!("Attempted to insert duplicate Expr");
-        }
-        let lhs = u32::try_from(idx).unwrap();
-        if self != BackRef::Ie(lhs) {
-            eprintln!(
-                "Declined: Expr back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
-                BackRef::Ie(lhs),
-                self
-            );
-            std::process::exit(2);
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct ExportJsonObject<'a> {
     #[serde(flatten)]
     val: ExportJsonVal<'a>,
     #[serde(flatten)]
-    i: Option<BackRef>
+    i: Option<BackRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -188,7 +150,7 @@ struct IndInfo {
     #[serde(rename = "numParams")]
     num_params: u16,
     #[serde(rename = "isUnsafe")]
-    is_unsafe: bool
+    is_unsafe: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -205,7 +167,7 @@ struct Constructor {
     num_params: u16,
     #[serde(rename = "numFields")]
     num_fields: u16,
-    induct: u32
+    induct: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -237,15 +199,9 @@ enum ExportJsonVal<'a> {
     #[serde(rename = "meta")]
     Metadata(FileMeta<'a>),
     #[serde(rename = "str")]
-    NameStr {
-        pre: u32,
-        str: Cow<'a, str>
-    },
+    NameStr { pre: u32, str: Cow<'a, str> },
     #[serde(rename = "num")]
-    NameNum {
-        pre: u32,
-        i: u32
-    },
+    NameNum { pre: u32, i: u32 },
     #[serde(rename = "succ")]
     LevelSucc(u32),
     #[serde(rename = "max")]
@@ -259,10 +215,7 @@ enum ExportJsonVal<'a> {
     #[serde(rename = "strVal")]
     StrLit(Cow<'a, str>),
     #[serde(rename = "mdata")]
-    ExprMData {
-        expr: u32,
-        data: serde_json::Value
-    },
+    ExprMData { expr: u32, data: serde_json::Value },
     #[serde(rename = "letE")]
     ExprLet {
         name: u32,
@@ -270,19 +223,19 @@ enum ExportJsonVal<'a> {
         ty: u32,
         value: u32,
         body: u32,
-        nondep: bool
+        nondep: bool,
     },
     #[serde(rename = "const")]
     ExprConst {
         name: u32,
         #[serde(rename = "us")]
-        levels: Vec<u32>
+        levels: Vec<u32>,
     },
     #[serde(rename = "app")]
     ExprApp {
         #[serde(rename = "fn")]
         fun: u32,
-        arg: u32 
+        arg: u32,
     },
     #[serde(rename = "forallE")]
     ExprPi {
@@ -292,8 +245,7 @@ enum ExportJsonVal<'a> {
         binder_type: u32,
         body: u32,
         #[serde(rename = "binderInfo")]
-        binder_info: BinderStyle
-
+        binder_info: BinderStyle,
     },
     #[serde(rename = "lam")]
     ExprLambda {
@@ -303,7 +255,7 @@ enum ExportJsonVal<'a> {
         binder_type: u32,
         body: u32,
         #[serde(rename = "binderInfo")]
-        binder_info: BinderStyle
+        binder_info: BinderStyle,
     },
     #[serde(rename = "proj")]
     ExprProj {
@@ -325,7 +277,7 @@ enum ExportJsonVal<'a> {
         #[serde(rename = "type")]
         ty: u32,
         #[serde(rename = "isUnsafe")]
-        is_unsafe: bool
+        is_unsafe: bool,
     },
     #[serde(rename = "thm")]
     Thm {
@@ -347,7 +299,7 @@ enum ExportJsonVal<'a> {
         #[serde(rename = "hints")]
         hint: ReducibilityHint,
         //all: Vec<usize>,
-        safety: DefinitionSafety
+        safety: DefinitionSafety,
     },
     #[serde(rename = "opaque")]
     Opaque {
@@ -358,7 +310,7 @@ enum ExportJsonVal<'a> {
         ty: u32,
         value: u32,
         #[serde(rename = "isUnsafe")]
-        is_unsafe: bool
+        is_unsafe: bool,
     },
     #[serde(rename = "quot")]
     Quot {
@@ -368,7 +320,7 @@ enum ExportJsonVal<'a> {
         #[serde(rename = "type")]
         ty: u32,
         #[serde(rename = "kind")]
-        kind: QuotKind
+        kind: QuotKind,
     },
     #[serde(rename = "inductive")]
     Inductive {
@@ -377,16 +329,16 @@ enum ExportJsonVal<'a> {
         #[serde(rename = "ctors")]
         ctor_vals: Vec<Constructor>,
         #[serde(rename = "recs")]
-        rec_vals: Vec<Recursor>
+        rec_vals: Vec<Recursor>,
     },
 }
 
 pub(crate) fn parse_export_file<'p, R: BufRead>(
+    arena: &'p ArenaRef<'p>,
     buf_reader: R,
     config: Config,
-
 ) -> Result<(crate::util::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
-    let mut parser = Parser::new(buf_reader, config);
+    let mut parser = Parser::new(arena, buf_reader, config);
     let mut line_buffer = String::new();
 
     loop {
@@ -398,9 +350,9 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
         parser.line_num += 1;
         line_buffer.clear();
     }
-    
-    // If the execution config has `unknown_pp_declar_hard_error: true`, and a `pp_declars` 
-    // that includes `foo`, then we return early with an error if no `foo` declaration is present 
+
+    // If the execution config has `unknown_pp_declar_hard_error: true`, and a `pp_declars`
+    // that includes `foo`, then we return early with an error if no `foo` declaration is present
     // in the export file.
     if parser.config.unknown_pp_declar_hard_error {
         if let Some(pp_declars) = parser.config.pp_declars.as_ref() {
@@ -411,104 +363,151 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
             }
             if pp_declar_names.len() > 0 {
                 let list = pp_declar_names.into_iter().collect::<Vec<&str>>();
-                return Err(Box::from(format!("these pp_declars were not found in the exported environment: {:#?}", list)))
+                return Err(Box::from(format!(
+                    "these pp_declars were not found in the exported environment: {:#?}",
+                    list
+                )))
             }
         }
     }
-    
-    let name_cache = parser.dag.mk_name_cache();
+
+    let name_cache = parser.dag.mk_name_cache(parser.anon);
     let export_file = crate::util::ExportFile {
         dag: parser.dag,
+        anon: parser.anon,
+        zero: parser.zero,
         declars: parser.declars,
         notations: parser.notations,
         name_cache,
         config: parser.config,
-        mutual_block_sizes: parser.mutual_block_sizes
+        mutual_block_sizes: parser.mutual_block_sizes,
     };
     Ok((export_file, parser.skipped))
 }
 
 impl<'a, R: BufRead> Parser<'a, R> {
-    pub fn new(buf_reader: R, config: Config) -> Self {
+    pub fn new(arena: &'a ArenaRef<'a>, buf_reader: R, config: Config) -> Self {
+        // The export format back-references the anonymous name and level zero as
+        // the 0th element of their kind, so seed them before parsing begins.
+        let mut dag = Dag::new(&config);
+        let anon = NamePtr::global(dag.names.intern(arena, Name::Anon));
+        let zero = LevelPtr::global(dag.levels.intern(arena, Level::Zero));
         Self {
             buf_reader,
             line_num: 0usize,
-            dag: LeanDag::new(&config),
+            arena,
+            dag,
+            anon,
+            zero,
+            names_by_idx: vec![anon],
+            levels_by_idx: vec![zero],
+            exprs_by_idx: Vec::new(),
             declars: new_fx_index_map(),
             notations: new_fx_hash_map(),
             config,
             skipped: Vec::new(),
-            mutual_block_sizes: new_fx_hash_map()
+            mutual_block_sizes: new_fx_hash_map(),
         }
     }
-    
+
+    /// Intern a freshly-built global name, recording it at the next back-ref index.
+    fn push_name(&mut self, expected: BackRef, n: Name<'a>) {
+        if self.dag.names.get(&n).is_some() {
+            panic!("Attempted to insert duplicate Name");
+        }
+        let ptr = NamePtr::global(self.dag.names.insert(self.arena, n));
+        let idx = u32::try_from(self.names_by_idx.len()).unwrap();
+        self.names_by_idx.push(ptr);
+        if expected != BackRef::In(idx) {
+            eprintln!(
+                "Declined: Name back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::In(idx),
+                expected
+            );
+            std::process::exit(2);
+        }
+    }
+
+    fn push_level(&mut self, expected: BackRef, l: Level<'a>) {
+        if self.dag.levels.get(&l).is_some() {
+            panic!("Attempted to insert duplicate Level");
+        }
+        let ptr = LevelPtr::global(self.dag.levels.insert(self.arena, l));
+        let idx = u32::try_from(self.levels_by_idx.len()).unwrap();
+        self.levels_by_idx.push(ptr);
+        if expected != BackRef::Il(idx) {
+            eprintln!(
+                "Declined: Level back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::Il(idx),
+                expected
+            );
+            std::process::exit(2);
+        }
+    }
+
+    fn push_expr(&mut self, expected: BackRef, e: Expr<'a>) {
+        if self.dag.exprs.get(&e).is_some() {
+            panic!("Attempted to insert duplicate Expr");
+        }
+        let ptr = ExprPtr::global(self.dag.exprs.insert(self.arena, e));
+        let idx = u32::try_from(self.exprs_by_idx.len()).unwrap();
+        self.exprs_by_idx.push(ptr);
+        if expected != BackRef::Ie(idx) {
+            eprintln!(
+                "Declined: Expr back-reference mismatch, expected {:?}, found {:?}. Back-refs must be continuous.",
+                BackRef::Ie(idx),
+                expected
+            );
+            std::process::exit(2);
+        }
+    }
+
     fn axiom_permitted(&self, n: NamePtr<'a>) -> bool {
-        self.config.unsafe_permit_all_axioms ||
-            self.config.permitted_axioms.as_ref().map(|v| v.contains(&self.name_to_string(n))).unwrap_or(false)
+        self.config.unsafe_permit_all_axioms
+            || self.config.permitted_axioms.as_ref().map(|v| v.contains(&self.name_to_string(n))).unwrap_or(false)
     }
 
-    fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 {
-        self.dag.exprs.get_index(e.idx()).unwrap().num_loose_bvars()
-    }
+    fn num_loose_bvars(&self, e: ExprPtr<'a>) -> u16 { e.as_ref().num_loose_bvars() }
 
-    fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx()).unwrap().has_fvars() }
+    fn has_fvars(&self, e: ExprPtr<'a>) -> bool { e.as_ref().has_fvars() }
 
-    fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.names.len());
-        out
-    }
+    fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> { self.names_by_idx[idx as usize] }
 
-    fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.levels.len());
-        out
-    }
+    fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> { self.levels_by_idx[idx as usize] }
+
     fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
-        let mut names = Vec::new();
-        for idx in idxs.iter().copied() {
-            assert!(self.dag.names.get_index(idx as usize).is_some());
-            names.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
-        }
-        names
+        idxs.iter().map(|&idx| self.names_by_idx[idx as usize]).collect()
     }
 
     fn get_uparams_ptr(&mut self, name_idxs: &[u32]) -> LevelsPtr<'a> {
-        let mut levels = Vec::new();
+        let mut levels = Vec::with_capacity(name_idxs.len());
         for name_idx in name_idxs.iter().copied() {
             let name_ptr = self.get_name_ptr(name_idx);
             let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
             // Has to already exist
-            let idx = self.dag.levels.get_index_of(&Level::Param(name_ptr, hash)).unwrap();
-            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
+            let r = self.dag.levels.get(&Level::Param(name_ptr, hash)).unwrap();
+            levels.push(LevelPtr::global(r));
         }
-        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
+        LevelsPtr::global(self.dag.uparams.intern(self.arena, &levels))
     }
 
     fn get_levels_ptr(&mut self, idxs: &[u32]) -> LevelsPtr<'a> {
-        let mut levels = Vec::new();
-        for idx in idxs.iter().copied() {
-            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
-        }
-        LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
+        let levels = idxs.iter().map(|&idx| self.levels_by_idx[idx as usize]).collect::<Vec<_>>();
+        LevelsPtr::global(self.dag.uparams.intern(self.arena, &levels))
     }
 
-    fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.exprs.len());
-        out
-    }
+    fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> { self.exprs_by_idx[idx as usize] }
 
     // Used for the axiom whitelist feature.
     fn name_to_string(&self, n: NamePtr<'a>) -> String {
-        match self.dag.names.get_index(n.idx()).copied().unwrap() {
+        match *n.as_ref() {
             Name::Anon => String::new(),
             Name::Str(pfx, sfx, _) => {
                 let mut s = self.name_to_string(pfx);
                 if !s.is_empty() {
                     s.push('.');
                 }
-                s + self.dag.strings.get_index(sfx.idx()).unwrap()
+                s + sfx.as_ref()
             }
             Name::Num(pfx, sfx, _) => {
                 let mut s = self.name_to_string(pfx);
@@ -522,32 +521,23 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn go1(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         use ExportJsonVal::*;
-        let ExportJsonObject {val, i: assigned_idx} = serde_json::from_str::<ExportJsonObject>(line)?;
+        let arena = self.arena;
+        let ExportJsonObject { val, i: assigned_idx } = serde_json::from_str::<ExportJsonObject>(line)?;
         match val {
             Metadata(json_val) => {
                 let _ = check_semver(&json_val)?;
             }
-            NameStr {pre, str} => {
+            NameStr { pre, str } => {
                 let pfx = self.get_name_ptr(pre);
-                let sfx = StringPtr::from(
-                    DagMarker::ExportFile, 
-                    self.dag.strings.insert_full(std::borrow::Cow::Owned(str.to_string())).0
-                );
-
-                let insert_result = {
-                    let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
-                    self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
-                };
-                assigned_idx.unwrap().assert_in(insert_result);
+                let sfx = StringPtr::global(self.dag.strings.intern(arena, Cow::Owned(str.to_string())));
+                let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+                self.push_name(assigned_idx.unwrap(), Name::Str(pfx, sfx, hash));
             }
-            NameNum {pre, i} => {
+            NameNum { pre, i } => {
                 let pfx = self.get_name_ptr(pre);
                 let sfx = i as u64;
-                let insert_result = {
-                    let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
-                    self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
-                };
-                assigned_idx.unwrap().assert_in(insert_result);
+                let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
+                self.push_name(assigned_idx.unwrap(), Name::Num(pfx, sfx, hash));
             }
             NatLit(big_uint) => {
                 if !self.config.nat_extension {
@@ -555,17 +545,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         format!("Nat lit extension disallowed by checker execution config, but export file contains a nat literal {:?}", line)
                     ))
                 }
-                let num_ptr = BigUintPtr::from(DagMarker::ExportFile, self.dag.bignums.as_mut().unwrap().insert_full(big_uint).0);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
-                    self.dag.exprs.insert_full(Expr::NatLit { ptr: num_ptr, hash })
-                };
-                if !self.config.nat_extension {
-                    return Err(Box::<dyn Error>::from(
-                        format!("Nat lit extension disallowed by checker execution config, found {:?}", line)
-                    ))
-                }
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let num_ptr = BigUintPtr::global(self.dag.bignums.as_mut().unwrap().intern(arena, big_uint));
+                let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
+                self.push_expr(assigned_idx.unwrap(), Expr::NatLit { ptr: num_ptr, hash });
             }
             StrLit(cow_str) => {
                 if !self.config.string_extension {
@@ -574,97 +556,71 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     ))
                 }
                 let s = cow_str.to_string();
-                let string_ptr = StringPtr::from(
-                    DagMarker::ExportFile,
-                    self.dag.strings.insert_full(crate::util::CowStr::Owned(s)).0
-                );
-                let insert_result = {
-                    let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
-                    self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let string_ptr = StringPtr::global(self.dag.strings.intern(arena, crate::util::CowStr::Owned(s)));
+                let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
+                self.push_expr(assigned_idx.unwrap(), Expr::StringLit { ptr: string_ptr, hash });
             }
             LevelSucc(l) => {
                 let l = self.get_level_ptr(l);
-                let insert_result = {
-                    let hash = hash64!(crate::level::SUCC_HASH, l);
-                    self.dag.levels.insert_full(Level::Succ(l, hash))
-                };
-                assigned_idx.unwrap().assert_il(insert_result);
+                let hash = hash64!(crate::level::SUCC_HASH, l);
+                self.push_level(assigned_idx.unwrap(), Level::Succ(l, hash));
             }
             LevelMax([l, r]) => {
                 let l = self.get_level_ptr(l);
                 let r = self.get_level_ptr(r);
-                let insert_result = {
-                    let hash = hash64!(crate::level::MAX_HASH, l, r);
-                    self.dag.levels.insert_full(Level::Max(l, r, hash))
-                };
-                assigned_idx.unwrap().assert_il(insert_result);
+                let hash = hash64!(crate::level::MAX_HASH, l, r);
+                self.push_level(assigned_idx.unwrap(), Level::Max(l, r, hash));
             }
             LevelIMax([l, r]) => {
                 let l = self.get_level_ptr(l);
                 let r = self.get_level_ptr(r);
-                let insert_result = {
-                    let hash = hash64!(crate::level::IMAX_HASH, l, r);
-                    self.dag.levels.insert_full(Level::IMax(l, r, hash))
-                };
-                assigned_idx.unwrap().assert_il(insert_result);
+                let hash = hash64!(crate::level::IMAX_HASH, l, r);
+                self.push_level(assigned_idx.unwrap(), Level::IMax(l, r, hash));
             }
             LevelParam(var_idx) => {
-                 let n = self.get_name_ptr(var_idx);
-                 let insert_result = {
-                     let hash = hash64!(crate::level::PARAM_HASH, n);
-                     self.dag.levels.insert_full(Level::Param(n, hash))
-                 };
-                assigned_idx.unwrap().assert_il(insert_result);
+                let n = self.get_name_ptr(var_idx);
+                let hash = hash64!(crate::level::PARAM_HASH, n);
+                self.push_level(assigned_idx.unwrap(), Level::Param(n, hash));
             }
             ExprSort(level) => {
                 let level = self.get_level_ptr(level);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::SORT_HASH, level);
-                    self.dag.exprs.insert_full(Expr::Sort { level, hash })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let hash = hash64!(crate::expr::SORT_HASH, level);
+                self.push_expr(assigned_idx.unwrap(), Expr::Sort { level, hash });
             }
-            ExprMData {..} => {
+            ExprMData { .. } => {
                 panic!("Expr.mdata not supported");
             }
-            ExprConst {name, levels} => {
+            ExprConst { name, levels } => {
                 let name = self.get_name_ptr(name);
                 let levels = self.get_levels_ptr(&levels);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::CONST_HASH, name, levels);
-                    self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let hash = hash64!(crate::expr::CONST_HASH, name, levels);
+                self.push_expr(assigned_idx.unwrap(), Expr::Const { name, levels, hash });
             }
-            ExprApp {fun, arg} => {
+            ExprApp { fun, arg } => {
                 let fun = self.get_expr_ptr(fun);
                 let arg = self.get_expr_ptr(arg);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::APP_HASH, fun, arg);
-                    let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
-                    let locals = self.has_fvars(fun) || self.has_fvars(arg);
-                    self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let hash = hash64!(crate::expr::APP_HASH, fun, arg);
+                let num_bvars = self.num_loose_bvars(fun).max(self.num_loose_bvars(arg));
+                let locals = self.has_fvars(fun) || self.has_fvars(arg);
+                self.push_expr(
+                    assigned_idx.unwrap(),
+                    Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash },
+                );
             }
             ExprBVar(dbj_idx) => {
-                let insert_result = {
-                    let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
-                    self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
+                self.push_expr(assigned_idx.unwrap(), Expr::Var { dbj_idx, hash });
             }
-            ExprLambda {binder_name, binder_type, binder_info, body} => {
+            ExprLambda { binder_name, binder_type, binder_info, body } => {
                 let binder_name = self.get_name_ptr(binder_name);
                 let binder_type = self.get_expr_ptr(binder_type);
                 let body = self.get_expr_ptr(body);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_info, binder_type, body);
-                    let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
-                    let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Lambda {
+                let hash = hash64!(crate::expr::LAMBDA_HASH, binder_name, binder_info, binder_type, body);
+                let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+                let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                self.push_expr(
+                    assigned_idx.unwrap(),
+                    Expr::Lambda {
                         binder_name,
                         binder_style: binder_info,
                         binder_type,
@@ -672,19 +628,19 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         num_loose_bvars: num_bvars,
                         has_fvars: locals,
                         hash,
-                    })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                    },
+                );
             }
-            ExprPi {binder_name, binder_type, binder_info, body} => {
+            ExprPi { binder_name, binder_type, binder_info, body } => {
                 let binder_name = self.get_name_ptr(binder_name);
                 let binder_type = self.get_expr_ptr(binder_type);
                 let body = self.get_expr_ptr(body);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_info, binder_type, body);
-                    let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
-                    let locals = self.has_fvars(binder_type) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Pi {
+                let hash = hash64!(crate::expr::PI_HASH, binder_name, binder_info, binder_type, body);
+                let num_bvars = self.num_loose_bvars(binder_type).max(self.num_loose_bvars(body).saturating_sub(1));
+                let locals = self.has_fvars(binder_type) || self.has_fvars(body);
+                self.push_expr(
+                    assigned_idx.unwrap(),
+                    Expr::Pi {
                         binder_name,
                         binder_style: binder_info,
                         binder_type,
@@ -692,22 +648,22 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         num_loose_bvars: num_bvars,
                         has_fvars: locals,
                         hash,
-                    })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                    },
+                );
             }
-            ExprLet {name, ty, value, body, nondep} => {
+            ExprLet { name, ty, value, body, nondep } => {
                 let binder_name = self.get_name_ptr(name);
                 let binder_type = self.get_expr_ptr(ty);
                 let val = self.get_expr_ptr(value);
                 let body = self.get_expr_ptr(body);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
-                    let num_bvars = self
-                        .num_loose_bvars(binder_type)
-                        .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
-                    let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
-                    self.dag.exprs.insert_full(Expr::Let {
+                let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
+                let num_bvars = self
+                    .num_loose_bvars(binder_type)
+                    .max(self.num_loose_bvars(val).max(self.num_loose_bvars(body).saturating_sub(1)));
+                let locals = self.has_fvars(binder_type) || self.has_fvars(val) || self.has_fvars(body);
+                self.push_expr(
+                    assigned_idx.unwrap(),
+                    Expr::Let {
                         binder_name,
                         binder_type,
                         val,
@@ -715,30 +671,22 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         num_loose_bvars: num_bvars,
                         has_fvars: locals,
                         hash,
-                        nondep
-                    })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                        nondep,
+                    },
+                );
             }
-            ExprProj {type_name, idx, structure: struct_} => {
+            ExprProj { type_name, idx, structure: struct_ } => {
                 let ty_name = self.get_name_ptr(type_name);
                 let structure = self.get_expr_ptr(struct_);
-                let insert_result = {
-                    let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
-                    let num_bvars = self.num_loose_bvars(structure);
-                    let locals = self.has_fvars(structure);
-                    self.dag.exprs.insert_full(Expr::Proj {
-                        ty_name,
-                        idx,
-                        structure,
-                        num_loose_bvars: num_bvars,
-                        has_fvars: locals,
-                        hash,
-                    })
-                };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                let hash = hash64!(crate::expr::PROJ_HASH, ty_name, idx, structure);
+                let num_bvars = self.num_loose_bvars(structure);
+                let locals = self.has_fvars(structure);
+                self.push_expr(
+                    assigned_idx.unwrap(),
+                    Expr::Proj { ty_name, idx, structure, num_loose_bvars: num_bvars, has_fvars: locals, hash },
+                );
             }
-            Axiom {name, ty, uparams, is_unsafe} => {
+            Axiom { name, ty, uparams, is_unsafe } => {
                 assert!(!is_unsafe);
                 let name = self.get_name_ptr(name);
                 let uparams = self.get_uparams_ptr(&uparams);
@@ -756,7 +704,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     }
                 }
             }
-            Defn {name, ty, uparams, value, hint, safety} => {
+            Defn { name, ty, uparams, value, hint, safety } => {
                 assert!(!matches!(safety, DefinitionSafety::Unsafe | DefinitionSafety::Partial));
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
@@ -766,7 +714,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let definition = Declar::Definition { info, val, hint };
                 assert!(self.declars.insert(name, definition).is_none());
             }
-            Thm {name, ty, uparams, value} => {
+            Thm { name, ty, uparams, value } => {
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
                 let val = self.get_expr_ptr(value);
@@ -775,7 +723,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let theorem = Declar::Theorem { info, val };
                 assert!(self.declars.insert(name, theorem).is_none());
             }
-            Opaque {name, ty, uparams, value, is_unsafe} => {
+            Opaque { name, ty, uparams, value, is_unsafe } => {
                 assert!(!is_unsafe);
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
@@ -785,7 +733,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let definition = Declar::Opaque { info, val };
                 assert!(self.declars.insert(name, definition).is_none());
             }
-            Quot {name, ty, uparams, ..} => {
+            Quot { name, ty, uparams, .. } => {
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
                 let uparams = self.get_uparams_ptr(&uparams);
@@ -793,17 +741,30 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let quot = Declar::Quot { info };
                 assert!(self.declars.insert(name, quot).is_none());
             }
-            Inductive {ind_vals, ctor_vals, rec_vals} => {
+            Inductive { ind_vals, ctor_vals, rec_vals } => {
                 let block_start = self.declars.len();
                 let block_size = ind_vals.len() + ctor_vals.len() + rec_vals.len();
-                for IndInfo {name, ty, uparams, all, ctors, is_rec, num_nested, num_params, num_indices, is_unsafe, ..} in ind_vals {
+                for IndInfo {
+                    name,
+                    ty,
+                    uparams,
+                    all,
+                    ctors,
+                    is_rec,
+                    num_nested,
+                    num_params,
+                    num_indices,
+                    is_unsafe,
+                    ..
+                } in ind_vals
+                {
                     assert!(!is_unsafe);
                     let name = self.get_name_ptr(name);
                     self.mutual_block_sizes.insert(name, (block_start, block_size));
                     let uparams = self.get_uparams_ptr(&uparams);
                     let ty = self.get_expr_ptr(ty);
-                    let all_ind_names =  Arc::from(self.get_names(&all)); 
-                    let all_ctor_names = Arc::from(self.get_names(&ctors)); 
+                    let all_ind_names = Arc::from(self.get_names(&all));
+                    let all_ctor_names = Arc::from(self.get_names(&ctors));
                     let inductive = Declar::Inductive(InductiveData {
                         info: DeclarInfo { name, uparams, ty },
                         is_recursive: is_rec,
@@ -815,7 +776,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     });
                     assert!(self.declars.insert(name, inductive).is_none());
                 }
-                for Constructor {name, uparams, ty, is_unsafe, induct, cidx, num_params, num_fields, ..}  in ctor_vals {
+                for Constructor { name, uparams, ty, is_unsafe, induct, cidx, num_params, num_fields, .. } in ctor_vals
+                {
                     assert!(!is_unsafe);
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
@@ -832,19 +794,34 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     });
                     assert!(self.declars.insert(name, ctor).is_none());
                 }
-                for Recursor {name, uparams, ty, rules, is_unsafe, num_params, num_indices, num_motives, num_minors, k, all, ..} in rec_vals {
+                for Recursor {
+                    name,
+                    uparams,
+                    ty,
+                    rules,
+                    is_unsafe,
+                    num_params,
+                    num_indices,
+                    num_motives,
+                    num_minors,
+                    k,
+                    all,
+                    ..
+                } in rec_vals
+                {
                     assert!(!is_unsafe);
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
                     let uparams = self.get_uparams_ptr(&uparams);
                     let info = DeclarInfo { name, ty, uparams };
-                    let rules = rules.into_iter().map(|RecursorRule {rhs, ctor, nfields}| 
-                        crate::env::RecRule {
+                    let rules = rules
+                        .into_iter()
+                        .map(|RecursorRule { rhs, ctor, nfields }| crate::env::RecRule {
                             val: self.get_expr_ptr(rhs),
                             ctor_name: self.get_name_ptr(ctor),
-                            ctor_telescope_size_wo_params: nfields
-                        }
-                    ).collect::<Vec<_>>();
+                            ctor_telescope_size_wo_params: nfields,
+                        })
+                        .collect::<Vec<_>>();
                     let all_inductives = self.get_names(&all);
                     let recursor = Declar::Recursor(RecursorData {
                         info,
@@ -864,10 +841,11 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 }
 
-/// Needed because the lean4export format serializes nat literals as strings: 
+/// Needed because the lean4export format serializes nat literals as strings:
 /// https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186
 fn deserialize_biguint_from_string<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
-where D: Deserializer<'de> {
+where
+    D: Deserializer<'de>, {
     use std::str::FromStr;
     struct BigUintStringVisitor;
 
@@ -878,11 +856,15 @@ where D: Deserializer<'de> {
             f.write_str("a string containing a natural number")
         }
 
-        fn visit_str<E>(self, v: &str) -> Result<BigUint, E> where E: DeError {
+        fn visit_str<E>(self, v: &str) -> Result<BigUint, E>
+        where
+            E: DeError, {
             BigUint::from_str(v).map_err(|e| E::custom(format!("invalid BigUint decimal string: {e}")))
         }
 
-        fn visit_string<E>(self, v: String) -> Result<BigUint, E> where E: DeError {
+        fn visit_string<E>(self, v: String) -> Result<BigUint, E>
+        where
+            E: DeError, {
             self.visit_str(&v)
         }
     }
@@ -896,22 +878,14 @@ mod semver_tests {
         FileMeta {
             lean: LeanMeta { version: Cow::Borrowed(""), githash: Cow::Borrowed("") },
             exporter: ExporterMeta { version: Cow::Borrowed(""), name: Cow::Borrowed("") },
-            format :FormatMeta { version: Cow::Borrowed(s) }
+            format: FormatMeta { version: Cow::Borrowed(s) },
         }
     }
 
     #[test]
     fn test_ng() {
-        let too_small = [
-            "2.9.9",
-            "2.9.99",
-        ];
-        let too_big = [
-            "4.0.0",
-            "4.1.0",
-            "3.2.0",
-            "3.2.1",
-        ];
+        let too_small = ["2.9.9", "2.9.99"];
+        let too_big = ["4.0.0", "4.1.0", "3.2.0", "3.2.1"];
 
         for v in too_small {
             assert!(check_semver(&mk_meta(v)).is_err())
@@ -923,10 +897,7 @@ mod semver_tests {
 
     #[test]
     fn test_ok() {
-        let ok = [
-            "3.1.0",
-            "3.1.9",
-        ];
+        let ok = ["3.1.0", "3.1.9"];
         for v in ok {
             assert!(check_semver(&mk_meta(v)).is_ok())
         }

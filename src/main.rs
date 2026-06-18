@@ -1,6 +1,7 @@
 use nanoda_lib::util::Config;
 use std::error::Error;
 use std::path::Path;
+use stumpalo::Arena;
 
 fn main() -> Result<(), MainError> {
     let mut args = std::env::args();
@@ -23,7 +24,9 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     let cfg = Config::try_from(config_path)?;
     // Make sure the target pretty printer destination is accessible before doing any real work.
     let mut pp_destination = cfg.get_pp_destination()?;
-    let (export_file, skipped_axioms) = cfg.to_export_file()?;
+    // The global arena owns all interned export-file items; it must outlive `export_file`.
+    let global_arena = Arena::new();
+    let (export_file, skipped_axioms) = cfg.to_export_file(global_arena.as_arena_ref())?;
     // Check the environment
     export_file.check_all_declars();
     // Pretty print as necessary
@@ -33,8 +36,11 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
             if skipped_axioms.is_empty() {
                 Ok(Some(format!("Checked {} declarations with no errors", export_file.declars.len())))
             } else {
-                Ok(Some(format!("Checked {} declarations with no errors, skipping exported but unpermitted axioms {:?}",
-                export_file.declars.len(), skipped_axioms)))
+                Ok(Some(format!(
+                    "Checked {} declarations with no errors, skipping exported but unpermitted axioms {:?}",
+                    export_file.declars.len(),
+                    skipped_axioms
+                )))
             }
         } else {
             Ok(Some(format!(

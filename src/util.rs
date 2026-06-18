@@ -1,4 +1,4 @@
-use crate::env::{DeclarMap, Env, NotationMap, EnvLimit};
+use crate::env::{DeclarMap, Env, EnvLimit, NotationMap};
 use crate::expr::{BinderStyle, Expr, FVarId};
 use crate::level::Level;
 use crate::name::Name;
@@ -6,143 +6,390 @@ use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
-use indexmap::{Equivalent, IndexMap, IndexSet};
-use indexmap::map::Entry as IndexMapEntry;
+use hashbrown::HashTable;
+use indexmap::IndexMap;
 use num_bigint::BigUint;
-use num_traits::{ Pow, identities::Zero };
 use num_integer::Integer;
+use num_traits::{identities::Zero, Pow};
 use rustc_hash::FxHasher;
+use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::OpenOptions;
-use std::hash::BuildHasherDefault;
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use serde::Deserialize;
+use std::ptr::NonNull;
+use stumpalo::{Arena, ArenaRef};
 
 pub(crate) const fn default_true() -> bool { true }
 
-pub(crate) type UniqueIndexSet<A> = IndexSet<A, BuildHasherDefault<UniqueHasher>>;
-pub(crate) type UniqueIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<UniqueHasher>>;
-pub(crate) type FxIndexSet<A> = IndexSet<A, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
 pub(crate) type UniqueHashMap<K, V> = HashMap<K, V, BuildHasherDefault<UniqueHasher>>;
 
-#[derive(Debug)]
-pub struct ExprIndexSet<'a> {
-    map: UniqueIndexMap<Expr<'a>, ()>,
-}
-
-impl<'a> ExprIndexSet<'a> {
-    fn new() -> Self { Self { map: UniqueIndexMap::with_hasher(Default::default()) } }
-
-    pub(crate) fn insert_full(&mut self, value: Expr<'a>) -> (usize, bool) {
-        let (idx, old) = self.map.insert_full(value, ());
-        (idx, old.is_none())
-    }
-
-    pub(crate) fn get_index(&self, idx: usize) -> Option<&Expr<'a>> { self.map.get_index(idx).map(|(expr, &())| expr) }
-
-    pub(crate) fn get_index_of<Q>(&self, value: &Q) -> Option<usize>
-    where
-        Q: ?Sized + std::hash::Hash + Equivalent<Expr<'a>>,
-    {
-        self.map.get_index_of(value)
-    }
-
-    pub(crate) fn len(&self) -> usize { self.map.len() }
-
-    pub(crate) fn entry(&mut self, value: Expr<'a>) -> IndexMapEntry<'_, Expr<'a>, ()> { self.map.entry(value) }
-}
-
-/// An integer pointer to a kernel item, which can be in either the export file's
-/// persistent dag, or the type checking context's temporary dag. The integer pointer
-/// is currently 32 bits, which comfortably accommodates mathlib.
-///
-/// Bit 31 encodes the DagMarker (0 = ExportFile, 1 = TcCtx).
-/// Bits 0-30 hold the index into the appropriate dag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Ptr<A> {
-    raw: u32,
-    ph: PhantomData<A>,
-}
-
-/// Bit 31 set indicates TcCtx; cleared indicates ExportFile.
-const TC_BIT: u32 = 1 << 31;
-/// Mask for the 31-bit index stored in bits 0-30.
-const IDX_MASK: u32 = !TC_BIT;
-
-impl<A> Ptr<A> {
-    pub(crate) fn from(dag_marker: DagMarker, idx: usize) -> Self {
-        let idx_u32 = u32::try_from(idx).unwrap();
-        assert!(idx_u32 & TC_BIT == 0, "index {idx} exceeds 31-bit capacity");
-        let tag = match dag_marker {
-            DagMarker::ExportFile => 0,
-            DagMarker::TcCtx => TC_BIT,
-        };
-        Self { raw: tag | idx_u32, ph: PhantomData }
-    }
-
-    pub(crate) fn idx(&self) -> usize { (self.raw & IDX_MASK) as usize }
-
-    pub(crate) fn dag_marker(&self) -> DagMarker {
-        if self.raw & TC_BIT == 0 { DagMarker::ExportFile } else { DagMarker::TcCtx }
-    }
-
-    pub(crate) fn get_hash(&self) -> u64 { self.raw as u64 }
-}
-
-impl<A> std::hash::Hash for Ptr<A> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.raw as u64) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DagMarker {
-    ExportFile,
-    TcCtx,
-}
-
 pub(crate) type CowStr<'a> = Cow<'a, str>;
-pub type StringPtr<'a> = Ptr<&'a CowStr<'a>>;
-pub type LevelsPtr<'a> = Ptr<&'a Arc<[LevelPtr<'a>]>>;
-pub type NamePtr<'a> = Ptr<&'a Name<'a>>;
-pub type LevelPtr<'a> = Ptr<&'a Level<'a>>;
-pub type ExprPtr<'a> = Ptr<&'a Expr<'a>>;
-pub type BigUintPtr<'a> = Ptr<&'a BigUint>;
 
-fn is_expr_local_only(e: Expr<'_>) -> bool {
-    match e {
-        Expr::StringLit { ptr, .. } => ptr.dag_marker() == DagMarker::TcCtx,
-        Expr::NatLit { ptr, .. } => ptr.dag_marker() == DagMarker::TcCtx,
-        Expr::Proj { ty_name, structure, .. } =>
-            ty_name.dag_marker() == DagMarker::TcCtx || structure.dag_marker() == DagMarker::TcCtx,
+// --------------------------------------------------------------------------
+// Tagged interning pointers.
+//
+// Each kernel item (`Name`, `Level`, `Expr`, string, bignum, level-slice) is
+// allocated once into a bump arena and referred to by a real `&'a T` reference,
+// hash-consed for structural uniqueness. The pointer carries a 1-bit tag in its
+// low bit (strict-provenance): 0 = global (export file / persistent) arena,
+// 1 = local (per-typecheck) arena. This is the direct relocation of the former
+// `TC_BIT` marker from a synthetic 32-bit index to a real pointer.
+//
+// Pointer equality / hashing are by *address*; because items are interned,
+// address identity == structural identity. The arenas never move allocations,
+// so addresses are stable. Items in the global arena outlive items in the local
+// arena, so a global `&'g T` coerces down to the local lifetime via covariance.
+// --------------------------------------------------------------------------
+
+// The `top-byte-ignore` feature relies on AArch64 hardware; reject it elsewhere.
+#[cfg(all(feature = "top-byte-ignore", not(target_arch = "aarch64")))]
+compile_error!("the `top-byte-ignore` feature requires the aarch64 target architecture (Top-Byte-Ignore)");
+
+/// The bit set in an interning pointer's address to mark it as belonging to the
+/// local (per-typecheck) arena. With `top-byte-ignore` the tag lives in the top
+/// byte, which AArch64 ignores on dereference (so `as_ref` needs no masking);
+/// otherwise it lives in the low bit, which is masked off on every dereference.
+#[cfg(feature = "top-byte-ignore")]
+const PTR_TAG: usize = 1 << 56;
+#[cfg(not(feature = "top-byte-ignore"))]
+const PTR_TAG: usize = 1;
+
+/// A trait providing the precomputed structural hash used for hash-cons bucketing.
+pub(crate) trait StructHash {
+    fn struct_hash(&self) -> u64;
+}
+impl<T: Hash + ?Sized> StructHash for T {
+    #[inline]
+    fn struct_hash(&self) -> u64 {
+        let mut hasher = FxHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+macro_rules! tagged_ptr {
+    ($(#[$m:meta])* $name:ident, $pointee:ty) => {
+        $(#[$m])*
+        pub struct $name<'a> {
+            ptr: NonNull<$pointee>,
+            _ph: PhantomData<&'a $pointee>,
+        }
+
+        impl<'a> Clone for $name<'a> {
+            #[inline]
+            fn clone(&self) -> Self { *self }
+        }
+        impl<'a> Copy for $name<'a> {}
+
+        // A tagged interning pointer is logically a shared `&'a $pointee`; the
+        // `NonNull` field merely suppresses the auto traits, so re-assert them.
+        unsafe impl<'a> Send for $name<'a> {}
+        unsafe impl<'a> Sync for $name<'a> {}
+
+        impl<'a> $name<'a> {
+            /// Wrap a reference into the global (persistent) arena (tag 0).
+            #[inline]
+            pub(crate) fn global(r: &'a $pointee) -> Self {
+                Self { ptr: NonNull::from(r), _ph: PhantomData }
+            }
+
+            /// Wrap a reference into the local (per-typecheck) arena, setting the
+            /// tag bit while preserving pointer provenance.
+            #[inline]
+            pub(crate) fn local(r: &'a $pointee) -> Self {
+                let tagged = NonNull::from(r).as_ptr().map_addr(|a| a | PTR_TAG);
+                Self { ptr: unsafe { NonNull::new_unchecked(tagged) }, _ph: PhantomData }
+            }
+
+            /// `true` if this pointer refers to the local (TcCtx) arena.
+            #[inline]
+            pub(crate) fn is_local(self) -> bool { self.ptr.as_ptr().addr() & PTR_TAG != 0 }
+
+            /// Recover the underlying reference. Under `top-byte-ignore` the tag
+            /// lives in the top byte, which AArch64 ignores on dereference, so no
+            /// masking is needed; otherwise the low tag bit is masked off.
+            #[cfg(feature = "top-byte-ignore")]
+            #[inline]
+            pub(crate) fn as_ref(self) -> &'a $pointee { unsafe { &*self.ptr.as_ptr() } }
+            #[cfg(not(feature = "top-byte-ignore"))]
+            #[inline]
+            pub(crate) fn as_ref(self) -> &'a $pointee {
+                unsafe { &*self.ptr.as_ptr().map_addr(|a| a & !PTR_TAG) }
+            }
+
+            /// The (tagged) address, used as a cheap identity hash for caches.
+            #[inline]
+            #[allow(dead_code)]
+            pub(crate) fn get_hash(&self) -> u64 { self.ptr.as_ptr().addr() as u64 }
+        }
+
+        impl<'a> std::ops::Deref for $name<'a> {
+            type Target = $pointee;
+            #[inline]
+            fn deref(&self) -> &$pointee { self.as_ref() }
+        }
+
+        impl<'a> PartialEq for $name<'a> {
+            #[inline]
+            fn eq(&self, o: &Self) -> bool { self.ptr.as_ptr().addr() == o.ptr.as_ptr().addr() }
+        }
+        impl<'a> Eq for $name<'a> {}
+
+        impl<'a> std::hash::Hash for $name<'a> {
+            #[inline]
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u64(self.ptr.as_ptr().addr() as u64)
+            }
+        }
+
+        impl<'a> std::fmt::Debug for $name<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}({:p}{})", stringify!($name), self.as_ref(), if self.is_local() { ",L" } else { "" })
+            }
+        }
+    };
+}
+
+tagged_ptr!(StringPtr, CowStr<'a>);
+tagged_ptr!(NamePtr, Name<'a>);
+tagged_ptr!(LevelPtr, Level<'a>);
+tagged_ptr!(ExprPtr, Expr<'a>);
+tagged_ptr!(BigUintPtr, BigUint);
+
+// Compile-time guarantee that the low bit is free for tagging (low-bit encoding only;
+// the `top-byte-ignore` encoding tags the top byte and needs no alignment guarantee).
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<Expr<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<Name<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<Level<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<CowStr<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<BigUint>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<LevelPtr<'static>>() >= 2);
+
+/// An interned sequence of `Level` pointers (the universe parameters of a
+/// `Const`), stored as a tagged fat pointer into an arena.
+pub struct LevelsPtr<'a> {
+    ptr: NonNull<LevelPtr<'a>>,
+    len: usize,
+    _ph: PhantomData<&'a [LevelPtr<'a>]>,
+}
+
+impl<'a> Clone for LevelsPtr<'a> {
+    #[inline]
+    fn clone(&self) -> Self { *self }
+}
+impl<'a> Copy for LevelsPtr<'a> {}
+unsafe impl<'a> Send for LevelsPtr<'a> {}
+unsafe impl<'a> Sync for LevelsPtr<'a> {}
+
+impl<'a> LevelsPtr<'a> {
+    #[inline]
+    pub(crate) fn global(s: &'a [LevelPtr<'a>]) -> Self {
+        let ptr = unsafe { NonNull::new_unchecked(s.as_ptr() as *mut LevelPtr<'a>) };
+        Self { ptr, len: s.len(), _ph: PhantomData }
+    }
+    #[inline]
+    pub(crate) fn local(s: &'a [LevelPtr<'a>]) -> Self {
+        let raw = (s.as_ptr() as *mut LevelPtr<'a>).map_addr(|a| a | PTR_TAG);
+        Self { ptr: unsafe { NonNull::new_unchecked(raw) }, len: s.len(), _ph: PhantomData }
+    }
+    #[inline]
+    pub(crate) fn is_local(self) -> bool { self.ptr.as_ptr().addr() & PTR_TAG != 0 }
+    #[cfg(feature = "top-byte-ignore")]
+    #[inline]
+    pub(crate) fn as_ref(self) -> &'a [LevelPtr<'a>] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
+    }
+    #[cfg(not(feature = "top-byte-ignore"))]
+    #[inline]
+    pub(crate) fn as_ref(self) -> &'a [LevelPtr<'a>] {
+        let p = self.ptr.as_ptr().map_addr(|a| a & !PTR_TAG);
+        unsafe { std::slice::from_raw_parts(p, self.len) }
+    }
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn get_hash(&self) -> u64 { self.ptr.as_ptr().addr() as u64 }
+}
+
+impl<'a> std::ops::Deref for LevelsPtr<'a> {
+    type Target = [LevelPtr<'a>];
+    #[inline]
+    fn deref(&self) -> &[LevelPtr<'a>] { self.as_ref() }
+}
+impl<'a> PartialEq for LevelsPtr<'a> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool { self.ptr.as_ptr().addr() == o.ptr.as_ptr().addr() && self.len == o.len }
+}
+impl<'a> Eq for LevelsPtr<'a> {}
+impl<'a> std::hash::Hash for LevelsPtr<'a> {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.ptr.as_ptr().addr() as u64) }
+}
+impl<'a> std::fmt::Debug for LevelsPtr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "LevelsPtr({:?})", self.as_ref()) }
+}
+
+// --------------------------------------------------------------------------
+// Hash-cons interners.
+//
+// Each interner stores canonical `&'a T` references in a `hashbrown::HashTable`
+// keyed by `T`'s structural hash, with shallow (address-based) structural
+// equality. A lookup with a probe whose lifetime `'b` is no longer than `'a`
+// coerces stored `&'a T` down to `&'b T` for comparison ("meet to the local
+// lifetime"), enabling cross-arena dedup with no overhead.
+// --------------------------------------------------------------------------
+
+macro_rules! interner {
+    ($name:ident, $pointee:ident) => {
+        pub(crate) struct $name<'a> {
+            table: HashTable<&'a $pointee<'a>>,
+        }
+        impl<'a> $name<'a> {
+            fn new() -> Self { Self { table: HashTable::new() } }
+            #[allow(dead_code)]
+            pub(crate) fn len(&self) -> usize { self.table.len() }
+
+            /// Probe by a value whose lifetime `'b` is no longer than `'a`.
+            pub(crate) fn get<'b>(&self, v: &$pointee<'b>) -> Option<&'a $pointee<'a>>
+            where
+                'a: 'b, {
+                let hash = v.struct_hash();
+                self.table
+                    .find(hash, |stored| {
+                        let s: &$pointee<'b> = stored;
+                        s == v
+                    })
+                    .copied()
+            }
+
+            /// Allocate a fresh value (assumed absent) and record it.
+            pub(crate) fn insert(&mut self, arena: &ArenaRef<'a>, v: $pointee<'a>) -> &'a $pointee<'a> {
+                let hash = v.struct_hash();
+                let r: &'a $pointee<'a> = arena.alloc(v);
+                self.table.insert_unique(hash, r, |s| s.struct_hash());
+                r
+            }
+
+            /// get-or-insert; dedups within this arena (used by the parser).
+            #[allow(dead_code)]
+            pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: $pointee<'a>) -> &'a $pointee<'a> {
+                if let Some(r) = self.get(&v) {
+                    return r;
+                }
+                self.insert(arena, v)
+            }
+        }
+    };
+}
+
+interner!(NameInterner, Name);
+interner!(LevelInterner, Level);
+interner!(ExprInterner, Expr);
+interner!(StringInterner, CowStr);
+
+pub(crate) struct BigUintInterner<'a> {
+    table: HashTable<&'a BigUint>,
+}
+impl<'a> BigUintInterner<'a> {
+    fn new() -> Self { Self { table: HashTable::new() } }
+    pub(crate) fn get(&self, v: &BigUint) -> Option<&'a BigUint> {
+        let hash = v.struct_hash();
+        self.table.find(hash, |stored| **stored == *v).copied()
+    }
+    pub(crate) fn insert(&mut self, arena: &ArenaRef<'a>, v: BigUint) -> &'a BigUint {
+        let hash = v.struct_hash();
+        let r: &'a BigUint = arena.alloc(v);
+        self.table.insert_unique(hash, r, |s| s.struct_hash());
+        r
+    }
+    pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: BigUint) -> &'a BigUint {
+        if let Some(r) = self.get(&v) {
+            return r;
+        }
+        self.insert(arena, v)
+    }
+}
+
+pub(crate) struct LevelsInterner<'a> {
+    table: HashTable<&'a [LevelPtr<'a>]>,
+}
+impl<'a> LevelsInterner<'a> {
+    fn new() -> Self { Self { table: HashTable::new() } }
+    pub(crate) fn get<'b>(&self, v: &[LevelPtr<'b>]) -> Option<&'a [LevelPtr<'a>]>
+    where
+        'a: 'b, {
+        let hash = v.struct_hash();
+        self.table
+            .find(hash, |stored| {
+                let s: &[LevelPtr<'b>] = stored;
+                s == v
+            })
+            .copied()
+    }
+    pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: &[LevelPtr<'a>]) -> &'a [LevelPtr<'a>] {
+        if let Some(r) = self.get(v) {
+            return r;
+        }
+        let hash = v.struct_hash();
+        let r: &'a [LevelPtr<'a>] = arena.alloc_slice_copy(v);
+        self.table.insert_unique(hash, r, |s| s.struct_hash());
+        r
+    }
+}
+
+/// The interning storage for one arena (global or local).
+pub struct Dag<'a> {
+    pub(crate) names: NameInterner<'a>,
+    pub(crate) levels: LevelInterner<'a>,
+    pub(crate) exprs: ExprInterner<'a>,
+    pub(crate) uparams: LevelsInterner<'a>,
+    pub(crate) strings: StringInterner<'a>,
+    pub(crate) bignums: Option<BigUintInterner<'a>>,
+}
+
+impl<'a> Dag<'a> {
+    pub(crate) fn new(config: &Config) -> Self {
+        Self {
+            names: NameInterner::new(),
+            levels: LevelInterner::new(),
+            exprs: ExprInterner::new(),
+            uparams: LevelsInterner::new(),
+            strings: StringInterner::new(),
+            bignums: if config.nat_extension { Some(BigUintInterner::new()) } else { None },
+        }
+    }
+}
+
+fn is_expr_local_only(e: &Expr<'_>) -> bool {
+    match *e {
+        Expr::StringLit { ptr, .. } => ptr.is_local(),
+        Expr::NatLit { ptr, .. } => ptr.is_local(),
+        Expr::Proj { ty_name, structure, .. } => ty_name.is_local() || structure.is_local(),
         Expr::Var { .. } => false,
-        Expr::Sort { level, .. } => level.dag_marker() == DagMarker::TcCtx,
-        Expr::Const { name, levels, .. } => name.dag_marker() == DagMarker::TcCtx || levels.dag_marker() == DagMarker::TcCtx,
-        Expr::App { fun, arg, .. } => fun.dag_marker() == DagMarker::TcCtx || arg.dag_marker() == DagMarker::TcCtx,
-        Expr::Pi { binder_name, binder_type, body, .. } => {
-            binder_name.dag_marker() == DagMarker::TcCtx
-                || binder_type.dag_marker() == DagMarker::TcCtx
-                || body.dag_marker() == DagMarker::TcCtx
-        }
-        Expr::Lambda { binder_name, binder_type, body, .. } => {
-            binder_name.dag_marker() == DagMarker::TcCtx
-                || binder_type.dag_marker() == DagMarker::TcCtx
-                || body.dag_marker() == DagMarker::TcCtx
-        }
-        Expr::Let { binder_name, binder_type, val, body, .. } => {
-            binder_name.dag_marker() == DagMarker::TcCtx
-                || binder_type.dag_marker() == DagMarker::TcCtx
-                || val.dag_marker() == DagMarker::TcCtx
-                || body.dag_marker() == DagMarker::TcCtx
-        }
+        Expr::Sort { level, .. } => level.is_local(),
+        Expr::Const { name, levels, .. } => name.is_local() || levels.is_local(),
+        Expr::App { fun, arg, .. } => fun.is_local() || arg.is_local(),
+        Expr::Pi { binder_name, binder_type, body, .. } =>
+            binder_name.is_local() || binder_type.is_local() || body.is_local(),
+        Expr::Lambda { binder_name, binder_type, body, .. } =>
+            binder_name.is_local() || binder_type.is_local() || body.is_local(),
+        Expr::Let { binder_name, binder_type, val, body, .. } =>
+            binder_name.is_local() || binder_type.is_local() || val.is_local() || body.is_local(),
         Expr::Local { .. } => true,
     }
 }
@@ -152,9 +399,6 @@ pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> { FxIndexMap::with_ha
 pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> { FxHashMap::with_hasher(Default::default()) }
 
 pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> { FxHashSet::with_hasher(Default::default()) }
-
-pub(crate) fn new_fx_index_set<K>() -> FxIndexSet<K> { FxIndexSet::with_hasher(Default::default()) }
-pub(crate) fn new_unique_index_set<K>() -> UniqueIndexSet<K> { UniqueIndexSet::with_hasher(Default::default()) }
 
 pub(crate) fn new_unique_hash_map<K, V>() -> UniqueHashMap<K, V> { UniqueHashMap::with_hasher(Default::default()) }
 
@@ -209,28 +453,16 @@ pub(crate) fn nat_mod(x: BigUint, y: BigUint) -> BigUint {
     }
 }
 
-pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint {
-    x.gcd(y)
-}
+pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint { x.gcd(y) }
 
-pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint {
-    x ^ y
-}
+pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint { x ^ y }
 
-pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
-    x * BigUint::from(2u8).pow(y)
-}
+pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint { x * BigUint::from(2u8).pow(y) }
 
-pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
-    x / BigUint::from(2u8).pow(y)
-}
+pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint { x / BigUint::from(2u8).pow(y) }
 
-pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint {
-    x & y
-}
-pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint {
-    x | y
-}
+pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint { x & y }
+pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint { x | y }
 
 pub struct ExprCache<'t> {
     /// Caches (e, offset) |-> output for instantiation. This cache is reset
@@ -261,8 +493,14 @@ impl<'t> ExprCache<'t> {
 }
 
 pub struct ExportFile<'p> {
-    /// The underlying storage for `Name`, `Level`, and `Expr` items (and Strings).
-    pub(crate) dag: LeanDag<'p>,
+    /// The interning storage for `Name`, `Level`, and `Expr` items (and strings,
+    /// bignums, level-slices) read from the export file. This borrows the global
+    /// arena, which is owned by the caller and outlives the `ExportFile`.
+    pub(crate) dag: Dag<'p>,
+    /// The anonymous name and level zero, which the export format back-references
+    /// as the 0th item of their kind.
+    pub(crate) anon: NamePtr<'p>,
+    pub(crate) zero: LevelPtr<'p>,
     /// Declarations from the export file
     pub declars: DeclarMap<'p>,
     /// Notations from the export file
@@ -271,38 +509,46 @@ pub struct ExportFile<'p> {
     pub name_cache: NameCache<'p>,
     pub config: Config,
     // Information used for setting EnvLimit during inductive checking.
-    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>
+    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>,
 }
 
 impl<'p> ExportFile<'p> {
-    pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> { Env::new(&self.declars, &self.notations, env_limit) }
+    pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> {
+        Env::new(&self.declars, &self.notations, env_limit)
+    }
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: FnOnce(&mut TcCtx<'_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
-        let mut ctx = TcCtx::new(self, &mut dag);
-        f(&mut ctx)
+        let mut arena = Arena::new();
+        arena.with_scope(|scope| {
+            let mut ctx = TcCtx::new(self, scope);
+            f(&mut ctx)
+        })
     }
 
-    pub fn with_tc<F, A>(&self, env_limit: EnvLimit, f: F) -> A
+    pub fn with_tc<F, A>(&self, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
-        let mut ctx = TcCtx::new(self, &mut dag);
-        let env = self.new_env(env_limit);
-        let mut tc = TypeChecker::new(&mut ctx, &env, None);
-        f(&mut tc)
+        let mut arena = Arena::new();
+        arena.with_scope(|scope| {
+            let mut ctx = TcCtx::new(self, scope);
+            let env = self.new_env(env_limit);
+            let mut tc = TypeChecker::new(&mut ctx, &env, None);
+            f(&mut tc)
+        })
     }
 
     pub fn with_tc_and_declar<F, A>(&self, d: crate::env::DeclarInfo<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
-        let mut dag = LeanDag::new(&self.config);
-        let mut ctx = TcCtx::new(self, &mut dag);
-        let env = self.new_env(EnvLimit::ByName(d.name));
-        let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
-        f(&mut tc)
+        let mut arena = Arena::new();
+        arena.with_scope(|scope| {
+            let mut ctx = TcCtx::new(self, scope);
+            let env = self.new_env(EnvLimit::ByName(d.name));
+            let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
+            f(&mut tc)
+        })
     }
 
     pub fn with_pp<F, A>(&self, f: F) -> A
@@ -314,14 +560,15 @@ impl<'p> ExportFile<'p> {
 
 /// A structure representing the memory context used for an individual `TypeChecker`.
 pub struct TcCtx<'t, 'p> {
-    //anchor: PhantomData<&'t AnchorZst>,
     /// Each type checker's context shares an immutable reference to the structured contents of
     /// the export file, and some additional information taken from the export file.
     pub(crate) export_file: &'t ExportFile<'p>,
-    /// The underlying storage for temporary `Name`, `Level`, and `Expr`` items created while
-    /// type checking a declaration. These are dropped once the declaration is verified, since
-    /// they are no longer needed.
-    pub(crate) dag: &'t mut LeanDag<'t>,
+    /// The local bump arena (a scope of the per-thread arena) into which temporary
+    /// `Name`, `Level`, and `Expr` items created while type checking a declaration
+    /// are allocated. The whole scope is reverted once the declaration is verified.
+    pub(crate) arena: &'t ArenaRef<'t>,
+    /// The interning tables for the local arena.
+    pub(crate) dag: Dag<'t>,
     /// Non-monotonic counter showing the current deBruijn level (which is also the number
     /// of binders that are open above us). When a binder is opened and traversed under, this
     /// counter is incremented. When the binder is closed again, this counter is decremented.
@@ -331,18 +578,20 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) unique_counter: u32,
     /// A cache for instantiation, free variable abstraction, and level substitution
     pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) eager_mode: bool
+    pub(crate) eager_mode: bool,
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    pub fn new(export_file: &'t ExportFile<'p>, tdag: &'t mut LeanDag<'t>) -> Self {
-        Self { 
+    pub fn new(export_file: &'t ExportFile<'p>, arena: &'t ArenaRef<'t>) -> Self {
+        let dag = Dag::new(&export_file.config);
+        Self {
             export_file,
-            dag: tdag,
+            arena,
+            dag,
             dbj_level_counter: 0u16,
             unique_counter: 0u32,
             expr_cache: ExprCache::new(),
-            eager_mode: false
+            eager_mode: false,
         }
     }
 
@@ -357,7 +606,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn with_tc_and_env_ext<'x, F, A>(&mut self, env_ext: &'x DeclarMap<'t>, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let env = crate::env::Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), &self.export_file.notations, env_limit);
+        let env = crate::env::Env::new_w_temp_ext(
+            &self.export_file.declars,
+            Some(env_ext),
+            &self.export_file.notations,
+            env_limit,
+        );
         let mut tc = TypeChecker::new(self, &env, None);
         f(&mut tc)
     }
@@ -368,152 +622,110 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         f(&mut PrettyPrinter::new(self))
     }
 
-    pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.names.get_index(p.idx()).copied().unwrap(),
-            DagMarker::TcCtx => self.dag.names.get_index(p.idx()).copied().unwrap(),
-        }
-    }
+    pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> { *p.as_ref() }
 
     /// Convenience function for reading two items as a tuple.
     pub fn read_name_pr(&self, p: NamePtr<'t>, q: NamePtr<'t>) -> (Name<'t>, Name<'t>) {
         (self.read_name(p), self.read_name(q))
     }
 
-    pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.levels.get_index(p.idx()).copied().unwrap(),
-            DagMarker::TcCtx => self.dag.levels.get_index(p.idx()).copied().unwrap(),
-        }
-    }
+    pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> { *p.as_ref() }
 
     /// Convenience function for reading two items as a tuple.
     pub fn read_level_pair(&self, a: LevelPtr<'t>, x: LevelPtr<'t>) -> (Level<'t>, Level<'t>) {
         (self.read_level(a), self.read_level(x))
     }
 
-    pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.exprs.get_index(p.idx()).copied().unwrap(),
-            DagMarker::TcCtx => self.dag.exprs.get_index(p.idx()).copied().unwrap(),
-        }
-    }
+    pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> { *p.as_ref() }
 
     /// Convenience function for reading two items as a tuple.
     pub fn read_expr_pair(&self, a: ExprPtr<'t>, x: ExprPtr<'t>) -> (Expr<'t>, Expr<'t>) {
         (self.read_expr(a), self.read_expr(x))
     }
 
-    pub fn read_string(&self, p: StringPtr<'t>) -> &CowStr<'t> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.strings.get_index(p.idx()).unwrap(),
-            DagMarker::TcCtx => self.dag.strings.get_index(p.idx()).unwrap(),
-        }
-    }
+    pub fn read_string(&self, p: StringPtr<'t>) -> &'t CowStr<'t> { p.as_ref() }
 
-    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&BigUint> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => Some(self.export_file.dag.bignums.as_ref()?.get_index(p.idx()).unwrap()),
-            DagMarker::TcCtx => Some(self.dag.bignums.as_ref()?.get_index(p.idx()).unwrap()),
-        }
-    }
+    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&'t BigUint> { Some(p.as_ref()) }
 
-    pub fn read_levels(&self, p: LevelsPtr<'t>) -> Arc<[LevelPtr<'t>]> {
-        match p.dag_marker() {
-            DagMarker::ExportFile => self.export_file.dag.uparams.get_index(p.idx()).cloned().unwrap(),
-            DagMarker::TcCtx => self.dag.uparams.get_index(p.idx()).cloned().unwrap(),
-        }
-    }
+    pub fn read_levels(&self, p: LevelsPtr<'t>) -> &'t [LevelPtr<'t>] { p.as_ref() }
 
     /// Store a `Name`, getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element. Checks the longer-lived storage first.
+    /// element. Checks the longer-lived (global) storage first.
     pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
-        if let Some(idx) = self.export_file.dag.names.get_index_of(&n) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.names.insert_full(n).0)
+        if let Some(r) = self.export_file.dag.names.get(&n) {
+            return NamePtr::global(r);
         }
+        NamePtr::local(self.dag.names.intern(self.arena, n))
     }
 
     /// Store a `Level`, getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element. Checks the longer-lived storage first.
+    /// element. Checks the longer-lived (global) storage first.
     pub fn alloc_level(&mut self, l: Level<'t>) -> LevelPtr<'t> {
-        if let Some(idx) = self.export_file.dag.levels.get_index_of(&l) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.levels.insert_full(l).0)
+        if let Some(r) = self.export_file.dag.levels.get(&l) {
+            return LevelPtr::global(r);
         }
+        LevelPtr::local(self.dag.levels.intern(self.arena, l))
     }
 
     /// Store an `Expr`, getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element.
+    /// element. Probes the local cache first, then (unless the expr is local-only) the
+    /// global cache, matching the historical interning policy.
     pub fn alloc_expr(&mut self, e: Expr<'t>) -> ExprPtr<'t> {
-        match self.dag.exprs.entry(e) {
-            IndexMapEntry::Occupied(entry) => Ptr::from(DagMarker::TcCtx, entry.index()),
-            IndexMapEntry::Vacant(entry) => {
-                if !is_expr_local_only(*entry.key()) {
-                    if let Some(idx) = self.export_file.dag.exprs.get_index_of(entry.key()) {
-                        return Ptr::from(DagMarker::ExportFile, idx)
-                    }
-                }
-                let entry = entry.insert_entry(());
-                Ptr::from(DagMarker::TcCtx, entry.index())
+        if let Some(r) = self.dag.exprs.get(&e) {
+            return ExprPtr::local(r);
+        }
+        if !is_expr_local_only(&e) {
+            if let Some(r) = self.export_file.dag.exprs.get(&e) {
+                return ExprPtr::global(r);
             }
         }
+        ExprPtr::local(self.dag.exprs.insert(self.arena, e))
     }
 
     /// Store a string (a `CowStr`), getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element. Checks the longer-lived storage first.
+    /// element. Checks the longer-lived (global) storage first.
     pub(crate) fn alloc_string(&mut self, s: CowStr<'t>) -> StringPtr<'t> {
-        if let Some(idx) = self.export_file.dag.strings.get_index_of(&s) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.strings.insert_full(s).0)
+        if let Some(r) = self.export_file.dag.strings.get(&s) {
+            return StringPtr::global(r);
         }
+        StringPtr::local(self.dag.strings.intern(self.arena, s))
     }
 
     /// Store a `BigUint` (a bignum), getting back a pointer to the allocated item. If the item was
     /// already stored, forego the allocation and return a pointer to the previously inserted
-    /// element. Checks the longer-lived storage first.
+    /// element. Checks the longer-lived (global) storage first.
     ///
     /// Used for Nat literals.
     pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> Option<BigUintPtr<'t>> {
-        if let Some(idx) = self.export_file.dag.bignums.as_ref()?.get_index_of(&n) {
-            Some(Ptr::from(DagMarker::ExportFile, idx))
-        } else {
-            Some(Ptr::from(DagMarker::TcCtx, self.dag.bignums.as_mut()?.insert_full(n).0))
+        if let Some(global) = self.export_file.dag.bignums.as_ref() {
+            if let Some(r) = global.get(&n) {
+                return Some(BigUintPtr::global(r));
+            }
         }
+        let local = self.dag.bignums.as_mut()?;
+        Some(BigUintPtr::local(local.intern(self.arena, n)))
     }
 
     /// Store a sequence of `Level` items, getting back a pointer to the allocated sequence.
     /// If the sequence was already stored, return a pointer to the previously inserted sequence.
-    /// Checks the longer-lived storage first.
-    pub fn alloc_levels(&mut self, ls: Arc<[LevelPtr<'t>]>) -> LevelsPtr<'t> {
-        if let Some(idx) = self.export_file.dag.uparams.get_index_of(&ls) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.uparams.insert_full(ls).0)
+    /// Checks the longer-lived (global) storage first.
+    pub fn alloc_levels(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> {
+        if let Some(r) = self.export_file.dag.uparams.get(ls) {
+            return LevelsPtr::global(r);
         }
+        LevelsPtr::local(self.dag.uparams.intern(self.arena, ls))
     }
 
-    /// Store a sequence of `Level` items, but check whether the sequence has previously been allocated
-    /// first, by probing with a slice.
-    pub fn alloc_levels_slice(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> {
-        if let Some(idx) = self.export_file.dag.uparams.get_index_of(ls) {
-            Ptr::from(DagMarker::ExportFile, idx)
-        } else if let Some(idx) = self.dag.uparams.get_index_of(ls) {
-            Ptr::from(DagMarker::TcCtx, idx)
-        } else {
-            Ptr::from(DagMarker::TcCtx, self.dag.uparams.insert_full(Arc::from(ls)).0)
-        }
-    }
+    /// Store a sequence of `Level` items, probing with a slice. Identical to
+    /// `alloc_levels` now that levels are stored as arena slices.
+    pub fn alloc_levels_slice(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> { self.alloc_levels(ls) }
 
     /// A constructor for the anonymous name.
-    pub fn anonymous(&self) -> NamePtr<'t> { self.export_file.dag.anonymous() }
+    pub fn anonymous(&self) -> NamePtr<'t> { self.export_file.anon }
 
     pub fn str(&mut self, pfx: NamePtr<'t>, sfx: StringPtr<'t>) -> NamePtr<'t> {
         let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
@@ -540,7 +752,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         self.str(n, s2)
     }
 
-    pub fn zero(&self) -> LevelPtr<'t> { self.export_file.dag.zero() }
+    pub fn zero(&self) -> LevelPtr<'t> { self.export_file.zero }
 
     pub fn num(&mut self, pfx: NamePtr<'t>, sfx: u64) -> NamePtr<'t> {
         let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
@@ -619,7 +831,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         binder_type: ExprPtr<'t>,
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
-        nondep: bool
+        nondep: bool,
     ) -> ExprPtr<'t> {
         let hash = hash64!(crate::expr::LET_HASH, binder_name, binder_type, val, body, nondep);
         let num_loose_bvars = self
@@ -733,69 +945,33 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 }
 
-#[derive(Debug)]
-pub struct LeanDag<'a> {
-    pub names: UniqueIndexSet<Name<'a>>,
-    pub levels: UniqueIndexSet<Level<'a>>,
-    pub exprs: ExprIndexSet<'a>,
-    pub uparams: FxIndexSet<Arc<[LevelPtr<'a>]>>,
-    pub strings: FxIndexSet<CowStr<'a>>,
-    pub bignums: Option<FxIndexSet<BigUint>>,
+impl<'a> StringInterner<'a> {
+    /// Content-based lookup used when building the name cache (probe lifetime is
+    /// unrelated to the arena lifetime, so we compare by `&str` directly).
+    pub(crate) fn get_str(&self, s: &str) -> Option<&'a CowStr<'a>> {
+        let hash = s.struct_hash();
+        self.table.find(hash, |stored| stored.as_ref() == s).copied()
+    }
 }
 
-impl<'a> LeanDag<'a> {
-    /// The export file format does not output the anonymous name and level zero, but the export
-    /// program back-references them as though they were the 0th element of their kind; the exporter
-    /// implicitly assumes that whatever you're using for storage knows about this convention.
-    ///
-    /// So when creating a new parser, we need to begin by placing `Anon` and `Zero` in the 0th position
-    /// of their backing storage, satisfying the exporter's assumption.
-    pub fn new(config: &Config) -> Self {
-        let mut out = Self {
-            names: new_unique_index_set(),
-            levels: new_unique_index_set(),
-            exprs: ExprIndexSet::new(),
-            uparams: new_fx_index_set(),
-            strings: new_fx_index_set(),
-            bignums: if config.nat_extension { Some(new_fx_index_set()) } else { None },
-        };
+impl<'a> Dag<'a> {
+    /// Used for constructing the name cache; probes the interned strings by content.
+    fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> { self.strings.get_str(s).map(StringPtr::global) }
 
-        let _ = out.names.insert(Name::Anon);
-        let _ = out.levels.insert(Level::Zero);
-        out
-    }
-
-    /// Used for constructing the name cache;
-    pub(crate) fn anonymous(&self) -> NamePtr<'a> {
-        debug_assert_eq!(self.names.get_index(0).copied().unwrap(), Name::Anon);
-        Ptr::from(DagMarker::ExportFile, 0)
-    }
-
-    /// Used for constructing the name cache;
-    pub(crate) fn zero(&self) -> LevelPtr<'a> {
-        debug_assert_eq!(self.levels.get_index(0).copied().unwrap(), Level::Zero);
-        Ptr::from(DagMarker::ExportFile, 0)
-    }
-
-    /// Used for constructing the name cache;
-    fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> {
-        self.strings.get_index_of(s).map(|idx| Ptr::from(DagMarker::ExportFile, idx))
-    }
-
-    // Find e.g. `Quot.lift` from "Quot.lift"
-    fn find_name(&self, dot_separated_name: &str) -> Option<NamePtr<'a>> {
-        let mut pfx = self.anonymous();
+    // Find e.g. `Quot.lift` from "Quot.lift", starting from the anonymous name.
+    fn find_name(&self, anon: NamePtr<'a>, dot_separated_name: &str) -> Option<NamePtr<'a>> {
+        let mut pfx = anon;
         for s in dot_separated_name.split('.') {
             if let Ok(num) = s.parse::<u64>() {
                 let hash = hash64!(crate::name::NUM_HASH, pfx, num);
-                if let Some(idx) = self.names.get_index_of(&Name::Num(pfx, num, hash)) {
-                    pfx = Ptr::from(DagMarker::ExportFile, idx);
+                if let Some(r) = self.names.get(&Name::Num(pfx, num, hash)) {
+                    pfx = NamePtr::global(r);
                     continue
                 }
             } else if let Some(sfx) = self.get_string_ptr(s) {
                 let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
-                if let Some(idx) = self.names.get_index_of(&Name::Str(pfx, sfx, hash)) {
-                    pfx = Ptr::from(DagMarker::ExportFile, idx);
+                if let Some(r) = self.names.get(&Name::Str(pfx, sfx, hash)) {
+                    pfx = NamePtr::global(r);
                     continue
                 }
             }
@@ -806,39 +982,39 @@ impl<'a> LeanDag<'a> {
 
     /// If these names are present in the export file, we want to cache
     /// them since we need to retrieve them quite frequently.
-    pub(crate) fn mk_name_cache(&self) -> NameCache<'a> {
+    pub(crate) fn mk_name_cache(&self, anon: NamePtr<'a>) -> NameCache<'a> {
         NameCache {
-            eager_reduce: self.find_name("eagerReduce"),
-            quot: self.find_name("Quot"),
-            quot_mk: self.find_name("Quot.mk"),
-            quot_lift: self.find_name("Quot.lift"),
-            quot_ind: self.find_name("Quot.ind"),
-            string: self.find_name("String"),
-            string_of_list: self.find_name("String.ofList"),
-            nat: self.find_name("Nat"),
-            nat_zero: self.find_name("Nat.zero"),
-            nat_succ: self.find_name("Nat.succ"),
-            nat_add: self.find_name("Nat.add"),
-            nat_sub: self.find_name("Nat.sub"),
-            nat_mul: self.find_name("Nat.mul"),
-            nat_pow: self.find_name("Nat.pow"),
-            nat_mod: self.find_name("Nat.mod"),
-            nat_div: self.find_name("Nat.div"),
-            nat_beq: self.find_name("Nat.beq"),
-            nat_ble: self.find_name("Nat.ble"),
-            nat_gcd: self.find_name("Nat.gcd"),
-            nat_xor: self.find_name("Nat.xor"),
-            nat_land: self.find_name("Nat.land"),
-            nat_lor: self.find_name("Nat.lor"),
-            nat_shl: self.find_name("Nat.shiftLeft"),
-            nat_shr: self.find_name("Nat.shiftRight"),
-            bool_true: self.find_name("Bool.true"),
-            bool_false: self.find_name("Bool.false"),
-            char: self.find_name("Char"),
-            char_of_nat: self.find_name("Char.ofNat"),
-            list: self.find_name("List"),
-            list_nil: self.find_name("List.nil"),
-            list_cons: self.find_name("List.cons"),
+            eager_reduce: self.find_name(anon, "eagerReduce"),
+            quot: self.find_name(anon, "Quot"),
+            quot_mk: self.find_name(anon, "Quot.mk"),
+            quot_lift: self.find_name(anon, "Quot.lift"),
+            quot_ind: self.find_name(anon, "Quot.ind"),
+            string: self.find_name(anon, "String"),
+            string_of_list: self.find_name(anon, "String.ofList"),
+            nat: self.find_name(anon, "Nat"),
+            nat_zero: self.find_name(anon, "Nat.zero"),
+            nat_succ: self.find_name(anon, "Nat.succ"),
+            nat_add: self.find_name(anon, "Nat.add"),
+            nat_sub: self.find_name(anon, "Nat.sub"),
+            nat_mul: self.find_name(anon, "Nat.mul"),
+            nat_pow: self.find_name(anon, "Nat.pow"),
+            nat_mod: self.find_name(anon, "Nat.mod"),
+            nat_div: self.find_name(anon, "Nat.div"),
+            nat_beq: self.find_name(anon, "Nat.beq"),
+            nat_ble: self.find_name(anon, "Nat.ble"),
+            nat_gcd: self.find_name(anon, "Nat.gcd"),
+            nat_xor: self.find_name(anon, "Nat.xor"),
+            nat_land: self.find_name(anon, "Nat.land"),
+            nat_lor: self.find_name(anon, "Nat.lor"),
+            nat_shl: self.find_name(anon, "Nat.shiftLeft"),
+            nat_shr: self.find_name(anon, "Nat.shiftRight"),
+            bool_true: self.find_name(anon, "Bool.true"),
+            bool_false: self.find_name(anon, "Bool.false"),
+            char: self.find_name(anon, "Char"),
+            char_of_nat: self.find_name(anon, "Char.ofNat"),
+            list: self.find_name(anon, "List"),
+            list_nil: self.find_name(anon, "List.nil"),
+            list_cons: self.find_name(anon, "List.cons"),
         }
     }
 }
@@ -941,19 +1117,19 @@ pub struct Config {
     #[serde(default)]
     pub num_threads: usize,
 
-    #[serde(default)] 
+    #[serde(default)]
     pub nat_extension: bool,
-    #[serde(default)] 
+    #[serde(default)]
     pub string_extension: bool,
 
     /// A list of declaration names the user wants to be pretty-printed back to them on termination.
     pub pp_declars: Option<Vec<String>>,
 
     /// Indicates what the typechecker should do when it's been asked to pretty-print a declaration
-    /// that is not actually in the environment. We give this option because that scenario is 
+    /// that is not actually in the environment. We give this option because that scenario is
     /// strongly indicative of a mismatch between what the user thinks is in the export file and
     /// what is actually in the export file.
-    /// If `true`, the typechecker will fail with a hard error. 
+    /// If `true`, the typechecker will fail with a hard error.
     /// If `false`, the typechecker will not fail just because of this.
     #[serde(default = "default_true")]
     pub unknown_pp_declar_hard_error: bool,
@@ -971,11 +1147,11 @@ pub struct Config {
     pub print_success_message: bool,
 
     /// If `true`, the typechecker will print the axioms actually admitted to the environment
-    /// when typechecking is finished. 
+    /// when typechecking is finished.
     #[serde(default = "default_true")]
     pub print_axioms: bool,
 
-    /// If set to `true`, will allow all axioms to be admitted to the environment. 
+    /// If set to `true`, will allow all axioms to be admitted to the environment.
     /// This is checked so as to be mutually exclusive with any of the axiom allow list/whitelist features.
     #[serde(default)]
     pub unsafe_permit_all_axioms: bool,
@@ -989,17 +1165,25 @@ impl TryFrom<&Path> for Config {
             Ok(config_file) => {
                 let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
                 if config.export_file_path.is_none() && !config.use_stdin {
-                    return Err(Box::from(format!("incompatible config options: must specify a path to an export file OR set `use_stdin: true`")))
+                    return Err(Box::from(format!(
+                        "incompatible config options: must specify a path to an export file OR set `use_stdin: true`"
+                    )))
                 }
                 if config.export_file_path.is_some() && config.use_stdin {
-                    return Err(Box::from(format!("incompatible config options: if an export file path is given, `use_stdin` cannot be `true`")))
+                    return Err(Box::from(format!(
+                        "incompatible config options: if an export file path is given, `use_stdin` cannot be `true`"
+                    )))
                 }
                 if config.unsafe_permit_all_axioms {
                     if config.unpermitted_axiom_hard_error {
-                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error")))
+                        return Err(Box::from(format!(
+                            "incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error"
+                        )))
                     }
                     if config.permitted_axioms.is_some() {
-                        return Err(Box::from(format!("incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list")))
+                        return Err(Box::from(format!(
+                            "incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list"
+                        )))
                     }
                 }
                 Ok(config)
@@ -1039,15 +1223,18 @@ impl Config {
 
     // Returns the export file, and a list of strings representing the names of "skipped" axioms
     // (axioms which were in the export file, but not allowed by the execution config).
-    pub fn to_export_file<'a>(self) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+    //
+    // The global arena (owned by the caller) backs all of the export file's interned
+    // items, so it must outlive the returned `ExportFile`.
+    pub fn to_export_file<'a>(self, arena: &'a ArenaRef<'a>) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
-                Ok(file) => crate::parser::parse_export_file(BufReader::new(file), self),
+                Ok(file) => crate::parser::parse_export_file(arena, BufReader::new(file), self),
                 Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
             }
         } else if self.use_stdin {
             let reader = BufReader::new(std::io::stdin());
-            crate::parser::parse_export_file(reader, self)
+            crate::parser::parse_export_file(arena, reader, self)
         } else {
             panic!("Configuration file must specify en export file path or \"use_stdin\": true")
         }
@@ -1061,5 +1248,5 @@ impl Config {
 #[derive(Debug, Clone)]
 struct ExitStatus {
     tc_err: Option<String>,
-    pp_err: Option<String>
+    pp_err: Option<String>,
 }

@@ -11,7 +11,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 let (start, size) = self.mutual_block_sizes.get(&ind.info.name).unwrap();
                 (ind, crate::env::EnvLimit::ByIndex(start + size))
             }
-            _ => panic!("expected inductive")
+            _ => panic!("expected inductive"),
         };
         self.with_ctx(|ctx| {
             // The **unmodified** types and constructors for all of the types in this mutual block.
@@ -710,7 +710,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             })
             .unwrap();
         match self.ctx.read_expr(st.ind_consts[ind_name_pos]) {
-            Const {levels, ..} => {
+            Const { levels, .. } => {
                 let (lhs, rhs) = (self.ctx.read_levels(appd_levels), self.ctx.read_levels(levels));
                 if lhs.len() != rhs.len() {
                     return false
@@ -720,8 +720,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         return false
                     }
                 }
-            },
-            _ => return false
+            }
+            _ => return false,
         };
         let ind_name_num_indices = st.local_indices[ind_name_pos].len();
 
@@ -929,7 +929,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 for l in self.ctx.read_levels(st.uparams).iter().copied() {
                     base.push(l)
                 }
-                self.ctx.alloc_levels(Arc::from(base))
+                self.ctx.alloc_levels(&base)
             };
             st.rec_uparams = Some(rec_levels);
             st.elim_level = Some(elim_level);
@@ -966,7 +966,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     fn mk_motive_dep(&mut self, st: &InductiveCheckState<'t>, major: ExprPtr<'t>, ind_type_idx: u64) -> ExprPtr<'t> {
         let elim_sort = self.ctx.mk_sort(st.elim_level.unwrap());
         let w_major = self.ctx.abstr_pi(major, elim_sort);
-        let motive_type = self.ctx.abstr_pi_telescope(&st.local_indices[usize::try_from(ind_type_idx).unwrap()], w_major);
+        let motive_type =
+            self.ctx.abstr_pi_telescope(&st.local_indices[usize::try_from(ind_type_idx).unwrap()], w_major);
         let motive_name_base = self.ctx.str1("motive");
         let motive_name = if st.all_inductives_incl_specialized.len() > 1 {
             // Lean uses 1-based indexing for these, so we try to match for the pretty printer output.
@@ -1230,13 +1231,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             match (self.env.get_old_declar(&new_rec.info().name), new_rec) {
                 (
                     Some(old @ Declar::Recursor(RecursorData { rec_rules: old_rec_rules, .. })),
-                    new @ Declar::Recursor(RecursorData { rec_rules: new_rec_rules, .. })
+                    new @ Declar::Recursor(RecursorData { rec_rules: new_rec_rules, .. }),
                 ) => {
                     self.tc_cache.clear();
                     assert!(!std::ptr::eq(old, new));
                     // Should be structurally != because they come from different envs.
                     assert_ne!(old, new);
-                    let imported_w_new_uparams = self.ctx.subst_expr_levels(old.info().ty, old.info().uparams, st.rec_uparams.unwrap());
+                    let imported_w_new_uparams =
+                        self.ctx.subst_expr_levels(old.info().ty, old.info().uparams, st.rec_uparams.unwrap());
                     self.assert_def_eq(imported_w_new_uparams, new.info().ty);
                     assert_eq!(old_rec_rules.len(), new_rec_rules.len());
                     for (r_old, r_new) in old_rec_rules.iter().zip(new_rec_rules.iter()) {

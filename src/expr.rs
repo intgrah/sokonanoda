@@ -2,8 +2,8 @@
 use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
 use num_bigint::BigUint;
 use num_traits::identities::Zero;
-use Expr::*;
 use serde::Deserialize;
+use Expr::*;
 
 pub(crate) const VAR_HASH: u64 = 281;
 pub(crate) const SORT_HASH: u64 = 563;
@@ -89,7 +89,7 @@ pub enum Expr<'a> {
         body: ExprPtr<'a>,
         num_loose_bvars: u16,
         has_fvars: bool,
-        nondep: bool
+        nondep: bool,
     },
     /// A free variable with binder information, and either a unique
     /// identifier, or a deBruijn level.
@@ -282,8 +282,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             *cached
         } else {
             let calcd = match self.read_expr(e) {
-                Local { .. } => 
-                    locals
+                Local { .. } => locals
                     .iter()
                     .rev()
                     .position(|x| *x == e)
@@ -423,14 +422,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 App { fun, arg, .. } => {
                     e = fun;
                     args.push(arg);
-                },
-                _ => break
+                }
+                _ => break,
             }
         }
         args.reverse();
         (e, args)
     }
-    
+
     /// If this is a const application, return (Const {..}, name, levels, args)
     pub fn unfold_const_apps(
         &self,
@@ -494,7 +493,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             _ => unreachable!("Cannot apply lambda with non-local domain type"),
         }
     }
-    
+
     pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
         match self.read_expr(e) {
             Const { .. } => self.c_nat_zero() == Some(e),
@@ -533,12 +532,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             Some(self.mk_app(succ_c, pred))
         }
     }
-    
+
     /// Return `true` iff `e` is an application of `@eagerReduce A a`
     pub(crate) fn is_eager_reduce_app(&self, e: ExprPtr<'t>) -> bool {
-        if let App {fun, ..} = self.read_expr(e) {
-            if let App {fun, ..} = self.read_expr(fun) {
-                if let Const {name, ..} = self.read_expr(fun) {
+        if let App { fun, .. } = self.read_expr(e) {
+            if let App { fun, .. } = self.read_expr(fun) {
+                if let Const { name, .. } = self.read_expr(fun) {
                     return self.export_file.name_cache.eager_reduce == Some(name)
                 }
             }
@@ -720,15 +719,17 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn prop(&mut self) -> ExprPtr<'t> { self.mk_sort(self.zero()) }
 
     pub fn get_nth_pi_binder(&self, mut e: ExprPtr<'t>, n: usize) -> Option<ExprPtr<'t>> {
-        for _ in 0.. n {
+        for _ in 0..n {
             match self.read_expr(e) {
-                Pi {body, ..} => { e = body; },
-                _ => return None
+                Pi { body, .. } => {
+                    e = body;
+                }
+                _ => return None,
             }
         }
         match self.read_expr(e) {
-            Pi {binder_type, ..} => Some(binder_type),
-            _ => None
+            Pi { binder_type, .. } => Some(binder_type),
+            _ => None,
         }
     }
 
@@ -736,11 +737,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// by finding the correct binder in the recursor's type.
     pub fn get_major_induct(&self, rec: &crate::env::RecursorData<'t>) -> Option<NamePtr<'t>> {
         match self.get_nth_pi_binder(rec.info.ty, rec.major_idx()).map(|x| self.read_expr(self.unfold_apps_fun(x))) {
-            Some(Const {name, ..}) => Some(name),
-            _ => None
+            Some(Const { name, .. }) => Some(name),
+            _ => None,
         }
     }
-    
+
     /// The number of "loose" bound variables, which is the number of bound variables
     /// in an expression which are boudn by something above it.
     pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
@@ -775,4 +776,3 @@ impl<'t> Expr<'t> {
         }
     }
 }
-

@@ -1,6 +1,6 @@
 use crate::util::{ExprPtr, FxHashMap, FxIndexMap, LevelsPtr, NamePtr};
-use std::sync::Arc;
 use serde::Deserialize;
+use std::sync::Arc;
 
 /// Reducibility hints accompany definitions; used to determine how
 /// to unfold expressions in order to most efficiently proceed.
@@ -123,7 +123,7 @@ pub struct RecursorData<'a> {
 }
 
 impl<'a> RecursorData<'a> {
-    /// Compute the index in the recursor's type (in the telescope) where the major premise is located. 
+    /// Compute the index in the recursor's type (in the telescope) where the major premise is located.
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
     }
@@ -171,7 +171,7 @@ pub enum EnvLimit<'a> {
     Empty,
     ByIndex(usize),
     ByName(NamePtr<'a>),
-    PpUnlimited
+    PpUnlimited,
 }
 
 /// A Lean environment, which consists of a set of declarations that my have a temporary
@@ -207,7 +207,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         declars: &'a DeclarMap<'a>,
         temp_declars: Option<&'x DeclarMap<'a>>,
         notation: &'a NotationMap<'a>,
-        limit: EnvLimit<'a>
+        limit: EnvLimit<'a>,
     ) -> Self {
         let cutoff = match limit {
             EnvLimit::Empty => 0,
@@ -231,7 +231,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
-    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> { 
+    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
         let (idx, _, v) = self.declars.get_full(n)?;
         if idx < self.cutoff {
             Some(v)

@@ -137,7 +137,7 @@ fn nat_gcd_eq() {
     }
 }
 
-fn bitwise(f: fn(bool, bool) -> bool, n : BigUint, m: BigUint) -> BigUint {
+fn bitwise(f: fn(bool, bool) -> bool, n: BigUint, m: BigUint) -> BigUint {
     if n.is_zero() {
         if f(false, true) {
             m
@@ -167,10 +167,8 @@ fn bitwise(f: fn(bool, bool) -> bool, n : BigUint, m: BigUint) -> BigUint {
 #[test]
 fn nat_xor_eq() {
     fn spec_xor(x: BigUint, y: BigUint) -> BigUint {
-      fn bool_xor(x: bool, y: bool) -> bool {
-          x ^ y
-      }
-      bitwise(bool_xor, x, y)
+        fn bool_xor(x: bool, y: bool) -> bool { x ^ y }
+        bitwise(bool_xor, x, y)
     }
 
     use crate::util::nat_xor;
@@ -188,10 +186,8 @@ fn nat_xor_eq() {
 #[test]
 fn nat_lor_eq() {
     fn spec_lor(x: BigUint, y: BigUint) -> BigUint {
-      fn bool_or(x: bool, y: bool) -> bool {
-          x || y
-      }
-      bitwise(bool_or, x, y)
+        fn bool_or(x: bool, y: bool) -> bool { x || y }
+        bitwise(bool_or, x, y)
     }
 
     use crate::util::nat_lor;
@@ -207,9 +203,7 @@ fn nat_lor_eq() {
 #[test]
 fn nat_land_eq() {
     fn spec_land(x: BigUint, y: BigUint) -> BigUint {
-        fn bool_and(x: bool, y: bool) -> bool {
-            x && y
-        }
+        fn bool_and(x: bool, y: bool) -> bool { x && y }
         bitwise(bool_and, x, y)
     }
 

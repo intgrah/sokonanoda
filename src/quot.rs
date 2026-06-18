@@ -1,6 +1,6 @@
 //! Construction of quotient types
 
-use crate::env::{ConstructorData, Declar, DeclarInfo, InductiveData, EnvLimit};
+use crate::env::{ConstructorData, Declar, DeclarInfo, EnvLimit, InductiveData};
 use crate::expr::{BinderStyle, BinderStyle::*};
 use crate::tc::TypeChecker;
 use crate::util::TcCtx;
@@ -78,7 +78,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
             let eq_const = ctx.mk_const(name, info.uparams);
             assert_eq!(ctx.read_levels(info.uparams).len(), 1);
             assert_eq!(num_params, 2);
-            let uparam = match ctx.read_levels(info.uparams).as_ref() {
+            let uparam = match ctx.read_levels(info.uparams) {
                 &[u] => ctx.mk_sort(u),
                 owise => panic!("Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}", owise.len()),
             };
@@ -92,7 +92,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
                     assert_eq!(cname, ctor_name);
                     match env.get_constructor(&ctor_name) {
                         Some(ConstructorData { info, .. }) => {
-                            let uparam_sort = match ctx.read_levels(info.uparams).as_ref() {
+                            let uparam_sort = match ctx.read_levels(info.uparams) {
                                 &[uparam] => ctx.mk_sort(uparam),
                                 _ => panic!(),
                             };
