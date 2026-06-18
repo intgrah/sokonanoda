@@ -6,6 +6,7 @@ use crate::pretty_printer::{PpOptions, PrettyPrinter};
 use crate::tc::TypeChecker;
 use crate::union_find::UnionFind;
 use crate::unique_hasher::UniqueHasher;
+use crate::value::{E, S, V};
 use hashbrown::HashTable;
 use indexmap::IndexMap;
 use num_bigint::BigUint;
@@ -478,6 +479,7 @@ pub struct ExprCache<'t> {
     pub(crate) abstr_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
     /// A cache for (expr, starting deBruijn level, current deBruijn level)
     pub(crate) abstr_cache_levels: FxHashMap<(ExprPtr<'t>, u16, u16), ExprPtr<'t>>,
+    pub(crate) simplify_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
 }
 
 impl<'t> ExprCache<'t> {
@@ -488,6 +490,7 @@ impl<'t> ExprCache<'t> {
             subst_cache: new_fx_hash_map(),
             dsubst_cache: new_fx_hash_map(),
             abstr_cache_levels: new_fx_hash_map(),
+            simplify_cache: new_fx_hash_map(),
         }
     }
 }
@@ -533,8 +536,9 @@ impl<'p> ExportFile<'p> {
         let mut arena = Arena::new();
         arena.with_scope(|scope| {
             let mut ctx = TcCtx::new(self, scope);
+            let varena = ctx.arena;
             let env = self.new_env(env_limit);
-            let mut tc = TypeChecker::new(&mut ctx, &env, None);
+            let mut tc = TypeChecker::new(&mut ctx, &env, varena, None);
             f(&mut tc)
         })
     }
@@ -545,8 +549,9 @@ impl<'p> ExportFile<'p> {
         let mut arena = Arena::new();
         arena.with_scope(|scope| {
             let mut ctx = TcCtx::new(self, scope);
+            let varena = ctx.arena;
             let env = self.new_env(EnvLimit::ByName(d.name));
-            let mut tc = TypeChecker::new(&mut ctx, &env, Some(d));
+            let mut tc = TypeChecker::new(&mut ctx, &env, varena, Some(d));
             f(&mut tc)
         })
     }
@@ -578,41 +583,34 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) unique_counter: u32,
     /// A cache for instantiation, free variable abstraction, and level substitution
     pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) eager_mode: bool,
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn new(export_file: &'t ExportFile<'p>, arena: &'t ArenaRef<'t>) -> Self {
         let dag = Dag::new(&export_file.config);
-        Self {
-            export_file,
-            arena,
-            dag,
-            dbj_level_counter: 0u16,
-            unique_counter: 0u32,
-            expr_cache: ExprCache::new(),
-            eager_mode: false,
-        }
+        Self { export_file, arena, dag, dbj_level_counter: 0u16, unique_counter: 0u32, expr_cache: ExprCache::new() }
     }
 
     pub fn with_tc<F, A>(&mut self, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
+        let arena = self.arena;
         let env = self.export_file.new_env(env_limit);
-        let mut tc = TypeChecker::new(self, &env, None);
+        let mut tc = TypeChecker::new(self, &env, arena, None);
         f(&mut tc)
     }
 
     pub fn with_tc_and_env_ext<'x, F, A>(&mut self, env_ext: &'x DeclarMap<'t>, env_limit: EnvLimit<'p>, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
+        let arena = self.arena;
         let env = crate::env::Env::new_w_temp_ext(
             &self.export_file.declars,
             Some(env_ext),
             &self.export_file.notations,
             env_limit,
         );
-        let mut tc = TypeChecker::new(self, &env, None);
+        let mut tc = TypeChecker::new(self, &env, arena, None);
         f(&mut tc)
     }
 
@@ -637,6 +635,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> { *p.as_ref() }
+
+    #[inline]
+    pub fn read_expr_ref(&self, p: ExprPtr<'t>) -> &'t Expr<'t> { p.as_ref() }
 
     /// Convenience function for reading two items as a tuple.
     pub fn read_expr_pair(&self, a: ExprPtr<'t>, x: ExprPtr<'t>) -> (Expr<'t>, Expr<'t>) {
@@ -984,7 +985,6 @@ impl<'a> Dag<'a> {
     /// them since we need to retrieve them quite frequently.
     pub(crate) fn mk_name_cache(&self, anon: NamePtr<'a>) -> NameCache<'a> {
         NameCache {
-            eager_reduce: self.find_name(anon, "eagerReduce"),
             quot: self.find_name(anon, "Quot"),
             quot_mk: self.find_name(anon, "Quot.mk"),
             quot_lift: self.find_name(anon, "Quot.lift"),
@@ -1000,6 +1000,8 @@ impl<'a> Dag<'a> {
             nat_pow: self.find_name(anon, "Nat.pow"),
             nat_mod: self.find_name(anon, "Nat.mod"),
             nat_div: self.find_name(anon, "Nat.div"),
+            nat_div_go: self.find_name(anon, "Nat.div.go"),
+            nat_mod_core_go: self.find_name(anon, "Nat.modCore.go"),
             nat_beq: self.find_name(anon, "Nat.beq"),
             nat_ble: self.find_name(anon, "Nat.ble"),
             nat_gcd: self.find_name(anon, "Nat.gcd"),
@@ -1023,7 +1025,6 @@ impl<'a> Dag<'a> {
 /// is present in the export file, otherwise they're `None`.
 #[derive(Debug, Clone, Copy)]
 pub struct NameCache<'p> {
-    pub(crate) eager_reduce: Option<NamePtr<'p>>,
     pub(crate) quot: Option<NamePtr<'p>>,
     pub(crate) quot_mk: Option<NamePtr<'p>>,
     pub(crate) quot_lift: Option<NamePtr<'p>>,
@@ -1037,6 +1038,8 @@ pub struct NameCache<'p> {
     pub(crate) nat_pow: Option<NamePtr<'p>>,
     pub(crate) nat_mod: Option<NamePtr<'p>>,
     pub(crate) nat_div: Option<NamePtr<'p>>,
+    pub(crate) nat_div_go: Option<NamePtr<'p>>,
+    pub(crate) nat_mod_core_go: Option<NamePtr<'p>>,
     pub(crate) nat_beq: Option<NamePtr<'p>>,
     pub(crate) nat_ble: Option<NamePtr<'p>>,
     pub(crate) nat_gcd: Option<NamePtr<'p>>,
@@ -1057,19 +1060,45 @@ pub struct NameCache<'p> {
     pub(crate) list_cons: Option<NamePtr<'p>>,
 }
 
-pub(crate) struct TcCache<'t> {
+pub(crate) struct TcCache<'a, 't> {
     pub(crate) infer_cache_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) infer_cache_no_check: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) whnf_no_unfolding_cache: UniqueHashMap<ExprPtr<'t>, ExprPtr<'t>>,
     pub(crate) eq_cache: UnionFind<ExprPtr<'t>>,
     /// A cache of congruence failures during the lazy delta step procedure.
-    pub(crate) failure_cache: FxHashSet<(ExprPtr<'t>, ExprPtr<'t>)>,
     /// Strong reduction is not used during type-checking, this is more of a library/inspection feature.
     pub(crate) strong_cache: UniqueHashMap<(ExprPtr<'t>, bool, bool), ExprPtr<'t>>,
+    pub(crate) unfold_const_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) rec_rule_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_head_type_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_head_value_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+    pub(crate) const_result_level_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
+    pub(crate) conv_cache: FxHashSet<(usize, usize)>,
+    pub(crate) conv_cache_neg: FxHashSet<(usize, usize)>,
+    pub(crate) conv_cache_neg_probe: FxHashSet<(usize, usize)>,
+    pub(crate) probe_depth: u32,
+    pub(crate) closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
+    pub(crate) open_eval_cache: FxHashMap<(usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) open_eval_seen: FxHashSet<ExprPtr<'t>>,
+    pub(crate) bvar_hc: FxHashMap<(u32, usize), V<'a>>,
+    pub(crate) v_hash_cache: FxHashMap<usize, u64>,
+    pub(crate) hash_eq: FxHashSet<(u64, u64)>,
+    pub(crate) env_hc: FxHashMap<(usize, usize), E<'a>>,
+    pub(crate) spine_hc: FxHashMap<(usize, u8, u64, u64), S<'a>>,
+    pub(crate) lam_hc: FxHashMap<(ExprPtr<'t>, usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) pi_hc: FxHashMap<(usize, usize, ExprPtr<'t>), V<'a>>,
+    pub(crate) rigid_hc: FxHashMap<(u8, u64, u64, usize), V<'a>>,
+    pub(crate) unfold_hc: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>, usize, usize), V<'a>>,
+    pub(crate) iota_stuck: FxHashSet<usize>,
+    pub(crate) struct_eta_cache: FxHashMap<(usize, NamePtr<'t>), Option<V<'a>>>,
+    pub(crate) iota_cache: FxHashMap<usize, V<'a>>,
+    pub(crate) canon_cache: FxHashMap<usize, V<'a>>,
+    pub(crate) content_hc: FxHashMap<(u8, u64), V<'a>>,
+    pub(crate) fvar_cache: FxHashMap<usize, bool>,
 }
 
-impl<'t> TcCache<'t> {
+impl<'a, 't> TcCache<'a, 't> {
     pub(crate) fn new() -> Self {
         Self {
             infer_cache_check: new_unique_hash_map(),
@@ -1077,8 +1106,34 @@ impl<'t> TcCache<'t> {
             whnf_cache: new_unique_hash_map(),
             whnf_no_unfolding_cache: new_unique_hash_map(),
             eq_cache: UnionFind::new(),
-            failure_cache: new_fx_hash_set(),
             strong_cache: new_unique_hash_map(),
+            unfold_const_cache: new_fx_hash_map(),
+            rec_rule_cache: new_fx_hash_map(),
+            const_head_type_cache: new_fx_hash_map(),
+            const_head_value_cache: new_fx_hash_map(),
+            const_result_level_cache: new_fx_hash_map(),
+            conv_cache: new_fx_hash_set(),
+            conv_cache_neg: new_fx_hash_set(),
+            conv_cache_neg_probe: new_fx_hash_set(),
+            probe_depth: 0,
+            closed_eval_cache: new_fx_hash_map(),
+            open_eval_cache: new_fx_hash_map(),
+            open_eval_seen: new_fx_hash_set(),
+            bvar_hc: new_fx_hash_map(),
+            v_hash_cache: new_fx_hash_map(),
+            hash_eq: new_fx_hash_set(),
+            env_hc: new_fx_hash_map(),
+            spine_hc: new_fx_hash_map(),
+            lam_hc: new_fx_hash_map(),
+            pi_hc: new_fx_hash_map(),
+            rigid_hc: new_fx_hash_map(),
+            unfold_hc: new_fx_hash_map(),
+            iota_stuck: new_fx_hash_set(),
+            struct_eta_cache: new_fx_hash_map(),
+            iota_cache: new_fx_hash_map(),
+            canon_cache: new_fx_hash_map(),
+            content_hc: new_fx_hash_map(),
+            fvar_cache: new_fx_hash_map(),
         }
     }
 
@@ -1088,8 +1143,30 @@ impl<'t> TcCache<'t> {
         self.whnf_cache.clear();
         self.whnf_no_unfolding_cache.clear();
         self.eq_cache.clear();
-        self.failure_cache.clear();
         self.strong_cache.clear();
+        self.unfold_const_cache.clear();
+        self.rec_rule_cache.clear();
+        self.const_head_type_cache.clear();
+        self.const_head_value_cache.clear();
+        self.const_result_level_cache.clear();
+        self.conv_cache.clear();
+        self.conv_cache_neg.clear();
+        self.conv_cache_neg_probe.clear();
+        self.env_hc.clear();
+        self.open_eval_cache.clear();
+        self.open_eval_seen.clear();
+        self.bvar_hc.clear();
+        self.spine_hc.clear();
+        self.lam_hc.clear();
+        self.pi_hc.clear();
+        self.rigid_hc.clear();
+        self.unfold_hc.clear();
+        self.iota_stuck.clear();
+        self.struct_eta_cache.clear();
+        self.iota_cache.clear();
+        self.canon_cache.clear();
+        self.content_hc.clear();
+        self.fvar_cache.clear();
     }
 }
 

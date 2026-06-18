@@ -20,6 +20,7 @@ overflow-checks=true
 [dev-dependencies]
 rand = "0.8.5"
 num-bigint = { version = "0.4.4", features = ["rand", "serde"] }
+stumpalo = "0.5.1"
 
 [dependencies]
 indexmap = "2.13.0"
