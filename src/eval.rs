@@ -893,8 +893,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
         match v {
             Value::Rigid { head: RigidHead::Recursor(name, levels), spine } => {
-                let rec = match self.env.get_recursor(name) {
-                    Some(r) => r.clone(),
+                let env = self.env;
+                let rec = match env.get_recursor(name) {
+                    Some(r) => r,
                     None => return ForceStep::Done,
                 };
                 let args = match self.spine_apps(spine) {
@@ -991,7 +992,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn fire_value(&mut self, rec_val: V<'t>, major: V<'t>) -> Option<V<'t>> {
         match rec_val {
             Value::Rigid { head: RigidHead::Recursor(name, levels), spine } => {
-                let rec = self.env.get_recursor(name)?.clone();
+                let env = self.env;
+                let rec = env.get_recursor(name)?;
                 let args = self.spine_apps(spine)?;
                 if args.len() <= rec.major_idx() {
                     return None;
@@ -1115,7 +1117,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn do_recursor_iota(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>, args: &[V<'t>]) -> Option<V<'t>> {
-        let rec = self.env.get_recursor(&name)?.clone();
+        let env = self.env;
+        let rec = env.get_recursor(&name)?;
         if args.len() <= rec.major_idx() {
             return None;
         }
