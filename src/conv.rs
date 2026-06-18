@@ -1,7 +1,6 @@
 use crate::env::{ConstructorData, Declar, ReducibilityHint};
-use crate::expr::Expr;
 use crate::tc::TypeChecker;
-use crate::util::{ExprPtr, LevelPtr, NamePtr, TcCtx};
+use crate::util::{ExprPtr, LevelPtr, NamePtr};
 use crate::value::{self, Elim, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
@@ -108,30 +107,6 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     return false;
                 }
             }
-            let hash_eligible =
-                matches!(x, Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. })
-                    && matches!(y, Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. });
-            if hash_eligible {
-                if let (Some(hx), Some(hy)) = (self.v_hash(x, depth), self.v_hash(y, depth)) {
-                    let hkey = if hx < hy { (hx, hy) } else { (hy, hx) };
-                    if hx == hy || self.tc_cache.hash_eq.contains(&hkey) {
-                        self.tc_cache.conv_cache.insert(cache_key);
-                        return true;
-                    }
-                    let result = self.unify_no_cache::<RIGID>(depth, x, y);
-                    if result {
-                        self.tc_cache.conv_cache.insert(cache_key);
-                        self.tc_cache.hash_eq.insert(hkey);
-                    } else if RIGID && neg_eligible {
-                        if self.tc_cache.probe_depth == 0 {
-                            self.tc_cache.conv_cache_neg.insert(cache_key);
-                        } else {
-                            self.tc_cache.conv_cache_neg_probe.insert(cache_key);
-                        }
-                    }
-                    return result;
-                }
-            }
             let result = self.unify_no_cache::<RIGID>(depth, x, y);
             if result {
                 self.tc_cache.conv_cache.insert(cache_key);
@@ -146,159 +121,6 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         } else {
             self.unify_no_cache::<RIGID>(depth, x, y)
         }
-    }
-
-    fn expr_app_too_deep(ctx: &TcCtx<'t, '_>, mut e: ExprPtr<'t>, limit: u32) -> bool {
-        for _ in 0..limit {
-            match ctx.read_expr_ref(e) {
-                Expr::App { arg, .. } => {
-                    e = *arg;
-                }
-                Expr::Lambda { body, .. } | Expr::Pi { body, .. } => {
-                    e = *body;
-                }
-                _ => return false,
-            }
-        }
-        true
-    }
-
-    pub(crate) fn v_hash(&mut self, v: V<'t>, depth: u32) -> Option<u64> {
-        let mut budget: u32 = 256;
-        self.v_hash_budget(v, depth, &mut budget)
-    }
-
-    fn v_hash_budget(&mut self, v: V<'t>, depth: u32, budget: &mut u32) -> Option<u64> {
-        let key = v as *const Value<'t> as usize;
-        if let Some(&h) = self.tc_cache.v_hash_cache.get(&key) {
-            return Some(h);
-        }
-        if *budget == 0 {
-            return None;
-        }
-        *budget -= 1;
-        let h = self.v_hash_compute(v, depth, budget)?;
-        if !self.value_has_free_bvar(v) {
-            self.tc_cache.v_hash_cache.insert(key, h);
-        }
-        Some(h)
-    }
-
-    fn v_hash_compute(&mut self, v: V<'t>, depth: u32, budget: &mut u32) -> Option<u64> {
-        use std::hash::Hasher;
-        let v = self.force_thunk(v);
-        let mut h = rustc_hash::FxHasher::default();
-        match v {
-            Value::Sort { level } => {
-                h.write_u8(0);
-                h.write_u64(level.get_hash());
-            }
-            Value::NatLit { ptr } => {
-                h.write_u8(1);
-                h.write_u64(ptr.get_hash());
-            }
-            Value::StrLit { ptr } => {
-                h.write_u8(2);
-                h.write_u64(ptr.get_hash());
-            }
-            Value::Rigid { head, spine } => {
-                h.write_u8(3);
-                match *head {
-                    RigidHead::BVar(level, _) => {
-                        h.write_u8(0);
-                        h.write_u32(depth.saturating_sub(level + 1));
-                    }
-                    RigidHead::Local(e) => {
-                        h.write_u8(1);
-                        h.write_u64(e.get_hash());
-                    }
-                    RigidHead::Axiom(n, l) => {
-                        h.write_u8(2);
-                        h.write_u64(n.get_hash());
-                        h.write_u64(l.get_hash());
-                    }
-                    RigidHead::Ctor(n, l) => {
-                        h.write_u8(3);
-                        h.write_u64(n.get_hash());
-                        h.write_u64(l.get_hash());
-                    }
-                    RigidHead::Recursor(n, l) => {
-                        h.write_u8(4);
-                        h.write_u64(n.get_hash());
-                        h.write_u64(l.get_hash());
-                    }
-                    RigidHead::QuotConst(n, l) => {
-                        h.write_u8(5);
-                        h.write_u64(n.get_hash());
-                        h.write_u64(l.get_hash());
-                    }
-                    RigidHead::Inductive(n, l) => {
-                        h.write_u8(6);
-                        h.write_u64(n.get_hash());
-                        h.write_u64(l.get_hash());
-                    }
-                }
-                let sh = self.v_hash_spine(spine, depth, budget)?;
-                h.write_u64(sh);
-            }
-            Value::Unfold { head, spine, .. } => {
-                h.write_u8(4);
-                h.write_u64(head.name.get_hash());
-                h.write_u64(head.levels.get_hash());
-                let sh = self.v_hash_spine(spine, depth, budget)?;
-                h.write_u64(sh);
-            }
-            Value::Pi { domain, body, .. } => {
-                h.write_u8(5);
-                let dh = self.v_hash_budget(domain, depth, budget)?;
-                h.write_u64(dh);
-                let fresh_dom = *domain;
-                let fresh = self.mk_bvar_hc(depth, fresh_dom);
-                let body_v = self.apply_closure_v(body, fresh);
-                let bh = self.v_hash_budget(body_v, depth + 1, budget)?;
-                h.write_u64(bh);
-            }
-            Value::Lam { body, .. } => {
-                if Self::expr_app_too_deep(self.ctx, body.body, 8) {
-                    return None;
-                }
-                h.write_u8(6);
-                let dom_for_bvar = self.lam_domain(v);
-                let fresh = self.mk_bvar_hc(depth, dom_for_bvar);
-                let body_v = self.apply_closure_v(body, fresh);
-                let bh = self.v_hash_budget(body_v, depth + 1, budget)?;
-                h.write_u64(bh);
-            }
-            Value::Thunk { .. } => unreachable!("v_hash: Thunk after force"),
-        }
-        Some(h.finish())
-    }
-
-    fn v_hash_spine(&mut self, spine: S<'t>, depth: u32, budget: &mut u32) -> Option<u64> {
-        use std::hash::Hasher;
-        let mut h = rustc_hash::FxHasher::default();
-        let mut cur = spine;
-        loop {
-            match cur {
-                Spine::Empty => break,
-                Spine::Snoc { prev, elim } => {
-                    cur = prev;
-                    match elim {
-                        Elim::App(va) => {
-                            let vh = self.v_hash_budget(va, depth, budget)?;
-                            h.write_u8(0);
-                            h.write_u64(vh);
-                        }
-                        Elim::Proj { ty_name, idx } => {
-                            h.write_u8(1);
-                            h.write_u64(ty_name.get_hash());
-                            h.write_usize(*idx);
-                        }
-                    }
-                }
-            }
-        }
-        Some(h.finish())
     }
 
     fn unify_no_cache<const RIGID: bool>(&mut self, depth: u32, x: V<'t>, y: V<'t>) -> bool {
