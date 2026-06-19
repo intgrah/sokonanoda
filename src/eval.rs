@@ -380,18 +380,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 self.eval(env, cursor)
             }
             Expr::Local { .. } => {
-                let idx = e.idx();
-                if idx < self.local_v_cache.len() {
-                    if let Some(v) = self.local_v_cache[idx] {
-                        return v;
-                    }
+                if let Some(v) = self.local_v_cache.get(&e) {
+                    return *v;
                 }
                 let empty = self.empty_spine();
                 let v = value::mk_local_with_empty(self.arena, e, empty);
-                if idx >= self.local_v_cache.len() {
-                    self.local_v_cache.resize(idx + 1, None);
-                }
-                self.local_v_cache[idx] = Some(v);
+                self.local_v_cache.insert(e, v);
                 v
             }
             Expr::Proj { ty_name, idx, structure, .. } => {

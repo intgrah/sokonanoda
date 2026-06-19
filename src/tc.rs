@@ -62,7 +62,7 @@ pub struct TypeChecker<'x, 't, 'p> {
     pub(crate) arena: &'t bumpalo::Bump,
     pub(crate) empty_env: std::cell::OnceCell<E<'t>>,
     pub(crate) empty_spine: crate::value::S<'t>,
-    pub(crate) local_v_cache: Vec<Option<V<'t>>>,
+    pub(crate) local_v_cache: crate::util::FxHashMap<ExprPtr<'t>, V<'t>>,
     /// If this type checker is being used to check a simple declaration, this field will
     /// contain the universe parameters of that declaration. This is used in a couple of places
     /// to make sure that all of the universe paramters actually used in a declaration `d` are
@@ -171,7 +171,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             arena,
             empty_env: std::cell::OnceCell::new(),
             empty_spine: crate::value::spine_empty(arena),
-            local_v_cache: Vec::new(),
+            local_v_cache: crate::util::new_fx_hash_map(),
             declar_info,
             nat_extension,
         }

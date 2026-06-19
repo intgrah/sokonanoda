@@ -3,6 +3,7 @@ use sokonanoda::util::Config;
 use std::fs;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use stumpalo::Arena;
 
 const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -70,7 +71,8 @@ fn run_case_inner(export: PathBuf) -> Outcome {
         print_axioms: false,
         unsafe_permit_all_axioms: true,
     };
-    let ef = match cfg.to_export_file() {
+    let global_arena = Arena::new();
+    let ef = match cfg.to_export_file(global_arena.as_arena_ref()) {
         Ok((ef, _)) => ef,
         Err(e) => return Outcome::ParseError(format!("{e}")),
     };
