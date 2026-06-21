@@ -62,8 +62,6 @@ impl<'a> ExprIndexSet<'a> {
         self.map.get_index_of(value)
     }
 
-    pub(crate) fn len(&self) -> usize { self.map.len() }
-
     pub(crate) fn entry(&mut self, value: Expr<'a>) -> IndexMapEntry<'_, Expr<'a>, ()> { self.map.entry(value) }
 }
 

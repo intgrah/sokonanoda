@@ -47,7 +47,19 @@ pub struct Parser<'a, R: BufRead> {
     /// Tracks axiom names that were found in the export file, but not white-listed,
     /// for use when `unpermitted_axiom_hard_error: false`
     skipped: Vec<String>,
-    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>
+    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
+    /// Maps export name index → DAG name index. Seeded with `[0]` so that export
+    /// index 0 resolves to the anonymous name sentinel. Export indices need not be
+    /// dense or in increasing order (the exporter only guarantees that an item is
+    /// emitted after the items it references); gaps are filled with `u32::MAX`.
+    name_remap: Vec<u32>,
+    /// Maps export level index → DAG level index. Seeded with `[0]` so that export
+    /// index 0 resolves to the `Zero` level sentinel. Same sparsity rules as `name_remap`.
+    level_remap: Vec<u32>,
+    /// Maps export expression index → DAG expression index. Export indices need not be
+    /// dense or in increasing order; unused slots hold `u32::MAX` as a sentinel for
+    /// "not yet defined".
+    expr_remap: Vec<u32>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -85,22 +97,11 @@ enum BackRef {
 }
 
 impl BackRef {
-    fn assert_in(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::In(lhs))
-    }
-
-    fn assert_il(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::Il(lhs))
-    }
-
-    fn assert_ie(self, insert_result: (usize, bool)) {
-        assert!(insert_result.1);
-        let lhs = u32::try_from(insert_result.0).unwrap();
-        assert_eq!(self, BackRef::Ie(lhs))
+    /// The export-file index carried by this back-reference, regardless of kind.
+    fn index(self) -> u32 {
+        match self {
+            BackRef::In(i) | BackRef::Il(i) | BackRef::Ie(i) => i,
+        }
     }
 }
 
@@ -411,7 +412,10 @@ impl<'a, R: BufRead> Parser<'a, R> {
             notations: new_fx_hash_map(),
             config,
             skipped: Vec::new(),
-            mutual_block_sizes: new_fx_hash_map()
+            mutual_block_sizes: new_fx_hash_map(),
+            name_remap: vec![0],
+            level_remap: vec![0],
+            expr_remap: Vec::new()
         }
     }
     
@@ -427,23 +431,49 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn has_fvars(&self, e: ExprPtr<'a>) -> bool { self.dag.exprs.get_index(e.idx()).unwrap().has_fvars() }
 
     fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.names.len());
-        out
+        let dag_idx = self.name_remap.get(idx as usize).copied().unwrap_or(u32::MAX);
+        assert!(dag_idx != u32::MAX, "export references name index {idx} before it is defined");
+        crate::util::Ptr::from(DagMarker::ExportFile, dag_idx as usize)
     }
 
     fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.levels.len());
-        out
+        let dag_idx = self.level_remap.get(idx as usize).copied().unwrap_or(u32::MAX);
+        assert!(dag_idx != u32::MAX, "export references level index {idx} before it is defined");
+        crate::util::Ptr::from(DagMarker::ExportFile, dag_idx as usize)
     }
+
     fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
-        let mut names = Vec::new();
-        for idx in idxs.iter().copied() {
-            assert!(self.dag.names.get_index(idx as usize).is_some());
-            names.push(NamePtr::from(DagMarker::ExportFile, idx as usize));
+        idxs.iter().copied().map(|idx| self.get_name_ptr(idx)).collect()
+    }
+
+    /// Record the DAG index a freshly-inserted name was assigned, keyed by its
+    /// export index. Grows `name_remap` with a sentinel to tolerate sparse indices.
+    fn record_name(&mut self, export_idx: u32, dag_idx: usize) {
+        let i = export_idx as usize;
+        if i >= self.name_remap.len() {
+            self.name_remap.resize(i + 1, u32::MAX);
         }
-        names
+        self.name_remap[i] = u32::try_from(dag_idx).unwrap();
+    }
+
+    /// Record the DAG index a freshly-inserted level was assigned, keyed by its
+    /// export index. Grows `level_remap` with a sentinel to tolerate sparse indices.
+    fn record_level(&mut self, export_idx: u32, dag_idx: usize) {
+        let i = export_idx as usize;
+        if i >= self.level_remap.len() {
+            self.level_remap.resize(i + 1, u32::MAX);
+        }
+        self.level_remap[i] = u32::try_from(dag_idx).unwrap();
+    }
+
+    /// Record the DAG index a freshly-inserted expression was assigned, keyed by its
+    /// export index. Grows `expr_remap` with a sentinel to tolerate sparse / out-of-order indices.
+    fn record_expr(&mut self, export_idx: u32, dag_idx: usize) {
+        let i = export_idx as usize;
+        if i >= self.expr_remap.len() {
+            self.expr_remap.resize(i + 1, u32::MAX);
+        }
+        self.expr_remap[i] = u32::try_from(dag_idx).unwrap();
     }
 
     fn get_uparams_ptr(&mut self, name_idxs: &[u32]) -> LevelsPtr<'a> {
@@ -461,15 +491,15 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn get_levels_ptr(&mut self, idxs: &[u32]) -> LevelsPtr<'a> {
         let mut levels = Vec::new();
         for idx in idxs.iter().copied() {
-            levels.push(LevelPtr::from(DagMarker::ExportFile, idx as usize));
+            levels.push(self.get_level_ptr(idx));
         }
         LevelsPtr::from(DagMarker::ExportFile, self.dag.uparams.insert_full(Arc::from(levels)).0)
     }
 
     fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
-        let out = crate::util::Ptr::from(DagMarker::ExportFile, idx as usize);
-        assert!((idx as usize) < self.dag.exprs.len());
-        out
+        let dag_idx = self.expr_remap.get(idx as usize).copied().unwrap_or(u32::MAX);
+        assert!(dag_idx != u32::MAX, "export references expression index {idx} before it is defined");
+        crate::util::Ptr::from(DagMarker::ExportFile, dag_idx as usize)
     }
 
     // Used for the axiom whitelist feature.
@@ -511,7 +541,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
                     self.dag.names.insert_full(Name::Str(pfx, sfx, hash))
                 };
-                assigned_idx.unwrap().assert_in(insert_result);
+                self.record_name(assigned_idx.unwrap().index(), insert_result.0);
             }
             NameNum {pre, i} => {
                 let pfx = self.get_name_ptr(pre);
@@ -520,7 +550,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
                     self.dag.names.insert_full(Name::Num(pfx, sfx, hash))
                 };
-                assigned_idx.unwrap().assert_in(insert_result);
+                self.record_name(assigned_idx.unwrap().index(), insert_result.0);
             }
             NatLit(big_uint) => {
                 if !self.config.nat_extension {
@@ -538,7 +568,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         format!("Nat lit extension disallowed by checker execution config, found {:?}", line)
                     ))
                 }
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             StrLit(cow_str) => {
                 if !self.config.string_extension {
@@ -555,7 +585,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
                     self.dag.exprs.insert_full(Expr::StringLit { ptr: string_ptr, hash })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             LevelSucc(l) => {
                 let l = self.get_level_ptr(l);
@@ -563,7 +593,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::level::SUCC_HASH, l);
                     self.dag.levels.insert_full(Level::Succ(l, hash))
                 };
-                assigned_idx.unwrap().assert_il(insert_result);
+                self.record_level(assigned_idx.unwrap().index(), insert_result.0);
             }
             LevelMax([l, r]) => {
                 let l = self.get_level_ptr(l);
@@ -572,7 +602,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::level::MAX_HASH, l, r);
                     self.dag.levels.insert_full(Level::Max(l, r, hash))
                 };
-                assigned_idx.unwrap().assert_il(insert_result);
+                self.record_level(assigned_idx.unwrap().index(), insert_result.0);
             }
             LevelIMax([l, r]) => {
                 let l = self.get_level_ptr(l);
@@ -581,7 +611,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::level::IMAX_HASH, l, r);
                     self.dag.levels.insert_full(Level::IMax(l, r, hash))
                 };
-                assigned_idx.unwrap().assert_il(insert_result);
+                self.record_level(assigned_idx.unwrap().index(), insert_result.0);
             }
             LevelParam(var_idx) => {
                  let n = self.get_name_ptr(var_idx);
@@ -589,7 +619,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                      let hash = hash64!(crate::level::PARAM_HASH, n);
                      self.dag.levels.insert_full(Level::Param(n, hash))
                  };
-                assigned_idx.unwrap().assert_il(insert_result);
+                self.record_level(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprSort(level) => {
                 let level = self.get_level_ptr(level);
@@ -597,7 +627,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::SORT_HASH, level);
                     self.dag.exprs.insert_full(Expr::Sort { level, hash })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprMData {..} => {
                 panic!("Expr.mdata not supported");
@@ -609,7 +639,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let hash = hash64!(crate::expr::CONST_HASH, name, levels);
                     self.dag.exprs.insert_full(Expr::Const { name, levels, hash })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprApp {fun, arg} => {
                 let fun = self.get_expr_ptr(fun);
@@ -620,14 +650,14 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let locals = self.has_fvars(fun) || self.has_fvars(arg);
                     self.dag.exprs.insert_full(Expr::App { fun, arg, num_loose_bvars: num_bvars, has_fvars: locals, hash })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprBVar(dbj_idx) => {
                 let insert_result = {
                     let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
                     self.dag.exprs.insert_full(Expr::Var { dbj_idx, hash })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprLambda {binder_name, binder_type, binder_info, body} => {
                 let binder_name = self.get_name_ptr(binder_name);
@@ -647,7 +677,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         hash,
                     })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprPi {binder_name, binder_type, binder_info, body} => {
                 let binder_name = self.get_name_ptr(binder_name);
@@ -667,7 +697,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         hash,
                     })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprLet {name, ty, value, body, nondep} => {
                 let binder_name = self.get_name_ptr(name);
@@ -691,7 +721,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         nondep
                     })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             ExprProj {type_name, idx, structure: struct_} => {
                 let ty_name = self.get_name_ptr(type_name);
@@ -709,7 +739,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                         hash,
                     })
                 };
-                assigned_idx.unwrap().assert_ie(insert_result);
+                self.record_expr(assigned_idx.unwrap().index(), insert_result.0);
             }
             Axiom {name, ty, uparams, is_unsafe} => {
                 assert!(!is_unsafe);

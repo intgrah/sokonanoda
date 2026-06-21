@@ -88,6 +88,39 @@ fn check_empty() -> Result<(), Box<dyn Error>> {
     })
 }
 
+/// The export format assigns each name/level/expression an explicit index. Those
+/// indices need not be dense or in increasing order — the exporter only guarantees
+/// that an item is emitted after the items it references. `LevelIndexOutOfOrder`
+/// defines level index 2 before level index 1 (with 1 referencing 2). The parser
+/// must resolve references via the explicit indices, not insertion position.
+#[test]
+fn check_level_index_out_of_order() -> Result<(), Box<dyn Error>> {
+    test_export_file(
+        Some(Path::new("test_resources/LevelIndexOutOfOrder/config.json")),
+        |export| {
+            assert_eq!(export.declars.len(), 1);
+            for declar in export.declars.values() {
+                export.check_declar(declar);
+            }
+        },
+    )
+}
+
+/// `SparseNameIndex` uses name index 2 and expression index 4 with gaps (no name
+/// index 1, no expressions 0..=3). The parser must tolerate sparse explicit indices.
+#[test]
+fn check_sparse_name_index() -> Result<(), Box<dyn Error>> {
+    test_export_file(
+        Some(Path::new("test_resources/SparseNameIndex/config.json")),
+        |export| {
+            assert_eq!(export.declars.len(), 1);
+            for declar in export.declars.values() {
+                export.check_declar(declar);
+            }
+        },
+    )
+}
+
 #[test]
 #[should_panic(expected = "infer_proj prop")]
 fn check_proj_from_prop() {
