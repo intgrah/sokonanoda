@@ -110,7 +110,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn subst_levels(&mut self, uparams: LevelsPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelsPtr<'t> {
         let out =
             self.read_levels(uparams).iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
-        self.alloc_levels(std::sync::Arc::from(out))
+        self.alloc_levels(&out)
     }
 
     /// Return `uparam [ks |-> vs]`

@@ -1,6 +1,7 @@
 use sokonanoda::util::Config;
 use std::error::Error;
 use std::path::Path;
+use stumpalo::Arena;
 
 fn main() -> Result<(), MainError> {
     let mut args = std::env::args();
@@ -23,7 +24,8 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     let cfg = Config::try_from(config_path)?;
     // Make sure the target pretty printer destination is accessible before doing any real work.
     let mut pp_destination = cfg.get_pp_destination()?;
-    let (export_file, skipped_axioms) = cfg.to_export_file()?;
+    let global_arena = Arena::new();
+    let (export_file, skipped_axioms) = cfg.to_export_file(global_arena.as_arena_ref())?;
     // Check the environment
     export_file.check_all_declars();
     // Pretty print as necessary

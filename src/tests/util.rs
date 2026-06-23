@@ -3,18 +3,11 @@ use rand::distributions::Alphanumeric;
 use rand::{rngs::ThreadRng, Rng};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use stumpalo::Arena;
 
-pub(crate) fn test_export_file<A>(
-    config_path: Option<&Path>,
-    f: impl FnOnce(&ExportFile) -> A,
-) -> Result<A, Box<dyn Error>> {
-    let (export_file, _) = test_get_export_file(config_path)?;
-    Ok(f(&export_file))
-}
-
-pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(ExportFile<'p>, Vec<String>), Box<dyn Error>> {
-    let config_file = match config_path {
-        None => Config {
+fn test_config(config_path: Option<&Path>) -> Result<Config, Box<dyn Error>> {
+    match config_path {
+        None => Ok(Config {
             export_file_path: Some(PathBuf::from("test_resources/Empty/export")),
             use_stdin: false,
             permitted_axioms: Some(Vec::new()),
@@ -29,22 +22,28 @@ pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(Ex
             num_threads: 1,
             print_success_message: true,
             print_axioms: true,
-            unsafe_permit_all_axioms: false
-        },
-        Some(config_path) => Config::try_from(config_path)?,
-    };
-    config_file.to_export_file()
+            unsafe_permit_all_axioms: false,
+        }),
+        Some(config_path) => Ok(Config::try_from(config_path)?),
+    }
+}
+
+pub(crate) fn test_export_file<A>(
+    config_path: Option<&Path>,
+    f: impl FnOnce(&ExportFile) -> A,
+) -> Result<A, Box<dyn Error>> {
+    let arena = Arena::new();
+    let (export_file, _) = test_config(config_path)?.to_export_file(arena.as_arena_ref())?;
+    Ok(f(&export_file))
 }
 
 #[allow(dead_code)]
 pub(crate) fn test_export_file_should_panic<A>(config_path: Option<&Path>, f: impl FnOnce(&ExportFile) -> A) {
-    // If there's an IO issue with actually getting the export file, we don't want
-    // `should_panic` test to succeed, so we actually want to return success in this case.
-    match test_get_export_file(config_path) {
-        Err(..) => {}
-        Ok((export_file, _)) => {
-            f(&export_file);
-        }
+    let Ok(config) = test_config(config_path) else { return };
+    let arena = Arena::new();
+    let result = config.to_export_file(arena.as_arena_ref());
+    if let Ok((export_file, _)) = result {
+        f(&export_file);
     }
 }
 

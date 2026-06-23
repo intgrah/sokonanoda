@@ -613,8 +613,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
     /// Does this expression infer as a `Pi` with any binder style other than `Default`
     fn is_implicit_fun(&mut self, fun: ExprPtr<'t>) -> bool {
-        let arena = self.arena;
-        self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| {
+        self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, |tc| {
             let ty = tc.infer_then_whnf(fun, crate::tc::InferFlag::InferOnly);
             match tc.ctx.read_expr(ty) {
                 Pi { binder_style, .. } => binder_style != BinderStyle::Default,
@@ -736,8 +735,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_expr_aux(&mut self, e: ExprPtr<'t>) -> Parenable {
-        let arena = self.arena;
-        if !self.options().proofs && self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proof(e).0) {
+        if !self.options().proofs && self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, |tc| tc.is_proof(e).0) {
             DocPtr::from("_").as_unparenable()
         } else {
             match self.ctx.read_expr(e) {
@@ -773,7 +771,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_uparams(&mut self, levels: LevelsPtr<'t>) -> DocPtr {
-        let uparams = self.ctx.read_levels(levels).clone();
+        let uparams = self.ctx.read_levels(levels);
         if uparams.is_empty() {
             DocPtr::from("")
         } else {
@@ -813,8 +811,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
         let instd = self.ctx.inst(val, named_binder_tys.as_slice());
         let pp_val = {
-            let arena = self.arena;
-            let is_prop = self.ctx.with_tc(arena, crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
+            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, |tc| tc.is_proposition(declar.info().ty).0);
             line()
                 .concat(if is_prop && !self.options().proofs {
                     DocPtr::from("_")
