@@ -439,8 +439,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             match cur_f {
                 Value::Pi { domain, body, .. } => {
                     let fresh = self.mk_bvar_hc(0, domain);
-                    let body = Closure { env: body.env, body: body.body };
-                    cur = self.apply_closure_v(&body, fresh);
+                    cur = self.apply_closure_v(body, fresh);
                 }
                 Value::Sort { level } => {
                     let l = self.ctx.simplify(*level);
@@ -668,8 +667,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     let ty_f = self.force_all(ty);
                     match ty_f {
                         Value::Pi { body, .. } => {
-                            let body = Closure { env: body.env, body: body.body };
-                            ty = self.apply_closure(&body, a);
+                            ty = self.apply_closure(body, a);
                         }
                         _ => panic!("spine_type: expected Pi"),
                     }
@@ -693,8 +691,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     let ty_f = self.force_all(ty);
                     match ty_f {
                         Value::Pi { body, .. } => {
-                            let body = Closure { env: body.env, body: body.body };
-                            ty = self.apply_closure(&body, a);
+                            ty = self.apply_closure(body, a);
                         }
                         _ => panic!("spine_type_with_value: expected Pi"),
                     }
@@ -809,9 +806,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             let cf = self.force_all(cur);
             match cf {
                 Value::Pi { body, .. } => {
-                    let body = Closure { env: body.env, body: body.body };
                     let arg = *args.get(i)?;
-                    cur = self.apply_closure_v(&body, arg);
+                    cur = self.apply_closure_v(body, arg);
                 }
                 _ => return None,
             }
@@ -820,9 +816,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             let cf = self.force_all(cur);
             match cf {
                 Value::Pi { body, .. } => {
-                    let body = Closure { env: body.env, body: body.body };
                     let prior = self.do_proj(ty_name, i, struct_value);
-                    cur = self.apply_closure_v(&body, prior);
+                    cur = self.apply_closure_v(body, prior);
                 }
                 _ => return None,
             }
