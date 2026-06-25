@@ -210,19 +210,6 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::env::RecRul
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::tc::DeltaResult<'t>> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.elem_to_print {
-            crate::tc::DeltaResult::FoundEqResult(b) => write!(f, "DeltaResult::FoundEqResult({})", b),
-            crate::tc::DeltaResult::Exhausted(e1, e2) => f
-                .debug_struct("DeltaResult::Exhausted")
-                .field("lhs", &self.ctx.debug_print(e1))
-                .field("rhs", &self.ctx.debug_print(e2))
-                .finish(),
-        }
-    }
-}
-
 impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::env::ReducibilityHint> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:?}", self.elem_to_print) }
 }

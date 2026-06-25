@@ -380,6 +380,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn subst_expr_levels(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
+        if ks == vs || self.read_levels(ks).is_empty() {
+            assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+            return e;
+        }
         if let Some(cached) = self.expr_cache.dsubst_cache.get(&(e, ks, vs)).copied() {
             return cached
         }
@@ -495,29 +499,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
     
-    pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
-        match self.read_expr(e) {
-            Const { .. } => self.c_nat_zero() == Some(e),
-            NatLit { ptr, .. } => self.read_bignum(ptr).map(|n| n.is_zero()).unwrap_or(false),
-            _ => false,
-        }
-    }
-
-    pub(crate) fn pred_of_nat_succ(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        match self.read_expr(e) {
-            App { fun, arg, .. } if self.c_nat_succ() == Some(fun) => Some(arg),
-            NatLit { ptr, .. } => {
-                let n = self.read_bignum(ptr)?;
-                if n.is_zero() {
-                    None
-                } else {
-                    self.mk_nat_lit_quick(n - 1u8)
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Used in iota reduction (`reduce_rec`) to turn a bignum
     /// either `Nat.zero`, or `App (Nat.succ) (bignum - 1)`; in order to do iota reduction,
     /// we need to know what constructor the major premise comes from.
@@ -534,18 +515,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
     
-    /// Return `true` iff `e` is an application of `@eagerReduce A a`
-    pub(crate) fn is_eager_reduce_app(&self, e: ExprPtr<'t>) -> bool {
-        if let App {fun, ..} = self.read_expr(e) {
-            if let App {fun, ..} = self.read_expr(fun) {
-                if let Const {name, ..} = self.read_expr(fun) {
-                    return self.export_file.name_cache.eager_reduce == Some(name)
-                }
-            }
-        }
-        false
-    }
-
     /// Convert a string literal to `String.ofList <| List.cons (Char.ofNat _) .. List.nil`
     pub(crate) fn str_lit_to_constructor(&mut self, s: StringPtr<'t>) -> Option<ExprPtr<'t>> {
         if (!self.export_file.config.string_extension) || (!self.export_file.config.nat_extension) {

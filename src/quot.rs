@@ -64,7 +64,7 @@ macro_rules! pi_telescope {
 /// The `Quot` declarations rely on `Eq` being defined as it is in
 /// the prelude, so a prereq for checking the `Quot` declarations is asserting
 /// that a propery constructed `Eq` and `Eq.refl`
-pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<'p>) {
+pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, arena: &'t bumpalo::Bump, declar: &Declar<'p>) {
     use crate::expr::BinderStyle::*;
     let name = ctx.str1("Eq");
     let cname = ctx.str2("Eq", "refl");
@@ -85,7 +85,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
             let alpha = ctx.mk_unique(alpha_name, Implicit, uparam);
             let inner = arrow!(in ctx; alpha, alpha, prop);
             let expected = pi_telescope!(in ctx; alpha, inner);
-            let mut tc = TypeChecker::new(ctx, &env, Some(info));
+            let mut tc = TypeChecker::new(ctx, &env, arena, Some(info));
             tc.assert_def_eq(info.ty, expected);
             match all_ctor_names.as_ref() {
                 &[ctor_name] => {
@@ -101,7 +101,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
 
                             let app = app!(in ctx; eq_const, alpha, a, a);
                             let expected = pi_telescope!(in ctx; alpha, a, app);
-                            let mut tc = TypeChecker::new(ctx, &env, Some(*info));
+                            let mut tc = TypeChecker::new(ctx, &env, arena, Some(*info));
                             tc.assert_def_eq(info.ty, expected);
                         }
                         None => panic!(
@@ -120,7 +120,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<
 }
 
 #[allow(non_snake_case)]
-pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Declar<'p>) {
+pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, arena: &'t bumpalo::Bump, declar: &Declar<'p>) {
     // `Eq` matching expectations is a prerequisite for checking `Quot`.
     let prop = ctx.prop();
     let u_name = ctx.str1("u");
@@ -204,14 +204,14 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
 
     if declar.info().name == ctx.str1("Quot") {
         let env = ctx.export_file.new_env(EnvLimit::ByName(quot_name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot.info().ty);
     } else if declar.info().name == ctx.str2("Quot", "mk") {
         let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
     } else if declar.info().name == ctx.str2("Quot", "lift") {
-        check_eq(ctx, declar);
+        check_eq(ctx, arena, declar);
         // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
         //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
         let expected_quot_lift = Declar::Quot {
@@ -234,7 +234,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
             },
         };
         let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
         return
     } else if declar.info().name == ctx.str2("Quot", "ind") {
@@ -265,7 +265,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(ctx: &'x mut TcCtx<'t, 'p>, declar: &Decla
         };
 
         let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()));
+        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()));
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
         return
     } else {

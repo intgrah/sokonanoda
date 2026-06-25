@@ -3,18 +3,11 @@ use rand::distributions::Alphanumeric;
 use rand::{rngs::ThreadRng, Rng};
 use std::error::Error;
 use std::path::{Path, PathBuf};
+use stumpalo::Arena;
 
-pub(crate) fn test_export_file<A>(
-    config_path: Option<&Path>,
-    f: impl FnOnce(&ExportFile) -> A,
-) -> Result<A, Box<dyn Error>> {
-    let (export_file, _) = test_get_export_file(config_path)?;
-    Ok(f(&export_file))
-}
-
-pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(ExportFile<'p>, Vec<String>), Box<dyn Error>> {
-    let config_file = match config_path {
-        None => Config {
+fn test_config(config_path: Option<&Path>) -> Result<Config, Box<dyn Error>> {
+    match config_path {
+        None => Ok(Config {
             export_file_path: Some(PathBuf::from("test_resources/Empty/export")),
             use_stdin: false,
             permitted_axioms: Some(Vec::new()),
@@ -29,27 +22,33 @@ pub(crate) fn test_get_export_file<'p>(config_path: Option<&Path>) -> Result<(Ex
             num_threads: 1,
             print_success_message: true,
             print_axioms: true,
-            unsafe_permit_all_axioms: false
-        },
-        Some(config_path) => Config::try_from(config_path)?,
-    };
-    config_file.to_export_file()
+            unsafe_permit_all_axioms: false,
+        }),
+        Some(config_path) => Ok(Config::try_from(config_path)?),
+    }
+}
+
+pub(crate) fn test_export_file<A>(
+    config_path: Option<&Path>,
+    f: impl FnOnce(&ExportFile) -> A,
+) -> Result<A, Box<dyn Error>> {
+    let arena = Arena::new();
+    let (export_file, _) = test_config(config_path)?.to_export_file(arena.as_arena_ref())?;
+    Ok(f(&export_file))
 }
 
 #[allow(dead_code)]
 pub(crate) fn test_export_file_should_panic<A>(config_path: Option<&Path>, f: impl FnOnce(&ExportFile) -> A) {
-    // If there's an IO issue with actually getting the export file, we don't want
-    // `should_panic` test to succeed, so we actually want to return success in this case.
-    match test_get_export_file(config_path) {
-        Err(..) => {}
-        Ok((export_file, _)) => {
-            f(&export_file);
-        }
+    let Ok(config) = test_config(config_path) else { return };
+    let arena = Arena::new();
+    let result = config.to_export_file(arena.as_arena_ref());
+    if let Ok((export_file, _)) = result {
+        f(&export_file);
     }
 }
 
 pub(crate) fn test_ctx<'p, A>(path: Option<&Path>, f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-    test_export_file(path, |export_file| export_file.with_ctx(f))
+    test_export_file(path, |export_file| export_file.with_ctx(|ctx, _arena| f(ctx)))
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
@@ -88,6 +87,39 @@ fn check_empty() -> Result<(), Box<dyn Error>> {
     })
 }
 
+/// The export format assigns each name/level/expression an explicit index. Those
+/// indices need not be dense or in increasing order — the exporter only guarantees
+/// that an item is emitted after the items it references. `LevelIndexOutOfOrder`
+/// defines level index 2 before level index 1 (with 1 referencing 2). The parser
+/// must resolve references via the explicit indices, not insertion position.
+#[test]
+fn check_level_index_out_of_order() -> Result<(), Box<dyn Error>> {
+    test_export_file(
+        Some(Path::new("test_resources/LevelIndexOutOfOrder/config.json")),
+        |export| {
+            assert_eq!(export.declars.len(), 1);
+            for declar in export.declars.values() {
+                export.check_declar(declar);
+            }
+        },
+    )
+}
+
+/// `SparseNameIndex` uses name index 2 and expression index 4 with gaps (no name
+/// index 1, no expressions 0..=3). The parser must tolerate sparse explicit indices.
+#[test]
+fn check_sparse_name_index() -> Result<(), Box<dyn Error>> {
+    test_export_file(
+        Some(Path::new("test_resources/SparseNameIndex/config.json")),
+        |export| {
+            assert_eq!(export.declars.len(), 1);
+            for declar in export.declars.values() {
+                export.check_declar(declar);
+            }
+        },
+    )
+}
+
 #[test]
 #[should_panic(expected = "infer_proj prop")]
 fn check_proj_from_prop() {
@@ -113,7 +145,7 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
     use rand::thread_rng;
     test_export_file(None, |export| {
         let mut rng = thread_rng();
-        export.with_ctx(|ctx| {
+        export.with_ctx(|ctx, _arena| {
             for size in 0..100 {
                 for _ in 0..100 {
                     let s = rand_string(&mut rng, size);
