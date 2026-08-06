@@ -1,0 +1,5 @@
+{
+  "export_file_path": "test_resources/ProofIrrelUnderBVar/export",
+  "permitted_axioms": ["A", "P", "Q", "a", "b", "foo"],
+  "unpermitted_axiom_hard_error": true
+}

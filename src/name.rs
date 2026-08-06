@@ -18,12 +18,116 @@ impl<'a> std::hash::Hash for Name<'a> {
 }
 
 impl<'a> Name<'a> {
-    fn get_hash(&self) -> u64 {
+    pub(crate) fn get_hash(&self) -> u64 {
         match self {
             Anon => ANON_HASH,
             Str(.., hash) | Num(.., hash) => *hash,
         }
     }
+}
+
+pub(crate) const NO_DECL: u32 = u32::MAX;
+
+pub(crate) const NO_NAT_RED: u8 = u8::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum NatRed {
+    Succ,
+    DivGo,
+    ModCoreGo,
+    Add,
+    Sub,
+    Mul,
+    Pow,
+    Mod,
+    Div,
+    Beq,
+    Ble,
+    LAnd,
+    LOr,
+    XOr,
+    Gcd,
+    Shl,
+    Shr,
+}
+
+impl NatRed {
+    pub(crate) fn from_u8(k: u8) -> Option<Self> {
+        use NatRed::*;
+        Some(match k {
+            0 => Succ,
+            1 => DivGo,
+            2 => ModCoreGo,
+            3 => Add,
+            4 => Sub,
+            5 => Mul,
+            6 => Pow,
+            7 => Mod,
+            8 => Div,
+            9 => Beq,
+            10 => Ble,
+            11 => LAnd,
+            12 => LOr,
+            13 => XOr,
+            14 => Gcd,
+            15 => Shl,
+            16 => Shr,
+            _ => return None,
+        })
+    }
+}
+
+pub struct NameNode<'a> {
+    pub(crate) kind: Name<'a>,
+    decl_idx: std::sync::atomic::AtomicU32,
+    nat_red: std::sync::atomic::AtomicU8,
+}
+
+impl<'a> NameNode<'a> {
+    pub(crate) fn new(kind: Name<'a>) -> Self {
+        Self {
+            kind,
+            decl_idx: std::sync::atomic::AtomicU32::new(NO_DECL),
+            nat_red: std::sync::atomic::AtomicU8::new(NO_NAT_RED),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn decl_idx(&self) -> u32 { self.decl_idx.load(std::sync::atomic::Ordering::Relaxed) }
+
+    #[inline]
+    pub(crate) fn set_decl_idx(&self, idx: u32) { self.decl_idx.store(idx, std::sync::atomic::Ordering::Relaxed) }
+
+    #[inline]
+    pub(crate) fn is_nat_red(&self) -> bool {
+        self.nat_red.load(std::sync::atomic::Ordering::Relaxed) != NO_NAT_RED
+    }
+
+    #[inline]
+    pub(crate) fn nat_red(&self) -> Option<NatRed> {
+        NatRed::from_u8(self.nat_red.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[inline]
+    pub(crate) fn set_nat_red(&self, k: NatRed) {
+        self.nat_red.store(k as u8, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<'a> PartialEq for NameNode<'a> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool { self.kind == o.kind }
+}
+impl<'a> Eq for NameNode<'a> {}
+
+impl<'a> crate::util::RawHash for NameNode<'a> {
+    #[inline]
+    fn raw_hash(&self) -> u64 { self.kind.get_hash() }
+}
+
+impl<'a> std::fmt::Debug for NameNode<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.kind.fmt(f) }
 }
 
 impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {

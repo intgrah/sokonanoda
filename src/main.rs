@@ -1,21 +1,41 @@
-use nanoda_lib::util::Config;
+use sokonanoda::util::Config;
 use std::error::Error;
 use std::path::Path;
+use stumpalo::Arena;
 
-fn main() -> Result<(), MainError> {
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+const EXIT_REJECT: i32 = 1;
+
+const EXIT_DECLINE: i32 = 2;
+
+fn main() {
     let mut args = std::env::args();
     let _ = args.next();
     let out = match args.next().as_ref() {
         None => Err(Box::from("This program expects a path to a configuration file.".to_string())),
-        Some(p) if p == "-h" || p == "--help" => return Ok(println!("{}", HELP_LONG)),
-        Some(p) => use_config(&Path::new(p)),
+        Some(p) if p == "-h" || p == "--help" => {
+            println!("{}", HELP_LONG);
+            return
+        }
+        Some(p) => {
+            let path = Path::new(p).to_path_buf();
+            match std::panic::catch_unwind(|| use_config(&path)) {
+                Ok(r) => r,
+                Err(_) => std::process::exit(EXIT_REJECT),
+            }
+        }
+    };
+    match out {
+        Ok(Some(msg)) => println!("{}", msg),
+        Ok(None) => {}
+        Err(e) => {
+            let declined = e.downcast_ref::<sokonanoda::util::Decline>().is_some();
+            eprintln!("{:?}", MainError(e));
+            std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT })
+        }
     }
-    .map_err(|e| MainError(e))?;
-
-    if let Some(msg) = out {
-        println!("{}", msg);
-    }
-    Ok(())
 }
 
 // Returns an optional success message.
@@ -23,7 +43,11 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     let cfg = Config::try_from(config_path)?;
     // Make sure the target pretty printer destination is accessible before doing any real work.
     let mut pp_destination = cfg.get_pp_destination()?;
-    let (export_file, skipped_axioms) = cfg.to_export_file()?;
+    let global_arena = Arena::new();
+    let (export_file, skipped_axioms) = cfg.to_export_file(global_arena.as_arena_ref())?;
+    if export_file.config.parse_only {
+        return Ok(Some(format!("Parsed {} declarations", export_file.declars.len())))
+    }
     // Check the environment
     export_file.check_all_declars();
     // Pretty print as necessary
@@ -59,7 +83,7 @@ impl std::fmt::Debug for MainError {
 
 const HELP_SHORT: &str = "run with `-h` or `--help` for help";
 const HELP_LONG: &str = concat!(
-    "nanoda_bin",
+    "sokonanoda",
     " ",
     env!("CARGO_PKG_VERSION"),
     "\n\n",

@@ -1,6 +1,5 @@
 use crate::env::Declar;
-use crate::expr::{BinderStyle, Expr::*, FVarId};
-use crate::hash64;
+use crate::expr::{BinderStyle, Expr::*};
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{ExportFile, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
@@ -307,9 +306,6 @@ struct ParsedBinder<'a> {
     occurs_in_body: bool,
     is_anon: bool,
     has_macro_scopes: bool,
-    local_const: ExprPtr<'a>,
-    // Keep the name, style, and type inline so we don't have to read
-    // the pointer to get that info.
     binder_name: NamePtr<'a>,
     binder_style: BinderStyle,
     binder_type: ExprPtr<'a>,
@@ -348,7 +344,7 @@ impl<'p> ExportFile<'p> {
     pub fn pp_selected_declars(&self, pp_destination: Option<&mut PpDestination>) -> Vec<Box<dyn std::error::Error>> {
         let mut errs = Vec::new();
         if let Some(pp_destination) = pp_destination {
-            self.with_ctx(|ctx| {
+            self.with_ctx(|ctx, _cache, _arena| {
                 let mut pp_declars = Vec::new();
                 if let Some(pp_declar_strings) = self.config.pp_declars.as_ref() {
                     for declar_name in pp_declar_strings.iter() {
@@ -366,7 +362,7 @@ impl<'p> ExportFile<'p> {
     
                 }
                 for (ss, pp_declar) in pp_declars {
-                    if let Some(s) = ctx.with_pp(|pp| pp.pp_declar(pp_declar)) {
+                    if let Some(s) = ctx.with_pp(_arena, |pp| pp.pp_declar(pp_declar)) {
                         if let Err(e) = pp_destination.write_line(s, self.config.pp_options.declar_sep.as_ref().map(|x| x.as_str()).unwrap_or("\n\n")) {
                             errs.push(e)
                         }
@@ -390,10 +386,23 @@ impl<'p> ExportFile<'p> {
 
 pub struct PrettyPrinter<'x, 't, 'p> {
     pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
+    pub(crate) arena: &'t bumpalo::Bump,
+    pub(crate) tc_cache: crate::util::TcCache<'t, 't>,
+    binder_names: Vec<NamePtr<'t>>,
 }
 
 impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
-    pub(crate) fn new(ctx: &'x mut TcCtx<'t, 'p>) -> Self { Self { ctx } }
+    pub(crate) fn new(ctx: &'x mut TcCtx<'t, 'p>, arena: &'t bumpalo::Bump) -> Self {
+        let tc_cache = crate::util::TcCache::new(arena);
+        Self { ctx, arena, tc_cache, binder_names: Vec::new() }
+    }
+
+    fn pp_bvar(&mut self, dbj_idx: u16) -> DocPtr {
+        match self.binder_names.len().checked_sub(1 + dbj_idx as usize) {
+            Some(pos) => self.pp_name_safe(self.binder_names[pos]),
+            None => DocPtr::from(dbj_idx.to_string()),
+        }
+    }
 
     pub(crate) fn options(&self) -> &PpOptions { &self.ctx.export_file.config.pp_options }
 
@@ -420,23 +429,12 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
         is_pi: bool,
         occurs_in_body: bool,
         is_anon: bool,
-        local_const: ExprPtr<'t>,
+        binder_name: NamePtr<'t>,
+        binder_style: BinderStyle,
+        binder_type: ExprPtr<'t>,
     ) -> ParsedBinder<'t> {
-        if let Local { binder_name, binder_style, binder_type, .. } = self.ctx.read_expr(local_const) {
-            let has_macro_scopes = self.ctx.has_macro_scopes(binder_name);
-            ParsedBinder {
-                is_pi,
-                occurs_in_body,
-                is_anon,
-                has_macro_scopes,
-                binder_name,
-                binder_style,
-                binder_type,
-                local_const,
-            }
-        } else {
-            panic!()
-        }
+        let has_macro_scopes = self.ctx.has_macro_scopes(binder_name);
+        ParsedBinder { is_pi, occurs_in_body, is_anon, has_macro_scopes, binder_name, binder_style, binder_type }
     }
 
     fn pp_bare_binder(&mut self, binder_name: NamePtr<'t>, binder_type: ExprPtr<'t>) -> DocPtr {
@@ -520,28 +518,26 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     /// Removes and returns all elements of the leading telescope, whether they're
-    /// lambda, pi, or both, also returning the instantiated body.
     ///
-    /// The parsed binder elements are free variables with the binder types, and
-    /// they carry information about whether they're a pi or lambda, if they're seen
-    /// later, etc.
     fn parse_binders(&mut self, mut e: ExprPtr<'t>) -> (Vec<ParsedBinder<'t>>, ExprPtr<'t>) {
-        let (mut binders, mut binder_tys) = (Vec::<ParsedBinder>::new(), Vec::new());
+        let mut binders = Vec::<ParsedBinder>::new();
         while let Pi { binder_name, binder_style, binder_type, body, .. }
         | Lambda { binder_name, binder_style, binder_type, body, .. } = self.ctx.read_expr(e)
         {
-            let binder_type = self.ctx.inst(binder_type, binder_tys.as_slice());
-            let local = self.ctx.mk_unique(binder_name, binder_style, binder_type);
             let is_pi = matches!(self.ctx.read_expr(e), Pi { .. });
             let is_anon = self.ctx.read_name(binder_name) == Name::Anon;
             let has_var = self.ctx.has_var(body, 0);
-            let new_parsed_binder = self.mk_parsed_binder(is_pi, has_var, is_anon, local);
-            binders.push(new_parsed_binder);
-            binder_tys.push(local);
+            binders.push(self.mk_parsed_binder(is_pi, has_var, is_anon, binder_name, binder_style, binder_type));
+            self.binder_names.push(binder_name);
             e = body;
         }
-        let instd = self.ctx.inst(e, binder_tys.as_slice());
-        (binders, instd)
+        let n = binders.len();
+        for i in 0..n {
+            let amount = u16::try_from(n - i).expect("telescope exceeds u16");
+            let ty = binders[i].binder_type;
+            binders[i].binder_type = self.ctx.lift(ty, 0, amount);
+        }
+        (binders, e)
     }
 
     /// `safe` in the sense that the name will be escaped if it doesn't follow the
@@ -612,8 +608,8 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
     /// Does this expression infer as a `Pi` with any binder style other than `Default`
     fn is_implicit_fun(&mut self, fun: ExprPtr<'t>) -> bool {
-        self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| {
-            let ty = tc.infer_then_whnf(fun, crate::tc::InferFlag::InferOnly);
+        self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, &mut self.tc_cache, |tc| {
+            let ty = tc.infer_whnf_weak(fun);
             match tc.ctx.read_expr(ty) {
                 Pi { binder_style, .. } => binder_style != BinderStyle::Default,
                 _ => false,
@@ -710,18 +706,11 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
         val: ExprPtr<'t>,
         body: ExprPtr<'t>,
     ) -> Parenable {
-        let suggestion = self.ctx.mk_unique(binder_name, BinderStyle::Default, binder_type);
-        let fresh_lc_name = binder_name;
-        let swapped_lc = self.ctx.swap_local_binding_name(suggestion, fresh_lc_name);
-        let (n, t) = match self.ctx.read_expr(swapped_lc) {
-            Local { binder_name, binder_type, .. } => (binder_name, binder_type),
-            _ => panic!(),
-        };
-
-        let instd = self.ctx.inst(body, &[swapped_lc]);
-        let binder = self.pp_bare_binder(n, t).group();
+        let binder = self.pp_bare_binder(binder_name, binder_type).group();
         let val = self.pp_expr_aux(val).parens(0).group();
-        let body = self.pp_expr_aux(instd).parens(0);
+        self.binder_names.push(binder_name);
+        let body = self.pp_expr_aux(body).parens(0);
+        self.binder_names.pop();
         DocPtr::from("let")
             .concat_w_space(binder)
             .concat_w_space(":=")
@@ -734,20 +723,22 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_expr_aux(&mut self, e: ExprPtr<'t>) -> Parenable {
-        if !self.options().proofs && self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proof(e).0) {
+        if !self.options().proofs && self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, &mut self.tc_cache, |tc| tc.is_proof(e)) {
             DocPtr::from("_").as_unparenable()
         } else {
             match self.ctx.read_expr(e) {
-                Var { dbj_idx, .. } => DocPtr::from(dbj_idx.to_string()).as_unparenable(),
+                Var { dbj_idx, .. } => self.pp_bvar(dbj_idx).as_unparenable(),
                 Sort { level, .. } => self.pp_sort(level),
                 Const { name, levels, .. } => self.pp_const(name, levels),
-                Local { binder_name, .. } => self.pp_name_safe(binder_name).as_unparenable(),
                 Lambda { .. } | Pi { .. } => {
-                    let (binders, instd) = self.parse_binders(e);
-                    let new_inner = self.pp_expr_aux(instd);
-                    self.pp_binders(binders.as_slice(), new_inner)
+                    let open = self.binder_names.len();
+                    let (binders, body) = self.parse_binders(e);
+                    let new_inner = self.pp_expr_aux(body);
+                    let out = self.pp_binders(binders.as_slice(), new_inner);
+                    self.binder_names.truncate(open);
+                    out
                 }
-                Let { binder_name, binder_type, val, body, .. } => self.pp_let(binder_name, binder_type, val, body),
+                Let { data, .. } => self.pp_let(data.binder_name, data.binder_type, data.val, data.body),
                 App { .. } => self.pp_app(e),
                 Proj { idx, structure, .. } => {
                     // Lean's pretty-printer for structure fields is 1-indexed
@@ -770,7 +761,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
     }
 
     fn pp_uparams(&mut self, levels: LevelsPtr<'t>) -> DocPtr {
-        let uparams = self.ctx.read_levels(levels).clone();
+        let uparams = self.ctx.read_levels(levels);
         if uparams.is_empty() {
             DocPtr::from("")
         } else {
@@ -780,6 +771,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
 
     /// Pretty print theorems, definitions, and opaques.
     fn main_def(&mut self, declar: &Declar<'t>, mut val: ExprPtr<'t>) -> DocPtr {
+        let open = self.binder_names.len();
         let (binders, ty) = self.parse_binders(declar.info().ty);
         // inlined parse_params
         let mut slice_split_idx = 0usize;
@@ -806,11 +798,10 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
             }
         }
         let (named_binders, rest_binders) = binders.split_at(slice_split_idx);
-        let named_binder_tys = named_binders.iter().map(|x| x.local_const).collect::<std::vec::Vec<_>>();
-
-        let instd = self.ctx.inst(val, named_binder_tys.as_slice());
+        let dropped = u16::try_from(binders.len() - slice_split_idx).expect("telescope exceeds u16");
+        let instd = self.ctx.lift(val, 0, dropped);
         let pp_val = {
-            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, |tc| tc.is_proposition(declar.info().ty).0);
+            let is_prop = self.ctx.with_tc(crate::env::EnvLimit::PpUnlimited, self.arena, &mut self.tc_cache, |tc| tc.is_proposition(declar.info().ty));
             line()
                 .concat(if is_prop && !self.options().proofs {
                     DocPtr::from("_")
@@ -836,7 +827,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                 .group()
         };
 
-        DocPtr::from(match declar {
+        let out = DocPtr::from(match declar {
             Declar::Theorem { .. } => "theorem",
             Declar::Definition { .. } => "def",
             Declar::Opaque { .. } => "opaque",
@@ -844,11 +835,14 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
         })
         .concat_w_space(self.pp_declar_info(*declar.info()))
         .concat_w_space(binders)
-        .concat(pp_val)
+        .concat(pp_val);
+        self.binder_names.truncate(open);
+        out
     }
 
     /// Pretty print axioms, inductive types, constructors, recursors, and the quotient primitives.
     fn main_axiom(&mut self, declar: &Declar<'t>) -> DocPtr {
+        let open = self.binder_names.len();
         let (binders, instd) = self.parse_binders(declar.info().ty);
         let (named_foralls, rest_binders) = partition_slice(binders.as_slice(), |x| x.is_named_pi());
         let telescope = self.telescope(named_foralls);
@@ -864,7 +858,7 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
                 .nest_group(self.options().indent)
         };
 
-        DocPtr::from(match declar {
+        let out = DocPtr::from(match declar {
             Declar::Axiom { .. } => "axiom",
             Declar::Quot { .. } => "Quotient primitive",
             Declar::Inductive { .. } => "inductive",
@@ -873,7 +867,9 @@ impl<'x, 't, 'p> PrettyPrinter<'x, 't, 'p> {
             _ => panic!(),
         })
         .concat_w_space(self.pp_declar_info(*declar.info()))
-        .concat_w_space(binder_ctx)
+        .concat_w_space(binder_ctx);
+        self.binder_names.truncate(open);
+        out
     }
 
     /// Pretty print a declaration by name. Returns `None` if this declaration
@@ -906,23 +902,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             App { fun: a, arg: b, .. } => self.has_var(a, i) || self.has_var(b, i),
             Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
                 self.has_var(binder_type, i) || self.has_var(body, i + 1),
-            Let { binder_type, val, body, .. } =>
+            Let { data: &crate::expr::LetData { binder_type, val, body, .. }, .. } =>
                 self.has_var(binder_type, i) || self.has_var(val, i) || self.has_var(body, i + 1),
             Proj { structure, .. } => self.has_var(structure, i),
             Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => false,
-            Local { .. } => panic!(),
         }
     }
 
-    fn swap_local_binding_name(&mut self, e: ExprPtr<'t>, new_name: NamePtr<'t>) -> ExprPtr<'t> {
-        match self.read_expr(e) {
-            Local { binder_style, binder_type, id: id @ FVarId::Unique(_), .. } => {
-                let hash = hash64!(crate::expr::LOCAL_HASH, new_name, binder_style, binder_type, id);
-                self.alloc_expr(Local { binder_name: new_name, binder_style, binder_type, id, hash })
-            }
-            _ => panic!(),
-        }
-    }
 
     /// Parse a dot-separated string as a `Name`. For any given name segment, if it parses
     /// as a u64, it will be treated as coming form the `Num` constructor, otherwise the

@@ -1,7 +1,6 @@
 //! Implementation of Lean expressions
 use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
 use num_bigint::BigUint;
-use num_traits::identities::Zero;
 use Expr::*;
 use serde::Deserialize;
 
@@ -13,7 +12,6 @@ pub(crate) const LAMBDA_HASH: u64 = 431;
 pub(crate) const LET_HASH: u64 = 241;
 pub(crate) const PI_HASH: u64 = 719;
 pub(crate) const APP_HASH: u64 = 233;
-pub(crate) const LOCAL_HASH: u64 = 211;
 pub(crate) const STRING_LIT_HASH: u64 = 1493;
 pub(crate) const NAT_LIT_HASH: u64 = 1583;
 
@@ -37,10 +35,9 @@ pub enum Expr<'a> {
         /// The 0-based position of the constructor argument, not considering the
         /// parameters. For some struct Foo A B, and a constructor Foo.mk A B p q r s,
         /// `q` will have idx 1.
-        idx: usize,
+        idx: u16,
         structure: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        fv_mask: u64,
     },
     /// A bound variable represented by a deBruijn index.
     Var {
@@ -60,8 +57,7 @@ pub enum Expr<'a> {
         hash: u64,
         fun: ExprPtr<'a>,
         arg: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        fv_mask: u64,
     },
     Pi {
         hash: u64,
@@ -69,8 +65,7 @@ pub enum Expr<'a> {
         binder_style: BinderStyle,
         binder_type: ExprPtr<'a>,
         body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        fv_mask: u64,
     },
     Lambda {
         hash: u64,
@@ -78,36 +73,22 @@ pub enum Expr<'a> {
         binder_style: BinderStyle,
         binder_type: ExprPtr<'a>,
         body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
+        fv_mask: u64,
     },
     Let {
         hash: u64,
-        binder_name: NamePtr<'a>,
-        binder_type: ExprPtr<'a>,
-        val: ExprPtr<'a>,
-        body: ExprPtr<'a>,
-        num_loose_bvars: u16,
-        has_fvars: bool,
-        nondep: bool
-    },
-    /// A free variable with binder information, and either a unique
-    /// identifier, or a deBruijn level.
-    Local {
-        hash: u64,
-        binder_name: NamePtr<'a>,
-        binder_style: BinderStyle,
-        binder_type: ExprPtr<'a>,
-        id: FVarId,
+        data: &'a LetData<'a>,
+        fv_mask: u64,
     },
 }
 
-/// Free variable identifiers, which are either unique IDs taken from
-/// a monotonically increasing counter, or a deBruijn level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FVarId {
-    DbjLevel(u16),
-    Unique(u32),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LetData<'a> {
+    pub binder_name: NamePtr<'a>,
+    pub binder_type: ExprPtr<'a>,
+    pub val: ExprPtr<'a>,
+    pub body: ExprPtr<'a>,
+    pub nondep: bool,
 }
 
 impl<'a> Expr<'a> {
@@ -120,7 +101,6 @@ impl<'a> Expr<'a> {
             | Pi { hash, .. }
             | Lambda { hash, .. }
             | Let { hash, .. }
-            | Local { hash, .. }
             | StringLit { hash, .. }
             | NatLit { hash, .. }
             | Proj { hash, .. } => *hash,
@@ -129,6 +109,11 @@ impl<'a> Expr<'a> {
 }
 impl<'a> std::hash::Hash for Expr<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
+}
+
+impl<'a> crate::util::RawHash for Expr<'a> {
+    #[inline]
+    fn raw_hash(&self) -> u64 { self.get_hash() }
 }
 
 /// The style of this binder (in Lean's vernacular, the brackets used to write it).
@@ -158,7 +143,90 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 panic!()
             }
         }
-        self.inst(e, &all_args[0..n])
+        self.inst_open(e, &all_args[0..n])
+    }
+
+    pub(crate) fn lift(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
+        if amount == 0 || self.num_loose_bvars(e) <= cutoff {
+            return e
+        }
+        match self.read_expr(e) {
+            Var { dbj_idx, .. } =>
+                if dbj_idx >= cutoff {
+                    self.mk_var(dbj_idx + amount)
+                } else {
+                    e
+                },
+            App { fun, arg, .. } => {
+                let fun = self.lift(fun, cutoff, amount);
+                let arg = self.lift(arg, cutoff, amount);
+                self.mk_app(fun, arg)
+            }
+            Pi { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.lift(binder_type, cutoff, amount);
+                let body = self.lift(body, cutoff + 1, amount);
+                self.mk_pi(binder_name, binder_style, binder_type, body)
+            }
+            Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.lift(binder_type, cutoff, amount);
+                let body = self.lift(body, cutoff + 1, amount);
+                self.mk_lambda(binder_name, binder_style, binder_type, body)
+            }
+            Let { data, .. } => {
+                    let crate::expr::LetData { binder_name, binder_type, val, body, nondep } = *data;
+                let binder_type = self.lift(binder_type, cutoff, amount);
+                let val = self.lift(val, cutoff, amount);
+                let body = self.lift(body, cutoff + 1, amount);
+                self.mk_let(binder_name, binder_type, val, body, nondep)
+            }
+            Proj { ty_name, idx, structure, .. } => {
+                let structure = self.lift(structure, cutoff, amount);
+                self.mk_proj(ty_name, idx, structure)
+            }
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => e,
+        }
+    }
+
+    pub(crate) fn lower(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
+        if amount == 0 || self.num_loose_bvars(e) <= cutoff {
+            return e
+        }
+        match self.read_expr(e) {
+            Var { dbj_idx, .. } =>
+                if dbj_idx >= cutoff {
+                    assert!(dbj_idx >= cutoff + amount, "lower: reference to a discarded binder");
+                    self.mk_var(dbj_idx - amount)
+                } else {
+                    e
+                },
+            App { fun, arg, .. } => {
+                let fun = self.lower(fun, cutoff, amount);
+                let arg = self.lower(arg, cutoff, amount);
+                self.mk_app(fun, arg)
+            }
+            Pi { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.lower(binder_type, cutoff, amount);
+                let body = self.lower(body, cutoff + 1, amount);
+                self.mk_pi(binder_name, binder_style, binder_type, body)
+            }
+            Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.lower(binder_type, cutoff, amount);
+                let body = self.lower(body, cutoff + 1, amount);
+                self.mk_lambda(binder_name, binder_style, binder_type, body)
+            }
+            Let { data, .. } => {
+                    let crate::expr::LetData { binder_name, binder_type, val, body, nondep } = *data;
+                let binder_type = self.lower(binder_type, cutoff, amount);
+                let val = self.lower(val, cutoff, amount);
+                let body = self.lower(body, cutoff + 1, amount);
+                self.mk_let(binder_name, binder_type, val, body, nondep)
+            }
+            Proj { ty_name, idx, structure, .. } => {
+                let structure = self.lower(structure, cutoff, amount);
+                self.mk_proj(ty_name, idx, structure)
+            }
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => e,
+        }
     }
 
     /// Instantiate `e` with the substitutions in `substs`
@@ -175,7 +243,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         } else {
             let calcd = match self.read_expr(e) {
                 // These expressions should be unreachable since they return `n_loose_bvars() == 0`
-                Sort { .. } | Const { .. } | Local { .. } | StringLit { .. } | NatLit { .. } => panic!(),
+                Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
                 Var { dbj_idx, .. } => {
                     debug_assert!(dbj_idx >= offset);
                     substs.iter().rev().nth((dbj_idx - offset) as usize).copied().unwrap_or(e)
@@ -195,7 +263,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, nondep, .. } => {
+                Let { data, .. } => {
+                    let crate::expr::LetData { binder_name, binder_type, val, body, nondep } = *data;
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let val = self.inst_aux(val, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
@@ -211,123 +280,56 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    /// From `e[x_1..x_n/v_1..v_n]`, abstract and re-inst, creating `e[y_1..y_n/v_1..v_n]`.
-    pub(crate) fn replace_params(
-        &mut self,
-        e: ExprPtr<'t>,
-        ingoing: &[ExprPtr<'t>],
-        outgoing: &[ExprPtr<'t>],
-    ) -> ExprPtr<'t> {
-        let e = self.abstr(e, outgoing);
-        self.inst(e, ingoing)
-    }
-
-    /// Abstraction with deBruijn levels instead of unique identifiers.
-    fn abstr_aux_levels(&mut self, e: ExprPtr<'t>, start_pos: u16, num_open_binders: u16) -> ExprPtr<'t> {
-        if !self.has_fvars(e) {
-            e
-        } else if let Some(cached) = self.expr_cache.abstr_cache_levels.get(&(e, start_pos, num_open_binders)) {
-            *cached
-        } else {
-            let calcd = match self.read_expr(e) {
-                Local { id: FVarId::DbjLevel(serial), .. } =>
-                    if serial < start_pos {
-                        e
-                    } else {
-                        self.fvar_to_bvar(num_open_binders, serial)
-                    },
-                Local { id: FVarId::Unique(..), .. } => e,
-                App { fun, arg, .. } => {
-                    let fun = self.abstr_aux_levels(fun, start_pos, num_open_binders);
-                    let arg = self.abstr_aux_levels(arg, start_pos, num_open_binders);
-                    self.mk_app(fun, arg)
-                }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
-                    let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
-                    let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
-                    self.mk_pi(binder_name, binder_style, binder_type, body)
-                }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
-                    let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
-                    let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
-                    self.mk_lambda(binder_name, binder_style, binder_type, body)
-                }
-                Let { binder_name, binder_type, val, body, nondep, .. } => {
-                    let binder_type = self.abstr_aux_levels(binder_type, start_pos, num_open_binders);
-                    let val = self.abstr_aux_levels(val, start_pos, num_open_binders);
-                    let body = self.abstr_aux_levels(body, start_pos, num_open_binders + 1);
-                    self.mk_let(binder_name, binder_type, val, body, nondep)
-                }
-                StringLit { .. } | NatLit { .. } => panic!(),
-                Proj { ty_name, idx, structure, .. } => {
-                    let structure = self.abstr_aux_levels(structure, start_pos, num_open_binders);
-                    self.mk_proj(ty_name, idx, structure)
-                }
-                Var { .. } | Sort { .. } | Const { .. } => panic!("should flag as no locals"),
-            };
-            self.expr_cache.abstr_cache_levels.insert((e, start_pos, num_open_binders), calcd);
-            calcd
+    pub(crate) fn inst_open(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
+        if substs.iter().all(|s| self.num_loose_bvars(*s) == 0) {
+            return self.inst(e, substs)
         }
+        self.expr_cache.inst_cache.clear();
+        self.inst_open_aux(e, substs, 0)
     }
 
-    pub fn abstr_levels(&mut self, e: ExprPtr<'t>, start_pos: u16) -> ExprPtr<'t> {
-        self.expr_cache.abstr_cache_levels.clear();
-        self.abstr_aux_levels(e, start_pos, self.dbj_level_counter)
-    }
-
-    fn abstr_aux(&mut self, e: ExprPtr<'t>, locals: &[ExprPtr<'t>], offset: u16) -> ExprPtr<'t> {
-        if !self.has_fvars(e) {
-            e
-        } else if let Some(cached) = self.expr_cache.abstr_cache.get(&(e, offset)) {
-            *cached
-        } else {
-            let calcd = match self.read_expr(e) {
-                Local { .. } => 
-                    locals
-                    .iter()
-                    .rev()
-                    .position(|x| *x == e)
-                    .map(|pos| self.mk_var(u16::try_from(pos).unwrap() + offset))
-                    .unwrap_or(e),
-                App { fun, arg, .. } => {
-                    let fun = self.abstr_aux(fun, locals, offset);
-                    let arg = self.abstr_aux(arg, locals, offset);
-                    self.mk_app(fun, arg)
-                }
-                Pi { binder_name, binder_style, binder_type, body, .. } => {
-                    let binder_type = self.abstr_aux(binder_type, locals, offset);
-                    let body = self.abstr_aux(body, locals, offset + 1);
-                    self.mk_pi(binder_name, binder_style, binder_type, body)
-                }
-                Lambda { binder_name, binder_style, binder_type, body, .. } => {
-                    let binder_type = self.abstr_aux(binder_type, locals, offset);
-                    let body = self.abstr_aux(body, locals, offset + 1);
-                    self.mk_lambda(binder_name, binder_style, binder_type, body)
-                }
-                Let { binder_name, binder_type, val, body, nondep, .. } => {
-                    let binder_type = self.abstr_aux(binder_type, locals, offset);
-                    let val = self.abstr_aux(val, locals, offset);
-                    let body = self.abstr_aux(body, locals, offset + 1);
-                    self.mk_let(binder_name, binder_type, val, body, nondep)
-                }
-                StringLit { .. } | NatLit { .. } => panic!(),
-                Proj { ty_name, idx, structure, .. } => {
-                    let structure = self.abstr_aux(structure, locals, offset);
-                    self.mk_proj(ty_name, idx, structure)
-                }
-                Var { .. } | Sort { .. } | Const { .. } => panic!("should flag as no locals"),
-            };
-
-            self.expr_cache.abstr_cache.insert((e, offset), calcd);
-            calcd
+    fn inst_open_aux(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>], offset: u16) -> ExprPtr<'t> {
+        if self.num_loose_bvars(e) <= offset {
+            return e
         }
-    }
-
-    /// Abstraction of unique identifiers; replaces free variables with the appropriate
-    /// bound variable, if the free variable is in `locals`.
-    pub fn abstr(&mut self, e: ExprPtr<'t>, locals: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        self.expr_cache.abstr_cache.clear();
-        self.abstr_aux(e, locals, 0u16)
+        if let Some(cached) = self.expr_cache.inst_cache.get(&(e, offset)) {
+            return *cached
+        }
+        let calcd = match self.read_expr(e) {
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
+            Var { dbj_idx, .. } => match substs.iter().rev().nth((dbj_idx - offset) as usize).copied() {
+                Some(s) => self.lift(s, 0, offset),
+                None => e,
+            },
+            App { fun, arg, .. } => {
+                let fun = self.inst_open_aux(fun, substs, offset);
+                let arg = self.inst_open_aux(arg, substs, offset);
+                self.mk_app(fun, arg)
+            }
+            Pi { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.inst_open_aux(binder_type, substs, offset);
+                let body = self.inst_open_aux(body, substs, offset + 1);
+                self.mk_pi(binder_name, binder_style, binder_type, body)
+            }
+            Lambda { binder_name, binder_style, binder_type, body, .. } => {
+                let binder_type = self.inst_open_aux(binder_type, substs, offset);
+                let body = self.inst_open_aux(body, substs, offset + 1);
+                self.mk_lambda(binder_name, binder_style, binder_type, body)
+            }
+            Let { data, .. } => {
+                    let crate::expr::LetData { binder_name, binder_type, val, body, nondep } = *data;
+                let binder_type = self.inst_open_aux(binder_type, substs, offset);
+                let val = self.inst_open_aux(val, substs, offset);
+                let body = self.inst_open_aux(body, substs, offset + 1);
+                self.mk_let(binder_name, binder_type, val, body, nondep)
+            }
+            Proj { ty_name, idx, structure, .. } => {
+                let structure = self.inst_open_aux(structure, substs, offset);
+                self.mk_proj(ty_name, idx, structure)
+            }
+        };
+        self.expr_cache.inst_cache.insert((e, offset), calcd);
+        calcd
     }
 
     fn subst_aux(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
@@ -359,16 +361,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_lambda(binder_name, binder_style, binder_type, body)
                 }
-                Let { binder_name, binder_type, val, body, nondep, .. } => {
+                Let { data, .. } => {
+                    let crate::expr::LetData { binder_name, binder_type, val, body, nondep } = *data;
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let val = self.subst_aux(val, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_let(binder_name, binder_type, val, body, nondep)
                 }
-                // Level subst is only used in const inference, and when unfolding definitions;
-                // in both cases you're substituting in expressions that were just pulled out of the
-                // environment, so they should have no locals.
-                Local { .. } => panic!("level substitution should not find locals"),
                 Proj { ty_name, idx, structure, .. } => {
                     let structure = self.subst_aux(structure, ks, vs);
                     self.mk_proj(ty_name, idx, structure)
@@ -380,6 +379,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn subst_expr_levels(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
+        if ks == vs || self.read_levels(ks).is_empty() {
+            assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+            return e;
+        }
         if let Some(cached) = self.expr_cache.dsubst_cache.get(&(e, ks, vs)).copied() {
             return cached
         }
@@ -390,13 +393,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         out
     }
 
-    pub(crate) fn subst_declar_info_levels(
-        &mut self,
-        info: crate::env::DeclarInfo<'t>,
-        in_vals: LevelsPtr<'t>,
-    ) -> ExprPtr<'t> {
-        self.subst_expr_levels(info.ty, info.uparams, in_vals)
-    }
 
     pub fn num_args(&self, e: ExprPtr<'t>) -> usize {
         let (mut cursor, mut num_args) = (e, 0);
@@ -416,8 +412,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// From `f a_0 .. a_N`, return `(f, [a_0, ..a_N])`
-    pub fn unfold_apps(&self, mut e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
-        let mut args = Vec::new();
+    pub fn unfold_apps<'b>(
+        &self,
+        arena: &'b bumpalo::Bump,
+        mut e: ExprPtr<'t>,
+    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
+        let mut args = bumpalo::collections::Vec::new_in(arena);
         loop {
             match self.read_expr(e) {
                 App { fun, arg, .. } => {
@@ -432,11 +432,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
     
     /// If this is a const application, return (Const {..}, name, levels, args)
-    pub fn unfold_const_apps(
+    pub fn unfold_const_apps<'b>(
         &self,
+        arena: &'b bumpalo::Bump,
         e: ExprPtr<'t>,
-    ) -> Option<(ExprPtr<'t>, NamePtr<'t>, LevelsPtr<'t>, Vec<ExprPtr<'t>>)> {
-        let (f, args) = self.unfold_apps(e);
+    ) -> Option<(ExprPtr<'t>, NamePtr<'t>, LevelsPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>)> {
+        let (f, args) = self.unfold_apps(arena, e);
         match self.read_expr(f) {
             Const { name, levels, .. } => Some((f, name, levels, args)),
             _ => None,
@@ -450,8 +451,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn unfold_apps_stack(&self, mut e: ExprPtr<'t>) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>) {
-        let mut args = Vec::new();
+    pub(crate) fn unfold_apps_stack<'b>(
+        &self,
+        arena: &'b bumpalo::Bump,
+        mut e: ExprPtr<'t>,
+    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
+        let mut args = bumpalo::collections::Vec::new_in(arena);
         while let App { fun, arg, .. } = self.read_expr(e) {
             args.push(arg);
             e = fun;
@@ -464,86 +469,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             fun = self.mk_app(fun, arg);
         }
         fun
-    }
-
-    pub(crate) fn abstr_pis<I>(&mut self, mut binders: I, mut body: ExprPtr<'t>) -> ExprPtr<'t>
-    where
-        I: Iterator<Item = ExprPtr<'t>> + DoubleEndedIterator, {
-        while let Some(local) = binders.next_back() {
-            body = self.abstr_pi(local, body)
-        }
-        body
-    }
-
-    pub(crate) fn abstr_pi(&mut self, binder: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
-        match self.read_expr(binder) {
-            Local { binder_name, binder_style, binder_type, .. } => {
-                let body = self.abstr(body, &[binder]);
-                self.mk_pi(binder_name, binder_style, binder_type, body)
-            }
-            _ => unreachable!("Cannot apply pi with non-local domain type"),
-        }
-    }
-
-    pub(crate) fn apply_lambda(&mut self, binder: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
-        match self.read_expr(binder) {
-            Local { binder_name, binder_style, binder_type, .. } => {
-                let body = self.abstr(body, &[binder]);
-                self.mk_lambda(binder_name, binder_style, binder_type, body)
-            }
-            _ => unreachable!("Cannot apply lambda with non-local domain type"),
-        }
-    }
-    
-    pub(crate) fn is_nat_zero(&mut self, e: ExprPtr<'t>) -> bool {
-        match self.read_expr(e) {
-            Const { .. } => self.c_nat_zero() == Some(e),
-            NatLit { ptr, .. } => self.read_bignum(ptr).map(|n| n.is_zero()).unwrap_or(false),
-            _ => false,
-        }
-    }
-
-    pub(crate) fn pred_of_nat_succ(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        match self.read_expr(e) {
-            App { fun, arg, .. } if self.c_nat_succ() == Some(fun) => Some(arg),
-            NatLit { ptr, .. } => {
-                let n = self.read_bignum(ptr)?;
-                if n.is_zero() {
-                    None
-                } else {
-                    self.mk_nat_lit_quick(n - 1u8)
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Used in iota reduction (`reduce_rec`) to turn a bignum
-    /// either `Nat.zero`, or `App (Nat.succ) (bignum - 1)`; in order to do iota reduction,
-    /// we need to know what constructor the major premise comes from.
-    pub(crate) fn nat_lit_to_constructor(&mut self, n: BigUintPtr<'t>) -> Option<ExprPtr<'t>> {
-        assert!(self.export_file.config.nat_extension);
-        let n = self.read_bignum(n).unwrap();
-        if n.is_zero() {
-            self.c_nat_zero()
-        } else {
-            let pred = self.alloc_bignum(core::ops::Sub::sub(n, 1u8)).unwrap();
-            let pred = self.mk_nat_lit(pred).unwrap();
-            let succ_c = self.c_nat_succ()?;
-            Some(self.mk_app(succ_c, pred))
-        }
-    }
-    
-    /// Return `true` iff `e` is an application of `@eagerReduce A a`
-    pub(crate) fn is_eager_reduce_app(&self, e: ExprPtr<'t>) -> bool {
-        if let App {fun, ..} = self.read_expr(e) {
-            if let App {fun, ..} = self.read_expr(fun) {
-                if let Const {name, ..} = self.read_expr(fun) {
-                    return self.export_file.name_cache.eager_reduce == Some(name)
-                }
-            }
-        }
-        false
     }
 
     /// Convert a string literal to `String.ofList <| List.cons (Char.ofNat _) .. List.nil`
@@ -583,97 +508,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         Some(self.mk_app(string_of_list_const, out))
     }
 
-    /// If `e` is a NatLit, or `Const Nat.zero []`, return the appropriate Bignum.
-    pub(crate) fn get_bignum_from_expr(&mut self, e: ExprPtr<'t>) -> Option<BigUint> {
-        if let NatLit { ptr, .. } = self.read_expr(e) {
-            self.read_bignum(ptr).cloned()
-        } else if Some(e) == self.c_nat_zero() {
-            Some(BigUint::zero())
-        } else {
-            None
-        }
-    }
 
-    pub(crate) fn get_bignum_succ_from_expr(&mut self, e: ExprPtr<'t>) -> Option<ExprPtr<'t>> {
-        if let NatLit { ptr, .. } = self.read_expr(e) {
-            self.mk_nat_lit_quick(self.read_bignum(ptr)? + 1usize)
-        } else if Some(e) == self.c_nat_zero() {
-            self.mk_nat_lit_quick(BigUint::zero() + 1usize)
-        } else {
-            None
-        }
-    }
-
-    /// Return the expression representing either `true` or `false`
-    pub(crate) fn bool_to_expr(&mut self, b: bool) -> Option<ExprPtr<'t>> {
-        if b {
-            self.c_bool_true()
-        } else {
-            self.c_bool_false()
-        }
-    }
-
-    pub(crate) fn c_bool_true(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.bool_true?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    pub(crate) fn c_bool_false(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.bool_false?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    pub(crate) fn c_nat_zero(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.nat_zero?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    pub(crate) fn c_nat_succ(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.nat_succ?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    /// Make `Const("Nat", [])`
-    pub(crate) fn nat_type(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.nat?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    /// Make `Const("String", [])`
-    pub(crate) fn string_type(&mut self) -> Option<ExprPtr<'t>> {
-        let n = self.export_file.name_cache.string?;
-        let levels = self.alloc_levels_slice(&[]);
-        Some(self.mk_const(n, levels))
-    }
-
-    /// Abstract `e` with the binders in `binders`, creating a lambda
-    /// telescope while backing out.
-    ///
-    /// `[a, b, c], e` ~> `(fun (a b c) => e)`
-    pub(crate) fn abstr_lambda_telescope(&mut self, mut binders: &[ExprPtr<'t>], mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let [tl @ .., binder] = binders {
-            e = self.apply_lambda(*binder, e);
-            binders = tl;
-        }
-        e
-    }
-
-    /// Abstract `e` with the binders in `binders`, creating a lambda
-    /// telescope while backing out.
-    ///
-    /// `[a, b, c], e` ~> `(Pi (a b c) => e)`
-    pub(crate) fn abstr_pi_telescope(&mut self, mut binders: &[ExprPtr<'t>], mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let [tl @ .., binder] = binders {
-            e = self.abstr_pi(*binder, e);
-            binders = tl;
-        }
-        e
-    }
 
     pub(crate) fn find_const<F>(&self, e: ExprPtr<'t>, pred: F) -> bool
     where
@@ -694,11 +529,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 App { fun, arg, .. } => self.find_const_aux(fun, pred, cache) || self.find_const_aux(arg, pred, cache),
                 Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
                     self.find_const_aux(binder_type, pred, cache) || self.find_const_aux(body, pred, cache),
-                Let { binder_type, val, body, .. } =>
+                Let { data: &crate::expr::LetData { binder_type, val, body, .. }, .. } =>
                     self.find_const_aux(binder_type, pred, cache)
                         || self.find_const_aux(val, pred, cache)
                         || self.find_const_aux(body, pred, cache),
-                Local { binder_type, .. } => self.find_const_aux(binder_type, pred, cache),
                 Proj { structure, .. } => self.find_const_aux(structure, pred, cache),
             };
             cache.insert(e, r);
@@ -743,9 +577,65 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     
     /// The number of "loose" bound variables, which is the number of bound variables
     /// in an expression which are boudn by something above it.
-    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { self.read_expr(e).num_loose_bvars() }
+    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 { e.num_loose_bvars() }
 
-    pub(crate) fn has_fvars(&self, e: ExprPtr<'t>) -> bool { self.read_expr(e).has_fvars() }
+    pub(crate) fn has_loose_bvar(&self, e: ExprPtr<'t>, idx: u16) -> bool {
+        if e.num_loose_bvars() <= idx {
+            return false
+        }
+        match self.read_expr(e) {
+            Var { dbj_idx, .. } => dbj_idx == idx,
+            App { fun, arg, .. } => self.has_loose_bvar(fun, idx) || self.has_loose_bvar(arg, idx),
+            Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
+                self.has_loose_bvar(binder_type, idx) || self.has_loose_bvar(body, idx + 1),
+            Let { data: &crate::expr::LetData { binder_type, val, body, .. }, .. } =>
+                self.has_loose_bvar(binder_type, idx)
+                    || self.has_loose_bvar(val, idx)
+                    || self.has_loose_bvar(body, idx + 1),
+            Proj { structure, .. } => self.has_loose_bvar(structure, idx),
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
+        }
+    }
+
+    pub(crate) fn has_loose_bvar_below(&self, e: ExprPtr<'t>, cutoff: u16) -> bool {
+        if cutoff == 0 || e.num_loose_bvars() == 0 {
+            return false
+        }
+        match self.read_expr(e) {
+            Var { dbj_idx, .. } => dbj_idx < cutoff,
+            App { fun, arg, .. } => self.has_loose_bvar_below(fun, cutoff) || self.has_loose_bvar_below(arg, cutoff),
+            Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
+                self.has_loose_bvar_below(binder_type, cutoff) || self.has_loose_bvar_below(body, cutoff + 1),
+            Let { data: &crate::expr::LetData { binder_type, val, body, .. }, .. } =>
+                self.has_loose_bvar_below(binder_type, cutoff)
+                    || self.has_loose_bvar_below(val, cutoff)
+                    || self.has_loose_bvar_below(body, cutoff + 1),
+            Proj { structure, .. } => self.has_loose_bvar_below(structure, cutoff),
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn child_mask(e: ExprPtr<'_>) -> u64 {
+    let k = e.num_loose_bvars();
+    if k == 0 || k > 64 {
+        0
+    } else {
+        e.as_ref().fv_mask()
+    }
+}
+
+#[inline]
+pub(crate) fn body_mask(body: ExprPtr<'_>) -> u64 {
+    let k = body.num_loose_bvars();
+    if k == 0 {
+        0
+    } else if k <= 64 {
+        body.as_ref().fv_mask() >> 1
+    } else {
+        u64::MAX
+    }
 }
 
 impl<'t> Expr<'t> {
@@ -753,26 +643,38 @@ impl<'t> Expr<'t> {
     /// in an expression which are boudn by something above it.
     pub(crate) fn num_loose_bvars(&self) -> u16 {
         match self {
-            Sort { .. } | Const { .. } | Local { .. } | StringLit { .. } | NatLit { .. } => 0,
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => 0,
             Var { dbj_idx, .. } => dbj_idx + 1,
-            App { num_loose_bvars, .. }
-            | Pi { num_loose_bvars, .. }
-            | Lambda { num_loose_bvars, .. }
-            | Let { num_loose_bvars, .. }
-            | Proj { num_loose_bvars, .. } => *num_loose_bvars,
+            App { fun, arg, .. } => fun.num_loose_bvars().max(arg.num_loose_bvars()),
+            Pi { binder_type, body, .. } | Lambda { binder_type, body, .. } =>
+                binder_type.num_loose_bvars().max(body.num_loose_bvars().saturating_sub(1)),
+            Let { data, .. } => data
+                .binder_type
+                .num_loose_bvars()
+                .max(data.val.num_loose_bvars().max(data.body.num_loose_bvars().saturating_sub(1))),
+            Proj { structure, .. } => structure.num_loose_bvars(),
         }
     }
 
-    pub(crate) fn has_fvars(&self) -> bool {
+    #[inline]
+    pub(crate) fn fv_mask(&self) -> u64 {
         match self {
-            Local { .. } => true,
-            Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => false,
-            App { has_fvars, .. }
-            | Pi { has_fvars, .. }
-            | Lambda { has_fvars, .. }
-            | Let { has_fvars, .. }
-            | Proj { has_fvars, .. } => *has_fvars,
+            Var { dbj_idx, .. } =>
+                if *dbj_idx < 64 {
+                    1u64 << dbj_idx
+                } else {
+                    0
+                },
+            App { fv_mask, .. }
+            | Pi { fv_mask, .. }
+            | Lambda { fv_mask, .. }
+            | Let { fv_mask, .. }
+            | Proj { fv_mask, .. } => *fv_mask,
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => 0,
         }
     }
+
 }
 
+
+const _: () = assert!(std::mem::size_of::<Expr<'static>>() == 48);

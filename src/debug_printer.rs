@@ -128,7 +128,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
                 write!(f, "{:?}.{:?}", self.ctx.debug_print(name), self.ctx.debug_print(levels.as_ref()))
             }
             App { fun, arg, .. } => write!(f, "({:?} {:?})", self.ctx.debug_print(fun), self.ctx.debug_print(arg)),
-            Let { binder_name, val, binder_type: binder, body, .. } => {
+            Let { data: &crate::expr::LetData { binder_name, val, binder_type: binder, body, .. }, .. } => {
                 write!(
                     f,
                     "let {:?} : {:?} := {:?} in {:?}",
@@ -154,15 +154,6 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
                     self.ctx.debug_print(binder_name),
                     self.ctx.debug_print(binder_type),
                     self.ctx.debug_print(body)
-                )
-            }
-            Local { binder_name, binder_type, id, .. } => {
-                write!(
-                    f,
-                    "#({:?}, {:?} : {:?})",
-                    self.ctx.debug_print(binder_name),
-                    id,
-                    self.ctx.debug_print(binder_type)
                 )
             }
             Proj { idx, structure, .. } => {
@@ -207,19 +198,6 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::env::RecRul
             .field("ctor_telescope_size_wo_params", &self.elem_to_print.ctor_telescope_size_wo_params)
             .field("val", &self.ctx.debug_print(self.elem_to_print.val))
             .finish()
-    }
-}
-
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::tc::DeltaResult<'t>> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.elem_to_print {
-            crate::tc::DeltaResult::FoundEqResult(b) => write!(f, "DeltaResult::FoundEqResult({})", b),
-            crate::tc::DeltaResult::Exhausted(e1, e2) => f
-                .debug_struct("DeltaResult::Exhausted")
-                .field("lhs", &self.ctx.debug_print(e1))
-                .field("rhs", &self.ctx.debug_print(e2))
-                .finish(),
-        }
     }
 }
 

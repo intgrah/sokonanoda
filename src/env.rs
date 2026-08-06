@@ -1,4 +1,5 @@
 use crate::util::{ExprPtr, FxHashMap, FxIndexMap, LevelsPtr, NamePtr};
+use std::collections::HashSet;
 use std::sync::Arc;
 use serde::Deserialize;
 
@@ -84,6 +85,25 @@ pub struct InductiveData<'a> {
     pub(crate) all_ctor_names: Arc<[NamePtr<'a>]>,
 }
 
+impl<'a> InductiveData<'a> {
+    pub fn aux_data_ck(&self, other: &Self) -> bool {
+        self.info.name == other.info.name
+            && self.num_params == other.num_params
+            && self.num_indices == other.num_indices
+            && self.is_nested == other.is_nested
+            && self.all_ctor_names.iter().collect::<HashSet<_>>()
+                == other.all_ctor_names.iter().collect::<HashSet<_>>()
+            && if other.is_nested {
+                self.all_ind_names
+                    .iter()
+                    .collect::<HashSet<_>>()
+                    .is_subset(&other.all_ind_names.iter().collect::<HashSet<_>>())
+            } else {
+                self.all_ind_names.iter().collect::<HashSet<_>>() == other.all_ind_names.iter().collect::<HashSet<_>>()
+            }
+    }
+}
+
 /// `inductive_name` is the name of the type this constructs. e.g. `Prod` for `Prod.mk`
 ///
 /// `ctor_idx` is 0-based; e.g. `List.nil (ctor_idx := 0)`, `List.cons (ctor_idx := 1)`
@@ -109,6 +129,16 @@ pub struct ConstructorData<'a> {
     pub num_fields: u16,
 }
 
+impl<'a> ConstructorData<'a> {
+    pub fn aux_data_ck(&self, other: &Self) -> bool {
+        self.info.name == other.info.name
+            && self.inductive_name == other.inductive_name
+            && self.ctor_idx == other.ctor_idx
+            && self.num_params == other.num_params
+            && self.num_fields == other.num_fields
+    }
+}
+
 /// Information received from the export file regarding a recursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursorData<'a> {
@@ -126,6 +156,17 @@ impl<'a> RecursorData<'a> {
     /// Compute the index in the recursor's type (in the telescope) where the major premise is located. 
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
+    }
+
+    pub fn aux_data_ck(&self, other: &Self) -> bool {
+        self.info.name == other.info.name
+            && self.num_params == other.num_params
+            && self.num_indices == other.num_indices
+            && self.num_motives == other.num_motives
+            && self.num_minors == other.num_minors
+            && self.is_k == other.is_k
+            && self.all_inductives.iter().collect::<HashSet<_>>()
+                == other.all_inductives.iter().collect::<HashSet<_>>()
     }
 }
 
@@ -213,7 +254,10 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
             EnvLimit::Empty => 0,
             EnvLimit::ByIndex(idx) => idx,
             EnvLimit::PpUnlimited => declars.len(),
-            EnvLimit::ByName(n) => declars.get_index_of(&n).unwrap_or(0),
+            EnvLimit::ByName(n) => match n.as_ref().decl_idx() {
+                crate::name::NO_DECL => 0,
+                idx => idx as usize,
+            },
         };
         Self { declars, cutoff, temp_declars, notation }
     }
@@ -224,6 +268,8 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         self.temp_declars.as_ref().and_then(|ext| ext.get(n)).or_else(|| self.get_old_declar(n))
     }
 
+    pub fn has_temp_ext(&self) -> bool { self.temp_declars.is_some() }
+
     /// Get a declaration, only looking in the temporary extension.
     pub fn get_temp_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
         self.temp_declars.as_ref().and_then(|ext| ext.get(n))
@@ -231,10 +277,10 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
-    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> { 
-        let (idx, _, v) = self.declars.get_full(n)?;
+    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
+        let idx = n.as_ref().decl_idx() as usize;
         if idx < self.cutoff {
-            Some(v)
+            Some(&self.declars[idx])
         } else {
             None
         }
@@ -265,11 +311,14 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     /// characteristics required of a structure. The requirements to be a structure are
     /// (1) the inductive declaration is not recursive, (2) the declaration has only one
     /// constructor, and (3) the type is declared with no indices.
-    pub(crate) fn can_be_struct(&self, n: &NamePtr<'a>) -> bool {
+    pub(crate) fn can_be_struct(&self, n: &NamePtr<'a>) -> bool { self.get_structure(n, false).is_some() }
+
+    pub(crate) fn get_structure(&self, n: &NamePtr<'a>, rec_ok: bool) -> Option<&InductiveData<'a>> {
         match self.get_inductive(n) {
-            Some(InductiveData { is_recursive, num_indices, all_ctor_names, .. }) =>
-                (!is_recursive) && (all_ctor_names.len() == 1) && (*num_indices == 0),
-            _ => false,
+            Some(i @ InductiveData { is_recursive, num_indices, all_ctor_names, .. })
+                if (all_ctor_names.len() == 1) && (*num_indices == 0) && (rec_ok || !is_recursive) =>
+                Some(i),
+            _ => None,
         }
     }
 

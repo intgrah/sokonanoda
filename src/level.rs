@@ -30,6 +30,11 @@ impl<'a> std::hash::Hash for Level<'a> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
 }
 
+impl<'a> crate::util::RawHash for Level<'a> {
+    #[inline]
+    fn raw_hash(&self) -> u64 { self.get_hash() }
+}
+
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn level_succs(&self, mut l: LevelPtr<'t>) -> (LevelPtr<'t>, usize) {
         let mut num_succs = 0usize;
@@ -54,6 +59,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
         match self.read_level(ptr) {
+            Zero | Param(..) => return ptr,
+            _ => {}
+        }
+        if let Some(cached) = self.expr_cache.simplify_cache.get(&ptr).copied() {
+            return cached;
+        }
+        let result = match self.read_level(ptr) {
             Zero | Param(..) => ptr,
             Succ(val, ..) => {
                 let val = self.simplify(val);
@@ -77,7 +89,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                   }
                 }
             }
-        }
+        };
+        self.expr_cache.simplify_cache.insert(ptr, result);
+        result
     }
 
     /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
@@ -100,8 +114,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// Return `uparams [ks |-> vs]` for a list of uparams
     pub fn subst_levels(&mut self, uparams: LevelsPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelsPtr<'t> {
         let out =
-            self.read_levels(uparams).clone().iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
-        self.alloc_levels(std::sync::Arc::from(out))
+            self.read_levels(uparams).iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
+        self.alloc_levels(&out)
     }
 
     /// Return `uparam [ks |-> vs]`
@@ -227,16 +241,24 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn leq(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
+        if l == r {
+            return true
+        }
         let l_prime = self.simplify(l);
         let r_prime = self.simplify(r);
         self.leq_core(l_prime, r_prime, 0)
     }
 
-    pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool { self.leq(l, r) && self.leq(r, l) }
+    pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
+        l == r || (self.leq(l, r) && self.leq(r, l))
+    }
 
     pub fn eq_antisymm_many(&mut self, xs: LevelsPtr<'t>, ys: LevelsPtr<'t>) -> bool {
-        let xs = self.read_levels(xs).clone();
-        let ys = self.read_levels(ys).clone();
+        if xs == ys {
+            return true
+        }
+        let xs = self.read_levels(xs);
+        let ys = self.read_levels(ys);
         if xs.len() != ys.len() {
             return false
         }

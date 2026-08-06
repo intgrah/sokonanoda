@@ -179,8 +179,8 @@ fn eq_many_test1() -> Result<(), Box<dyn Error>> {
         let ss = ctx.succ(s);
         let m = ctx.max(s, s);
         let sm = ctx.succ(m);
-        let ups1 = ctx.alloc_levels(std::sync::Arc::from([ss]));
-        let ups2 = ctx.alloc_levels(std::sync::Arc::from([sm]));
+        let ups1 = ctx.alloc_levels(&[ss]);
+        let ups2 = ctx.alloc_levels(&[sm]);
         assert!(ctx.eq_antisymm_many(ups1, ups2));
     })
 }
