@@ -15,13 +15,12 @@ pub mod inductive;
 pub mod infer;
 pub mod level;
 pub mod name;
+mod nat;
 pub mod parser;
 pub mod quot;
 pub mod quote;
 pub mod relevance;
 pub mod tc;
-#[cfg(test)]
-mod tests;
 pub mod util;
 pub mod value;
 

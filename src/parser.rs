@@ -1654,9 +1654,9 @@ where
     deserializer.deserialize_str(BigUintStringVisitor)
 }
 
+#[cfg(test)]
 mod semver_tests {
     use super::*;
-    #[allow(dead_code)]
     fn mk_meta(s: &'static str) -> FileMeta<'static> {
         FileMeta {
             lean: LeanMeta {
@@ -1674,7 +1674,7 @@ mod semver_tests {
     }
 
     #[test]
-    fn test_ng() {
+    fn format_version_invalid() {
         let too_small = ["2.9.9", "2.9.99"];
         let too_big = ["4.0.0", "4.1.0", "3.2.0", "3.2.1"];
 
@@ -1687,7 +1687,7 @@ mod semver_tests {
     }
 
     #[test]
-    fn test_ok() {
+    fn format_version_valid() {
         let ok = ["3.1.0", "3.1.9"];
         for v in ok {
             assert!(check_semver(&mk_meta(v)).is_ok())

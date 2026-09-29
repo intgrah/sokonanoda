@@ -338,3 +338,234 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         self.leq(one, level)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::parser::parse_export_file;
+    use rand::prelude::*;
+    use std::error::Error;
+    use stumpalo::Arena;
+
+    fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
+        let arena = Arena::new();
+        let (export_file, _) =
+            parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
+        Ok(export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
+    }
+
+    impl<'t, 'p: 't> TcCtx<'t, 'p> {
+        fn level_n(&mut self, mut level: LevelPtr<'t>, n: u64) -> LevelPtr<'t> {
+            for _ in 0..n {
+                level = self.succ(level);
+            }
+            level
+        }
+
+        fn param_quick(&mut self, name: &'static str) -> LevelPtr<'t> {
+            let name = self.str1(name);
+            self.param(name)
+        }
+    }
+
+    #[test]
+    fn max_self() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let m = ctx.max(s, s);
+            assert!(ctx.leq(s, m));
+            assert!(ctx.leq(m, s));
+            assert!(ctx.eq_antisymm(s, m));
+        })
+    }
+
+    #[test]
+    fn imax_zero() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let ss = ctx.succ(s);
+            let im = ctx.imax(ss, z);
+            assert!(ctx.leq(im, z));
+            assert!(ctx.eq_antisymm(z, im));
+        })
+    }
+
+    #[test]
+    fn param_incomparable() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let a = ctx.param_quick("a");
+            let b = ctx.param_quick("b");
+            assert!(!ctx.leq(a, b));
+            assert!(!ctx.leq(b, a));
+        })
+    }
+
+    #[test]
+    fn imax_le_succ() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let a = ctx.param_quick("a");
+            let b = ctx.param_quick("b");
+            let imax_a_b = ctx.imax(a, b);
+            let s_imax_a_b = ctx.succ(imax_a_b);
+            let ss_imax_a_b = ctx.succ(s_imax_a_b);
+            assert!(ctx.leq(imax_a_b, imax_a_b));
+            assert!(ctx.leq(imax_a_b, s_imax_a_b));
+            assert!(ctx.leq(imax_a_b, ss_imax_a_b));
+            assert!(ctx.leq(s_imax_a_b, ss_imax_a_b));
+            assert!(!ctx.leq(ss_imax_a_b, imax_a_b));
+            assert!(!ctx.leq(ss_imax_a_b, s_imax_a_b));
+        })
+    }
+
+    #[test]
+    fn succ_le_succ() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            for _ in 0..100 {
+                let mut rng = thread_rng();
+                let (small, large) = {
+                    let (x, y): (u8, u8) = rng.gen();
+                    (x.min(y), x.max(y))
+                };
+
+                let p = ctx.param_quick("p");
+                let (a, b) = (ctx.level_n(p, small as u64), ctx.level_n(p, large as u64));
+                assert!(ctx.leq(a, b));
+            }
+        })
+    }
+
+    #[test]
+    fn max_le_max() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
+            let mut rng = thread_rng();
+            for _ in 0..100 {
+                let (small, large) = {
+                    let (x, y): (u8, u8) = rng.gen();
+                    (x.min(y) as u64, x.max(y) as u64)
+                };
+                let lhs = {
+                    let (p_small, q_small) = (ctx.level_n(p, small), ctx.level_n(q, small));
+                    let lhs = ctx.max(p_small, q_small);
+                    ctx.level_n(lhs, small)
+                };
+                let rhs = {
+                    let (p_large, q_large) = (ctx.level_n(p, large), ctx.level_n(q, large));
+                    let rhs = ctx.max(p_large, q_large);
+                    ctx.level_n(rhs, large)
+                };
+
+                assert!(ctx.leq(lhs, rhs));
+            }
+        })
+    }
+
+    #[test]
+    fn imax_le_imax() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
+            let mut rng = thread_rng();
+            for _ in 0..100 {
+                let (small, large) = {
+                    let (x, y): (u8, u8) = rng.gen();
+                    (x.min(y) as u64, x.max(y) as u64)
+                };
+                let lhs = {
+                    let (p_small, q_small) = (ctx.level_n(p, small), ctx.level_n(q, small));
+                    let lhs = ctx.imax(p_small, q_small);
+                    ctx.level_n(lhs, small)
+                };
+                let rhs = {
+                    let (p_large, q_large) = (ctx.level_n(p, large), ctx.level_n(q, large));
+                    let rhs = ctx.imax(p_large, q_large);
+                    ctx.level_n(rhs, large)
+                };
+
+                assert!(ctx.leq(lhs, rhs));
+            }
+        })
+    }
+
+    #[test]
+    fn imax_eq_max_of_pos() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
+            let mut rng = thread_rng();
+            for _ in 0..100 {
+                let (u, v, w) = {
+                    let (u, v, w): (u8, u8, u8) = rng.gen();
+                    (u as u64, v as u64, w as u64)
+                };
+                let lhs = {
+                    let (p_, q_) = (ctx.level_n(p, u), ctx.level_n(q, v + 1));
+                    let lhs = ctx.imax(p_, q_);
+                    ctx.level_n(lhs, w)
+                };
+                let rhs = {
+                    let (p_, q_) = (ctx.level_n(p, u), ctx.level_n(q, v + 1));
+                    let rhs = ctx.max(p_, q_);
+                    ctx.level_n(rhs, w)
+                };
+
+                assert!(ctx.eq_antisymm(lhs, rhs));
+            }
+        })
+    }
+
+    #[test]
+    fn succ_max_self() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let ss = ctx.succ(s);
+            let m = ctx.max(s, s);
+            let sm = ctx.succ(m);
+            assert!(ctx.eq_antisymm(ss, sm));
+        })
+    }
+
+    #[test]
+    fn eq_antisymm_many_max_self() -> Result<(), Box<dyn Error>> {
+        // [2] == [max(1, 1) + 1]
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let ss = ctx.succ(s);
+            let m = ctx.max(s, s);
+            let sm = ctx.succ(m);
+            let ups1 = ctx.alloc_levels(&[ss]);
+            let ups2 = ctx.alloc_levels(&[sm]);
+            assert!(ctx.eq_antisymm_many(ups1, ups2));
+        })
+    }
+
+    #[test]
+    fn repr_succ() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let ss = ctx.succ(s);
+            let (z_, num) = ctx.level_succs(ss);
+            assert_eq!(z_, z);
+            assert_eq!(num, 2);
+            assert_eq!("2", format!("{:?}", ctx.debug_print(ss)));
+        })
+    }
+
+    #[test]
+    fn repr_succ_max() -> Result<(), Box<dyn Error>> {
+        test_ctx(|ctx| {
+            let z = ctx.zero();
+            let s = ctx.succ(z);
+            let m = ctx.max(s, s);
+            let sm = ctx.succ(m);
+            let (m_, num) = ctx.level_succs(sm);
+            assert_eq!(m, m_);
+            assert_eq!(num, 1);
+            assert_eq!("max(1, 1) + 1", format!("{:?}", ctx.debug_print(sm)));
+        })
+    }
+}

@@ -11,8 +11,6 @@ use crate::value::{E, S, V};
 use hashbrown::HashTable;
 use indexmap::IndexMap;
 use num_bigint::BigUint;
-use num_integer::Integer;
-use num_traits::identities::Zero;
 use rustc_hash::FxHasher;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -656,61 +654,6 @@ macro_rules! hash64 {
             hasher.finish()
         }
     };
-}
-
-pub(crate) fn nat_sub(x: BigUint, y: BigUint) -> BigUint {
-    if y > x {
-        BigUint::zero()
-    } else {
-        x - y
-    }
-}
-
-pub(crate) fn nat_div(x: BigUint, y: BigUint) -> BigUint {
-    if y.is_zero() {
-        BigUint::zero()
-    } else {
-        x / y
-    }
-}
-
-pub(crate) fn nat_mod(x: BigUint, y: BigUint) -> BigUint {
-    if y.is_zero() {
-        x
-    } else {
-        x % y
-    }
-}
-
-pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint {
-    x.gcd(y)
-}
-
-pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint {
-    x ^ y
-}
-
-fn shift_amount(y: &BigUint) -> Option<u64> {
-    u64::try_from(y).ok()
-}
-
-pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
-    let sh = shift_amount(&y).expect("Nat.shiftLeft: shift does not fit in a machine word");
-    x << sh
-}
-
-pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
-    match shift_amount(&y) {
-        Some(sh) => x >> sh,
-        None => BigUint::zero(),
-    }
-}
-
-pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint {
-    x & y
-}
-pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint {
-    x | y
 }
 
 pub struct ExprCache<'t> {
@@ -1513,4 +1456,46 @@ pub(crate) fn admit_slot(k: u64) -> usize {
 pub(crate) fn tenure_slot(k: usize) -> (usize, u64) {
     let h = (k as u64).wrapping_mul(0x9E3779B97F4A7C15) >> 16;
     (((h >> 6) as usize) & 1023, 1u64 << (h & 63))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_export_file;
+    use num_bigint::RandBigInt;
+    use rand::distributions::Alphanumeric;
+    use rand::Rng;
+
+    #[test]
+    fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
+        let arena = stumpalo::Arena::new();
+        let (export, _) =
+            parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
+        let mut rng = rand::thread_rng();
+        export.with_ctx(|ctx, _cache, _arena| {
+            for size in 0..100 {
+                for _ in 0..100 {
+                    let text: String = (&mut rng)
+                        .sample_iter(&Alphanumeric)
+                        .take(size)
+                        .map(char::from)
+                        .collect();
+                    let text = CowStr::Owned(text);
+                    let (left, right) = (
+                        ctx.mk_string_lit_quick(text.clone()),
+                        ctx.mk_string_lit_quick(text),
+                    );
+                    assert_eq!(hash64!(left), hash64!(right));
+                    assert_eq!(left, right);
+
+                    let nat = rng.gen_biguint(size as u64);
+                    let (left, right) =
+                        (ctx.mk_nat_lit_quick(nat.clone()), ctx.mk_nat_lit_quick(nat));
+                    assert_eq!(hash64!(left), hash64!(right));
+                    assert_eq!(left, right);
+                }
+            }
+        });
+        Ok(())
+    }
 }

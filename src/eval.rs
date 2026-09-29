@@ -1,10 +1,10 @@
 use crate::env::{Declar, RecursorData};
 use crate::expr::Expr;
-use crate::tc::{NatBinOp, TypeChecker};
-use crate::util::{
-    nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor, BigUintPtr,
-    ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr,
+use crate::nat::{
+    nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
+use crate::tc::{NatBinOp, TypeChecker};
+use crate::util::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use crate::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
