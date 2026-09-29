@@ -17,7 +17,10 @@ fn is_cacheable<'a>(v: &Value<'a>) -> bool {
         Value::Pi { .. }
             | Value::Lam { .. }
             | Value::Unfold { .. }
-            | Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. }
+            | Value::Rigid {
+                head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+                ..
+            }
     )
 }
 
@@ -64,8 +67,18 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             match (a, b) {
                 (Env::Nil { .. }, Env::Nil { .. }) => return true,
                 (
-                    Env::Cons { v: va, parent: pa, hash: ha, .. },
-                    Env::Cons { v: vb, parent: pb, hash: hb, .. },
+                    Env::Cons {
+                        v: va,
+                        parent: pa,
+                        hash: ha,
+                        ..
+                    },
+                    Env::Cons {
+                        v: vb,
+                        parent: pb,
+                        hash: hb,
+                        ..
+                    },
                 ) => {
                     if ha != hb {
                         return false;
@@ -106,7 +119,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if self.tc_cache.conv_cache_neg.contains(&cache_key) {
                     return false;
                 }
-                if self.tc_cache.probe_depth > 0 && self.tc_cache.conv_cache_neg_probe.contains(&cache_key) {
+                if self.tc_cache.probe_depth > 0
+                    && self.tc_cache.conv_cache_neg_probe.contains(&cache_key)
+                {
                     self.tc_cache.probe_exhausted = true;
                     return false;
                 }
@@ -152,53 +167,118 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     fn unify_direct<const RIGID: bool>(&mut self, depth: u32, t: V<'t>, t2: V<'t>) -> bool {
         match (t, t2) {
-            (Value::Sort { level: lx , .. }, Value::Sort { level: ly , .. }) => self.ctx.eq_antisymm(*lx, *ly),
-            (Value::NatLit { ptr: px , .. }, Value::NatLit { ptr: py , .. }) => px == py,
-            (Value::StrLit { ptr: px , .. }, Value::StrLit { ptr: py , .. }) => px == py,
-
-            (Value::Rigid { head: hx, spine: sx, .. }, Value::Rigid { head: hy, spine: sy, .. }) if rigid_head_eq(*hx, *hy) =>
-                self.unify_spine::<RIGID>(depth, sx, sy, Sig::ALL_RELEVANT, 0),
+            (Value::Sort { level: lx, .. }, Value::Sort { level: ly, .. }) => {
+                self.ctx.eq_antisymm(*lx, *ly)
+            }
+            (Value::NatLit { ptr: px, .. }, Value::NatLit { ptr: py, .. }) => px == py,
+            (Value::StrLit { ptr: px, .. }, Value::StrLit { ptr: py, .. }) => px == py,
 
             (
-                Value::Rigid { head: RigidHead::Ctor(nx, lx), spine: sx, .. },
-                Value::Rigid { head: RigidHead::Ctor(ny, ly), spine: sy, .. },
+                Value::Rigid {
+                    head: hx,
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: hy,
+                    spine: sy,
+                    ..
+                },
+            ) if rigid_head_eq(*hx, *hy) => {
+                self.unify_spine::<RIGID>(depth, sx, sy, Sig::ALL_RELEVANT, 0)
+            }
+
+            (
+                Value::Rigid {
+                    head: RigidHead::Ctor(nx, lx),
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: RigidHead::Ctor(ny, ly),
+                    spine: sy,
+                    ..
+                },
             ) if nx == ny && self.ctx.eq_antisymm_many(*lx, *ly) => {
                 let (sig, limit) = self.head_spine_sig(*nx, *lx, sx, sy);
                 self.unify_spine::<RIGID>(depth, sx, sy, sig, limit)
             }
             (
-                Value::Rigid { head: RigidHead::Inductive(nx, lx), spine: sx, .. },
-                Value::Rigid { head: RigidHead::Inductive(ny, ly), spine: sy, .. },
+                Value::Rigid {
+                    head: RigidHead::Inductive(nx, lx),
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: RigidHead::Inductive(ny, ly),
+                    spine: sy,
+                    ..
+                },
             ) if nx == ny && self.ctx.eq_antisymm_many(*lx, *ly) => {
                 let (sig, limit) = self.head_spine_sig(*nx, *lx, sx, sy);
                 self.unify_spine::<RIGID>(depth, sx, sy, sig, limit)
             }
             (
-                Value::Rigid { head: RigidHead::Axiom(nx, lx), spine: sx, .. },
-                Value::Rigid { head: RigidHead::Axiom(ny, ly), spine: sy, .. },
+                Value::Rigid {
+                    head: RigidHead::Axiom(nx, lx),
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: RigidHead::Axiom(ny, ly),
+                    spine: sy,
+                    ..
+                },
             ) if nx == ny && self.ctx.eq_antisymm_many(*lx, *ly) => {
                 let (sig, limit) = self.head_spine_sig(*nx, *lx, sx, sy);
                 self.unify_spine::<RIGID>(depth, sx, sy, sig, limit)
             }
 
             (
-                Value::Rigid { head: RigidHead::Recursor(nx, lx), spine: sx, .. },
-                Value::Rigid { head: RigidHead::Recursor(ny, ly), spine: sy, .. },
+                Value::Rigid {
+                    head: RigidHead::Recursor(nx, lx),
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: RigidHead::Recursor(ny, ly),
+                    spine: sy,
+                    ..
+                },
             ) => {
                 let (nx, ny, lx, ly) = (*nx, *ny, *lx, *ly);
                 let heads_match = nx == ny && self.ctx.eq_antisymm_many(lx, ly);
                 self.unify_iota::<RIGID>(depth, t, t2, heads_match, nx, lx, sx, sy)
             }
             (
-                Value::Rigid { head: RigidHead::QuotConst(nx, lx), spine: sx, .. },
-                Value::Rigid { head: RigidHead::QuotConst(ny, ly), spine: sy, .. },
+                Value::Rigid {
+                    head: RigidHead::QuotConst(nx, lx),
+                    spine: sx,
+                    ..
+                },
+                Value::Rigid {
+                    head: RigidHead::QuotConst(ny, ly),
+                    spine: sy,
+                    ..
+                },
             ) => {
                 let (nx, ny, lx, ly) = (*nx, *ny, *lx, *ly);
                 let heads_match = nx == ny && self.ctx.eq_antisymm_many(lx, ly);
                 self.unify_iota::<RIGID>(depth, t, t2, heads_match, nx, lx, sx, sy)
             }
 
-            (Value::Pi { domain: dx, body: bx, .. }, Value::Pi { domain: dy, body: by, .. }) => {
+            (
+                Value::Pi {
+                    domain: dx,
+                    body: bx,
+                    ..
+                },
+                Value::Pi {
+                    domain: dy,
+                    body: by,
+                    ..
+                },
+            ) => {
                 if bx.body == by.body
                     && std::ptr::eq(*dx, *dy)
                     && Self::envs_ptr_equal(bx.env, by.env)
@@ -234,15 +314,34 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
 
             (
-                Value::Unfold { head: UnfoldHead { name: nx, levels: lx }, spine: sx, .. },
-                Value::Unfold { head: UnfoldHead { name: ny, levels: ly }, spine: sy, .. },
+                Value::Unfold {
+                    head:
+                        UnfoldHead {
+                            name: nx,
+                            levels: lx,
+                        },
+                    spine: sx,
+                    ..
+                },
+                Value::Unfold {
+                    head:
+                        UnfoldHead {
+                            name: ny,
+                            levels: ly,
+                        },
+                    spine: sy,
+                    ..
+                },
             ) => {
                 let heads_match = nx == ny && self.ctx.eq_antisymm_many(*lx, *ly);
                 let (nx, ny, lx) = (*nx, *ny, *lx);
                 let sx = *sx;
                 let sy = *sy;
-                let (sig, limit) =
-                    if heads_match { self.head_spine_sig(nx, lx, sx, sy) } else { (Sig::ALL_RELEVANT, 0) };
+                let (sig, limit) = if heads_match {
+                    self.head_spine_sig(nx, lx, sx, sy)
+                } else {
+                    (Sig::ALL_RELEVANT, 0)
+                };
                 if RIGID {
                     if heads_match && self.spine_probe(depth, sx, sy, sig, limit) {
                         return true;
@@ -322,14 +421,26 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 self.unify::<true>(depth, t, v2)
             }
 
-            (Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. }, _) if RIGID => {
+            (
+                Value::Rigid {
+                    head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+                    ..
+                },
+                _,
+            ) if RIGID => {
                 if self.try_proof_irrel_at(depth, t, t2) {
                     return true;
                 }
                 if let Some(v1) = self.iota_value(depth, t) {
                     return self.unify::<true>(depth, v1, t2);
                 }
-                if matches!(t2, Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. }) {
+                if matches!(
+                    t2,
+                    Value::Rigid {
+                        head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+                        ..
+                    }
+                ) {
                     if let Some(v2) = self.iota_value(depth, t2) {
                         return self.unify::<true>(depth, t, v2);
                     }
@@ -342,7 +453,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 }
                 false
             }
-            (_, Value::Rigid { head: RigidHead::Recursor(..) | RigidHead::QuotConst(..), .. }) if RIGID => {
+            (
+                _,
+                Value::Rigid {
+                    head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+                    ..
+                },
+            ) if RIGID => {
                 if self.try_proof_irrel_at(depth, t, t2) {
                     return true;
                 }
@@ -362,13 +479,26 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
     }
 
-    fn probe_pairs(&self, sx: S<'t>, sy: S<'t>, sig: Sig, limit: u32) -> Option<Vec<(V<'t>, V<'t>)>> {
+    fn probe_pairs(
+        &self,
+        sx: S<'t>,
+        sy: S<'t>,
+        sig: Sig,
+        limit: u32,
+    ) -> Option<Vec<(V<'t>, V<'t>)>> {
         let (mut a, mut b) = (sx, sy);
         let mut elims = Vec::new();
         loop {
             match (a, b) {
                 (Spine::Empty, Spine::Empty) => break,
-                (Spine::Snoc { prev: pa, elim: ea, .. }, Spine::Snoc { prev: pb, elim: eb, .. }) => {
+                (
+                    Spine::Snoc {
+                        prev: pa, elim: ea, ..
+                    },
+                    Spine::Snoc {
+                        prev: pb, elim: eb, ..
+                    },
+                ) => {
                     elims.push((pa.len(), *ea, *eb));
                     a = pa;
                     b = pb;
@@ -379,14 +509,25 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let mut out = Vec::new();
         for (idx, ea, eb) in elims.into_iter().rev() {
             match (ea.view(), eb.view()) {
-                (ElimView::App(va), ElimView::App(vb)) =>
+                (ElimView::App(va), ElimView::App(vb)) => {
                     if !(idx < limit && sig.arg_is_ignorable(idx)) {
                         out.push((va, vb));
+                    }
+                }
+                (
+                    ElimView::Proj {
+                        ty_name: tx,
+                        idx: ix,
                     },
-                (ElimView::Proj { ty_name: tx, idx: ix }, ElimView::Proj { ty_name: ty, idx: iy }) =>
+                    ElimView::Proj {
+                        ty_name: ty,
+                        idx: iy,
+                    },
+                ) => {
                     if tx != ty || ix != iy {
                         return None;
-                    },
+                    }
+                }
                 _ => return None,
             }
         }
@@ -400,7 +541,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if self.tc_cache.probe_depth > 0 {
             return self.unify_spine::<true>(depth, sx, sy, sig, limit);
         }
-        let Some(pairs) = self.probe_pairs(sx, sy, sig, limit) else { return false };
+        let Some(pairs) = self.probe_pairs(sx, sy, sig, limit) else {
+            return false;
+        };
         let outer = std::mem::replace(&mut self.tc_cache.probe_exhausted, false);
         let decided = self.probe_pass(depth, &pairs);
         self.tc_cache.probe_exhausted = outer;
@@ -452,7 +595,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         sx: S<'t>,
         sy: S<'t>,
     ) -> bool {
-        let (sig, limit) = if heads_match { self.head_spine_sig(name, levels, sx, sy) } else { (Sig::ALL_RELEVANT, 0) };
+        let (sig, limit) = if heads_match {
+            self.head_spine_sig(name, levels, sx, sy)
+        } else {
+            (Sig::ALL_RELEVANT, 0)
+        };
         if RIGID {
             if heads_match && self.spine_probe(depth, sx, sy, sig, limit) {
                 return true;
@@ -477,7 +624,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
     }
 
-    fn iota_or_self(&mut self, depth: u32, v: V<'t>) -> V<'t> { self.iota_value(depth, v).unwrap_or(v) }
+    fn iota_or_self(&mut self, depth: u32, v: V<'t>) -> V<'t> {
+        self.iota_value(depth, v).unwrap_or(v)
+    }
 
     fn unfold_hint(&mut self, name: NamePtr<'t>) -> ReducibilityHint {
         match self.env.get_declar(&name) {
@@ -487,7 +636,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     #[inline]
-    fn head_spine_sig(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>, sx: S<'t>, sy: S<'t>) -> (Sig, u32) {
+    fn head_spine_sig(
+        &mut self,
+        name: NamePtr<'t>,
+        levels: LevelsPtr<'t>,
+        sx: S<'t>,
+        sy: S<'t>,
+    ) -> (Sig, u32) {
         let sig = self.sig_of(name, levels);
         if !sig.masks_any_arg() {
             return (Sig::ALL_RELEVANT, 0);
@@ -495,13 +650,27 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         (sig, app_prefix_len(sx).min(app_prefix_len(sy)))
     }
 
-    fn unify_spine<const RIGID: bool>(&mut self, depth: u32, sx: S<'t>, sy: S<'t>, sig: Sig, limit: u32) -> bool {
+    fn unify_spine<const RIGID: bool>(
+        &mut self,
+        depth: u32,
+        sx: S<'t>,
+        sy: S<'t>,
+        sig: Sig,
+        limit: u32,
+    ) -> bool {
         if std::ptr::eq(sx, sy) {
             return true;
         }
         match (sx, sy) {
             (Spine::Empty, Spine::Empty) => true,
-            (Spine::Snoc { prev: pa, elim: ea, .. }, Spine::Snoc { prev: pb, elim: eb, .. }) => {
+            (
+                Spine::Snoc {
+                    prev: pa, elim: ea, ..
+                },
+                Spine::Snoc {
+                    prev: pb, elim: eb, ..
+                },
+            ) => {
                 if !self.unify_spine::<RIGID>(depth, pa, pb, sig, limit) {
                     return false;
                 }
@@ -513,7 +682,16 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                         }
                         self.unify::<RIGID>(depth, va, vb)
                     }
-                    (ElimView::Proj { ty_name: tx, idx: ix }, ElimView::Proj { ty_name: ty, idx: iy }) => tx == ty && ix == iy,
+                    (
+                        ElimView::Proj {
+                            ty_name: tx,
+                            idx: ix,
+                        },
+                        ElimView::Proj {
+                            ty_name: ty,
+                            idx: iy,
+                        },
+                    ) => tx == ty && ix == iy,
                     _ => false,
                 }
             }
@@ -533,7 +711,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 spine,
                 ..
             } => (*n, *ls, *spine),
-            Value::Unfold { head: UnfoldHead { name, levels }, spine, .. } => (*name, *levels, *spine),
+            Value::Unfold {
+                head: UnfoldHead { name, levels },
+                spine,
+                ..
+            } => (*name, *levels, *spine),
             _ => return false,
         };
         let k = spine.len();
@@ -576,13 +758,18 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let yt = self.value_type_opt(depth, y);
         for ty in [xt, yt].into_iter().flatten() {
             let ty_f = self.force_all(depth, ty);
-            if let Value::Rigid { head: RigidHead::Inductive(ind_name, _), .. } = ty_f {
+            if let Value::Rigid {
+                head: RigidHead::Inductive(ind_name, _),
+                ..
+            } = ty_f
+            {
                 let ind_name = *ind_name;
                 if self.is_unit_inductive(ind_name) {
                     return true;
                 }
                 if self.can_be_struct_memo(ind_name)
-                    && (self.try_eta_struct_v(depth, ind_name, x, y) || self.try_eta_struct_v(depth, ind_name, y, x))
+                    && (self.try_eta_struct_v(depth, ind_name, x, y)
+                        || self.try_eta_struct_v(depth, ind_name, y, x))
                 {
                     return true;
                 }
@@ -649,7 +836,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     fn try_eta_struct_v(&mut self, depth: u32, ind_name: NamePtr<'t>, x: V<'t>, y: V<'t>) -> bool {
         let (yname, yspine) = match y {
-            Value::Rigid { head: RigidHead::Ctor(name, _), spine, .. } => (*name, *spine),
+            Value::Rigid {
+                head: RigidHead::Ctor(name, _),
+                spine,
+                ..
+            } => (*name, *spine),
             _ => return false,
         };
         let (num_params, num_fields, inductive_name) = match self.ctor_shape(yname) {
@@ -708,7 +899,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn may_be_nat(&self, v: V<'t>) -> bool {
         match v {
             Value::NatLit { .. } => true,
-            Value::Rigid { head: RigidHead::Ctor(name, _), .. } => {
+            Value::Rigid {
+                head: RigidHead::Ctor(name, _),
+                ..
+            } => {
                 let nc = &self.ctx.export_file.name_cache;
                 Some(*name) == nc.nat_zero || Some(*name) == nc.nat_succ
             }
@@ -718,11 +912,17 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     fn value_is_nat_zero(&self, v: V<'t>) -> bool {
         match v {
-            Value::Rigid { head: RigidHead::Ctor(name, _), spine, .. } =>
-                Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty(),
-            Value::NatLit { ptr , .. } => {
+            Value::Rigid {
+                head: RigidHead::Ctor(name, _),
+                spine,
+                ..
+            } => Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty(),
+            Value::NatLit { ptr, .. } => {
                 use num_traits::Zero;
-                self.ctx.read_bignum(*ptr).map(|n| n.is_zero()).unwrap_or(false)
+                self.ctx
+                    .read_bignum(*ptr)
+                    .map(|n| n.is_zero())
+                    .unwrap_or(false)
             }
             _ => false,
         }
@@ -730,17 +930,26 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     fn value_nat_pred(&mut self, v: V<'t>) -> Option<V<'t>> {
         match v {
-            Value::Rigid { head: RigidHead::Ctor(name, _), spine, .. } => {
+            Value::Rigid {
+                head: RigidHead::Ctor(name, _),
+                spine,
+                ..
+            } => {
                 if Some(*name) == self.ctx.export_file.name_cache.nat_succ {
-                    if let Spine::Snoc { prev: Spine::Empty, elim, .. } = **spine {
-                    if let ElimView::App(a) = elim.view() {
-                        return Some(a);
-                    }
+                    if let Spine::Snoc {
+                        prev: Spine::Empty,
+                        elim,
+                        ..
+                    } = **spine
+                    {
+                        if let ElimView::App(a) = elim.view() {
+                            return Some(a);
+                        }
                     }
                 }
                 None
             }
-            Value::NatLit { ptr , .. } => {
+            Value::NatLit { ptr, .. } => {
                 use num_traits::Zero;
                 let n = self.ctx.read_bignum(*ptr)?.clone();
                 if n.is_zero() {
@@ -756,7 +965,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     pub(crate) fn level_of_type(&mut self, depth: u32, ty: V<'t>) -> Option<LevelPtr<'t>> {
         let ty = self.force_thunk(depth, ty);
         match ty {
-            Value::Sort { level , .. } => {
+            Value::Sort { level, .. } => {
                 let s = self.ctx.succ(*level);
                 Some(self.ctx.simplify(s))
             }
@@ -785,23 +994,29 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let t = self.value_type(depth, ty);
                 let t_f = self.force_all(depth, t);
                 match t_f {
-                    Value::Sort { level , .. } => Some(self.ctx.simplify(*level)),
+                    Value::Sort { level, .. } => Some(self.ctx.simplify(*level)),
                     _ => None,
                 }
             }
-            Value::Unfold { head: UnfoldHead { name, levels }, .. } => {
+            Value::Unfold {
+                head: UnfoldHead { name, levels },
+                ..
+            } => {
                 let t = self.value_type(depth, ty);
                 let t_f = self.force_all(depth, t);
-                if let Value::Sort { level , .. } = t_f {
+                if let Value::Sort { level, .. } = t_f {
                     return Some(self.ctx.simplify(*level));
                 }
                 self.const_result_level(*name, *levels)
             }
-            Value::Rigid { head: RigidHead::BVar(..), .. } => {
+            Value::Rigid {
+                head: RigidHead::BVar(..),
+                ..
+            } => {
                 let t = self.value_type(depth, ty);
                 let ty_f = self.force_all(depth, t);
                 match ty_f {
-                    Value::Sort { level , .. } => Some(self.ctx.simplify(*level)),
+                    Value::Sort { level, .. } => Some(self.ctx.simplify(*level)),
                     _ => None,
                 }
             }

@@ -24,7 +24,8 @@ fn empty_test_config() -> Config {
 
 pub(crate) fn test_export_file<A>(f: impl FnOnce(&ExportFile) -> A) -> Result<A, Box<dyn Error>> {
     let arena = Arena::new();
-    let (export_file, _) = parse_export_file(arena.as_arena_ref(), std::io::empty(), empty_test_config())?;
+    let (export_file, _) =
+        parse_export_file(arena.as_arena_ref(), std::io::empty(), empty_test_config())?;
     Ok(f(&export_file))
 }
 
@@ -85,7 +86,11 @@ fn reject_nonuniform_inductive_occurrence_before_reduction() {
 }
 
 pub(crate) fn rand_string<'t>(rng: &mut ThreadRng, size: usize) -> CowStr<'t> {
-    let rand_string: String = rng.sample_iter(&Alphanumeric).take(size).map(char::from).collect();
+    let rand_string: String = rng
+        .sample_iter(&Alphanumeric)
+        .take(size)
+        .map(char::from)
+        .collect();
     CowStr::Owned(rand_string)
 }
 
@@ -100,7 +105,10 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
             for size in 0..100 {
                 for _ in 0..100 {
                     let s = rand_string(&mut rng, size);
-                    let (l, r) = (ctx.mk_string_lit_quick(s.clone()), ctx.mk_string_lit_quick(s));
+                    let (l, r) = (
+                        ctx.mk_string_lit_quick(s.clone()),
+                        ctx.mk_string_lit_quick(s),
+                    );
                     assert_eq!(hash64!(l), hash64!(r));
                     assert_eq!(l, r)
                 }

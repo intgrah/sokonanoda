@@ -48,21 +48,34 @@ impl<'a> Elim<'a> {
     pub fn app(v: V<'a>) -> Self {
         let addr = v as *const Value<'a> as usize as u64;
         debug_assert!(addr & 1 == 0);
-        Elim { bits: addr, _ph: std::marker::PhantomData }
+        Elim {
+            bits: addr,
+            _ph: std::marker::PhantomData,
+        }
     }
 
     #[inline]
     pub fn proj(ty_name: NamePtr<'a>, idx: u16) -> Self {
         let addr = ty_name.get_hash();
-        debug_assert!(addr >> (Self::IDX_SHIFT - 1) == 0, "name address does not fit alongside a projection index");
-        Elim { bits: (addr << 1) | 1 | (u64::from(idx) << Self::IDX_SHIFT), _ph: std::marker::PhantomData }
+        debug_assert!(
+            addr >> (Self::IDX_SHIFT - 1) == 0,
+            "name address does not fit alongside a projection index"
+        );
+        Elim {
+            bits: (addr << 1) | 1 | (u64::from(idx) << Self::IDX_SHIFT),
+            _ph: std::marker::PhantomData,
+        }
     }
 
     #[inline]
-    pub fn is_app(self) -> bool { self.bits & 1 == 0 }
+    pub fn is_app(self) -> bool {
+        self.bits & 1 == 0
+    }
 
     #[inline]
-    pub fn raw(self) -> u64 { self.bits }
+    pub fn raw(self) -> u64 {
+        self.bits
+    }
 
     #[inline]
     pub fn view(self) -> ElimView<'a> {
@@ -72,7 +85,10 @@ impl<'a> Elim<'a> {
         } else {
             let mask = (1u64 << Self::IDX_SHIFT) - 1;
             let addr = (self.bits & mask) >> 1;
-            ElimView::Proj { ty_name: NamePtr::from_raw_hash(addr), idx: (self.bits >> Self::IDX_SHIFT) as u16 }
+            ElimView::Proj {
+                ty_name: NamePtr::from_raw_hash(addr),
+                idx: (self.bits >> Self::IDX_SHIFT) as u16,
+            }
         }
     }
 }
@@ -135,12 +151,16 @@ pub enum Value<'a> {
 }
 
 #[inline]
-pub fn kmix(a: u64, b: u64) -> u64 { (a ^ b).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29) }
+pub fn kmix(a: u64, b: u64) -> u64 {
+    (a ^ b).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29)
+}
 
 const KEY_PRESENT: u64 = 1 << 63;
 
 #[inline]
-fn seal(d: u64, closed: bool) -> u64 { (d & !1) | u64::from(closed) | KEY_PRESENT }
+fn seal(d: u64, closed: bool) -> u64 {
+    (d & !1) | u64::from(closed) | KEY_PRESENT
+}
 
 impl<'a> Value<'a> {
     #[inline]
@@ -201,9 +221,14 @@ impl<'a> Value<'a> {
                 let h = kmix(kmix(10, head.name.get_hash()), head.levels.get_hash());
                 seal(kmix(h, spine.key()), spine.is_closed())
             }
-            Value::Lam { binder_type, body, .. } => {
+            Value::Lam {
+                binder_type, body, ..
+            } => {
                 let (b, c) = closure_key(body);
-                let h = kmix(11, binder_type.as_ref() as *const crate::expr::Expr<'a> as usize as u64);
+                let h = kmix(
+                    11,
+                    binder_type.as_ref() as *const crate::expr::Expr<'a> as usize as u64,
+                );
                 seal(kmix(h, b), c)
             }
             Value::Pi { domain, body, .. } => {
@@ -216,13 +241,24 @@ impl<'a> Value<'a> {
             Value::StrLit { ptr, .. } => seal(kmix(3, ptr.get_hash()), true),
             Value::Thunk { env, expr, .. } => {
                 let (e, c) = env_slots_key(env, expr.num_loose_bvars());
-                seal(kmix(kmix(13, expr.as_ref() as *const crate::expr::Expr<'a> as usize as u64), e), c)
+                seal(
+                    kmix(
+                        kmix(
+                            13,
+                            expr.as_ref() as *const crate::expr::Expr<'a> as usize as u64,
+                        ),
+                        e,
+                    ),
+                    c,
+                )
             }
         }
     }
 
     #[inline]
-    pub fn is_closed(&self) -> bool { self.digest() & 1 == 1 }
+    pub fn is_closed(&self) -> bool {
+        self.digest() & 1 == 1
+    }
 }
 
 fn head_key(head: RigidHead<'_>) -> (u64, bool) {
@@ -250,7 +286,10 @@ fn env_slots_key(env: E<'_>, count: u16) -> (u64, bool) {
 
 fn closure_key(clo: &Closure<'_>) -> (u64, bool) {
     let (e, c) = env_slots_key(clo.env, clo.body.num_loose_bvars().saturating_sub(1));
-    let d = kmix(clo.body.as_ref() as *const crate::expr::Expr<'_> as usize as u64, e);
+    let d = kmix(
+        clo.body.as_ref() as *const crate::expr::Expr<'_> as usize as u64,
+        e,
+    );
     (d, c && clo.ctx.is_none())
 }
 
@@ -300,7 +339,9 @@ pub struct WideFrame<'a> {
 impl<'a> WideFrame<'a> {
     #[cold]
     #[inline(never)]
-    fn lookup(&self, idx: u16) -> Option<V<'a>> { self.indices.binary_search(&idx).ok().map(|i| self.slots[i]) }
+    fn lookup(&self, idx: u16) -> Option<V<'a>> {
+        self.indices.binary_search(&idx).ok().map(|i| self.slots[i])
+    }
 }
 
 pub fn lsub_key(lsub: Option<&LevelSub<'_>>) -> u64 {
@@ -349,7 +390,14 @@ pub enum Ctx<'a> {
 #[derive(Debug)]
 pub enum Spine<'a> {
     Empty,
-    Snoc { prev: S<'a>, elim: Elim<'a>, len: u32, canon: Cell<bool>, has_proj: bool, key: Cell<u64> },
+    Snoc {
+        prev: S<'a>,
+        elim: Elim<'a>,
+        len: u32,
+        canon: Cell<bool>,
+        has_proj: bool,
+        key: Cell<u64>,
+    },
 }
 
 impl<'a> Spine<'a> {
@@ -370,22 +418,37 @@ impl<'a> Spine<'a> {
 
     #[inline]
     pub fn key(&self) -> u64 {
-        let Spine::Snoc { prev, elim, key, .. } = self else { return seal(15, true) };
+        let Spine::Snoc {
+            prev, elim, key, ..
+        } = self
+        else {
+            return seal(15, true);
+        };
         let k = key.get();
         if k & KEY_PRESENT != 0 {
             return k;
         }
         let k = match elim.view() {
-            ElimView::App(v) => seal(kmix(prev.key(), v.digest()), prev.is_closed() && v.is_closed()),
-            ElimView::Proj { ty_name, idx } =>
-                seal(kmix(kmix(prev.key(), ty_name.get_hash()), u64::from(idx) | (1 << 60)), prev.is_closed()),
+            ElimView::App(v) => seal(
+                kmix(prev.key(), v.digest()),
+                prev.is_closed() && v.is_closed(),
+            ),
+            ElimView::Proj { ty_name, idx } => seal(
+                kmix(
+                    kmix(prev.key(), ty_name.get_hash()),
+                    u64::from(idx) | (1 << 60),
+                ),
+                prev.is_closed(),
+            ),
         };
         key.set(k);
         k
     }
 
     #[inline]
-    pub fn is_closed(&self) -> bool { self.key() & 1 == 1 }
+    pub fn is_closed(&self) -> bool {
+        self.key() & 1 == 1
+    }
 }
 
 impl<'a> Env<'a> {
@@ -416,9 +479,21 @@ impl<'a> Env<'a> {
 }
 
 impl<'a> Closure<'a> {
-    pub fn mk_eval(env: E<'a>, body: ExprPtr<'a>) -> Self { Closure { env, ctx: None, body } }
+    pub fn mk_eval(env: E<'a>, body: ExprPtr<'a>) -> Self {
+        Closure {
+            env,
+            ctx: None,
+            body,
+        }
+    }
 
-    pub fn mk_infer(env: E<'a>, ctx: C<'a>, body: ExprPtr<'a>) -> Self { Closure { env, ctx: Some(ctx), body } }
+    pub fn mk_infer(env: E<'a>, ctx: C<'a>, body: ExprPtr<'a>) -> Self {
+        Closure {
+            env,
+            ctx: Some(ctx),
+            body,
+        }
+    }
 }
 
 impl<'a> Ctx<'a> {
@@ -444,7 +519,9 @@ impl<'a> Spine<'a> {
         }
     }
 
-    pub fn is_empty(&self) -> bool { matches!(self, Spine::Empty) }
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Spine::Empty)
+    }
 
     #[inline]
     pub fn len(&self) -> u32 {
@@ -479,16 +556,36 @@ impl<'a> Spine<'a> {
     }
 }
 
-pub fn env_empty<'a>(arena: &'a Bump) -> E<'a> { arena.alloc(Env::Nil { lsub: None, hash: 0 }) }
+pub fn env_empty<'a>(arena: &'a Bump) -> E<'a> {
+    arena.alloc(Env::Nil {
+        lsub: None,
+        hash: 0,
+    })
+}
 pub fn env_extend<'a>(arena: &'a Bump, parent: E<'a>, v: V<'a>) -> E<'a> {
     let v_hash = v as *const Value<'a> as usize as u64;
     let parent_hash = parent.get_hash();
-    let hash = parent_hash.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(v_hash);
-    arena.alloc(Env::Cons { v, parent, lsub: parent.lsub(), hash, len: parent.len() + 1, prune: Cell::new((0, None)) })
+    let hash = parent_hash
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add(v_hash);
+    arena.alloc(Env::Cons {
+        v,
+        parent,
+        lsub: parent.lsub(),
+        hash,
+        len: parent.len() + 1,
+        prune: Cell::new((0, None)),
+    })
 }
-pub fn ctx_empty<'a>(arena: &'a Bump) -> C<'a> { arena.alloc(Ctx::Nil) }
-pub fn ctx_extend<'a>(arena: &'a Bump, parent: C<'a>, ty: V<'a>) -> C<'a> { arena.alloc(Ctx::Cons { ty, parent }) }
-pub fn spine_empty<'a>(arena: &'a Bump) -> S<'a> { arena.alloc(Spine::Empty) }
+pub fn ctx_empty<'a>(arena: &'a Bump) -> C<'a> {
+    arena.alloc(Ctx::Nil)
+}
+pub fn ctx_extend<'a>(arena: &'a Bump, parent: C<'a>, ty: V<'a>) -> C<'a> {
+    arena.alloc(Ctx::Cons { ty, parent })
+}
+pub fn spine_empty<'a>(arena: &'a Bump) -> S<'a> {
+    arena.alloc(Spine::Empty)
+}
 pub fn spine_snoc<'a>(arena: &'a Bump, prev: S<'a>, elim: Elim<'a>) -> S<'a> {
     arena.alloc(Spine::Snoc {
         prev,
@@ -501,7 +598,12 @@ pub fn spine_snoc<'a>(arena: &'a Bump, prev: S<'a>, elim: Elim<'a>) -> S<'a> {
 }
 
 pub fn mk_rigid<'a>(arena: &'a Bump, head: RigidHead<'a>, spine: S<'a>) -> V<'a> {
-    arena.alloc(Value::Rigid { head, spine, canon: Cell::new(false), key: Cell::new(0) })
+    arena.alloc(Value::Rigid {
+        head,
+        spine,
+        canon: Cell::new(false),
+        key: Cell::new(0),
+    })
 }
 
 pub fn mk_unfold<'a>(
@@ -541,19 +643,38 @@ pub fn mk_unfold_head_with_empty<'a>(
     })
 }
 pub fn mk_lam<'a>(arena: &'a Bump, binder_type: ExprPtr<'a>, body: Closure<'a>) -> V<'a> {
-    arena.alloc(Value::Lam { binder_type, body, canon: Cell::new(false), key: Cell::new(0) })
+    arena.alloc(Value::Lam {
+        binder_type,
+        body,
+        canon: Cell::new(false),
+        key: Cell::new(0),
+    })
 }
 pub fn mk_pi<'a>(arena: &'a Bump, domain: V<'a>, body: Closure<'a>) -> V<'a> {
-    arena.alloc(Value::Pi { domain, body, canon: Cell::new(false), key: Cell::new(0) })
+    arena.alloc(Value::Pi {
+        domain,
+        body,
+        canon: Cell::new(false),
+        key: Cell::new(0),
+    })
 }
 pub fn mk_sort<'a>(arena: &'a Bump, level: LevelPtr<'a>) -> V<'a> {
-    arena.alloc(Value::Sort { level, key: Cell::new(0) })
+    arena.alloc(Value::Sort {
+        level,
+        key: Cell::new(0),
+    })
 }
 pub fn mk_natlit<'a>(arena: &'a Bump, ptr: BigUintPtr<'a>) -> V<'a> {
-    arena.alloc(Value::NatLit { ptr, key: Cell::new(0) })
+    arena.alloc(Value::NatLit {
+        ptr,
+        key: Cell::new(0),
+    })
 }
 pub fn mk_strlit<'a>(arena: &'a Bump, ptr: StringPtr<'a>) -> V<'a> {
-    arena.alloc(Value::StrLit { ptr, key: Cell::new(0) })
+    arena.alloc(Value::StrLit {
+        ptr,
+        key: Cell::new(0),
+    })
 }
 pub fn mk_bvar_with_empty<'a>(arena: &'a Bump, level: u32, ty: V<'a>, empty: S<'a>) -> V<'a> {
     mk_rigid(arena, RigidHead::BVar(level, ty), empty)
@@ -562,7 +683,12 @@ pub fn mk_rigid_head_with_empty<'a>(arena: &'a Bump, head: RigidHead<'a>, empty:
     mk_rigid(arena, head, empty)
 }
 pub fn mk_thunk<'a>(arena: &'a Bump, env: E<'a>, expr: ExprPtr<'a>) -> V<'a> {
-    arena.alloc(Value::Thunk { env, expr, forced: OnceCell::new(), key: Cell::new(0) })
+    arena.alloc(Value::Thunk {
+        env,
+        expr,
+        forced: OnceCell::new(),
+        key: Cell::new(0),
+    })
 }
 
 const _: () = assert!(std::mem::size_of::<Value<'static>>() == 56);

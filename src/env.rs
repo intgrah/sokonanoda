@@ -52,11 +52,25 @@ pub struct RecRule<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declar<'a> {
-    Axiom { info: DeclarInfo<'a> },
-    Quot { info: DeclarInfo<'a> },
-    Theorem { info: DeclarInfo<'a>, val: ExprPtr<'a> },
-    Definition { info: DeclarInfo<'a>, val: ExprPtr<'a>, hint: ReducibilityHint },
-    Opaque { info: DeclarInfo<'a>, val: ExprPtr<'a> },
+    Axiom {
+        info: DeclarInfo<'a>,
+    },
+    Quot {
+        info: DeclarInfo<'a>,
+    },
+    Theorem {
+        info: DeclarInfo<'a>,
+        val: ExprPtr<'a>,
+    },
+    Definition {
+        info: DeclarInfo<'a>,
+        val: ExprPtr<'a>,
+        hint: ReducibilityHint,
+    },
+    Opaque {
+        info: DeclarInfo<'a>,
+        val: ExprPtr<'a>,
+    },
     Inductive(InductiveData<'a>),
     Constructor(ConstructorData<'a>),
     Recursor(RecursorData<'a>),
@@ -91,14 +105,16 @@ impl<'a> InductiveData<'a> {
             && self.num_params == other.num_params
             && self.num_indices == other.num_indices
             && self.is_nested == other.is_nested
-            && self.all_ctor_names.iter().collect::<HashSet<_>>() == other.all_ctor_names.iter().collect::<HashSet<_>>()
+            && self.all_ctor_names.iter().collect::<HashSet<_>>()
+                == other.all_ctor_names.iter().collect::<HashSet<_>>()
             && if other.is_nested {
                 self.all_ind_names
                     .iter()
                     .collect::<HashSet<_>>()
                     .is_subset(&other.all_ind_names.iter().collect::<HashSet<_>>())
             } else {
-                self.all_ind_names.iter().collect::<HashSet<_>>() == other.all_ind_names.iter().collect::<HashSet<_>>()
+                self.all_ind_names.iter().collect::<HashSet<_>>()
+                    == other.all_ind_names.iter().collect::<HashSet<_>>()
             }
     }
 }
@@ -164,7 +180,8 @@ impl<'a> RecursorData<'a> {
             && self.num_motives == other.num_motives
             && self.num_minors == other.num_minors
             && self.is_k == other.is_k
-            && self.all_inductives.iter().collect::<HashSet<_>>() == other.all_inductives.iter().collect::<HashSet<_>>()
+            && self.all_inductives.iter().collect::<HashSet<_>>()
+                == other.all_inductives.iter().collect::<HashSet<_>>()
     }
 }
 
@@ -186,22 +203,46 @@ impl<'a> Declar<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notation<'a> {
-    Prefix { name: NamePtr<'a>, priority: usize, oper: Arc<str> },
-    Infix { name: NamePtr<'a>, priority: usize, oper: Arc<str> },
-    Postfix { name: NamePtr<'a>, priority: usize, oper: Arc<str> },
+    Prefix {
+        name: NamePtr<'a>,
+        priority: usize,
+        oper: Arc<str>,
+    },
+    Infix {
+        name: NamePtr<'a>,
+        priority: usize,
+        oper: Arc<str>,
+    },
+    Postfix {
+        name: NamePtr<'a>,
+        priority: usize,
+        oper: Arc<str>,
+    },
 }
 
 impl<'a> Notation<'a> {
     pub fn new_prefix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Prefix { name, priority, oper }
+        Notation::Prefix {
+            name,
+            priority,
+            oper,
+        }
     }
 
     pub fn new_infix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Infix { name, priority, oper }
+        Notation::Infix {
+            name,
+            priority,
+            oper,
+        }
     }
 
     pub fn new_postfix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Postfix { name, priority, oper }
+        Notation::Postfix {
+            name,
+            priority,
+            oper,
+        }
     }
 }
 
@@ -235,7 +276,11 @@ pub(crate) type NotationMap<'a> = FxHashMap<NamePtr<'a>, Notation<'a>>;
 
 impl<'x, 'a: 'x> Env<'x, 'a> {
     /// Create a new environment (without any temporary extension)
-    pub fn new(declars: &'a DeclarMap<'a>, notation: &'a NotationMap<'a>, limit: EnvLimit<'a>) -> Self {
+    pub fn new(
+        declars: &'a DeclarMap<'a>,
+        notation: &'a NotationMap<'a>,
+        limit: EnvLimit<'a>,
+    ) -> Self {
         Self::new_w_temp_ext(declars, None, notation, limit)
     }
 
@@ -255,16 +300,26 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
                 idx => idx as usize,
             },
         };
-        Self { declars, cutoff, temp_declars, notation }
+        Self {
+            declars,
+            cutoff,
+            temp_declars,
+            notation,
+        }
     }
 
     /// Retrieve a declaration by first checking the contents of any temporary extension,
     /// then checking the persistent environment.
     pub fn get_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
-        self.temp_declars.as_ref().and_then(|ext| ext.get(n)).or_else(|| self.get_old_declar(n))
+        self.temp_declars
+            .as_ref()
+            .and_then(|ext| ext.get(n))
+            .or_else(|| self.get_old_declar(n))
     }
 
-    pub fn has_temp_ext(&self) -> bool { self.temp_declars.is_some() }
+    pub fn has_temp_ext(&self) -> bool {
+        self.temp_declars.is_some()
+    }
 
     /// Get a declaration, only looking in the temporary extension.
     pub fn get_temp_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
@@ -308,13 +363,29 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     /// characteristics required of a structure. The requirements to be a structure are
     /// (1) the inductive declaration is not recursive, (2) the declaration has only one
     /// constructor, and (3) the type is declared with no indices.
-    pub(crate) fn can_be_struct(&self, n: &NamePtr<'a>) -> bool { self.get_structure(n, false).is_some() }
+    pub(crate) fn can_be_struct(&self, n: &NamePtr<'a>) -> bool {
+        self.get_structure(n, false).is_some()
+    }
 
-    pub(crate) fn get_structure(&self, n: &NamePtr<'a>, rec_ok: bool) -> Option<&InductiveData<'a>> {
+    pub(crate) fn get_structure(
+        &self,
+        n: &NamePtr<'a>,
+        rec_ok: bool,
+    ) -> Option<&InductiveData<'a>> {
         match self.get_inductive(n) {
-            Some(i @ InductiveData { is_recursive, num_indices, all_ctor_names, .. })
-                if (all_ctor_names.len() == 1) && (*num_indices == 0) && (rec_ok || !is_recursive) =>
-                Some(i),
+            Some(
+                i @ InductiveData {
+                    is_recursive,
+                    num_indices,
+                    all_ctor_names,
+                    ..
+                },
+            ) if (all_ctor_names.len() == 1)
+                && (*num_indices == 0)
+                && (rec_ok || !is_recursive) =>
+            {
+                Some(i)
+            }
             _ => None,
         }
     }
@@ -323,7 +394,9 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     /// definitions and theorems have values). Also returns the declaration's universe parameters.
     pub fn get_declar_val(&self, n: &NamePtr<'a>) -> Option<(LevelsPtr<'a>, ExprPtr<'a>)> {
         match self.get_declar(n)? {
-            Declar::Definition { info, val, .. } | Declar::Theorem { info, val, .. } => Some((info.uparams, *val)),
+            Declar::Definition { info, val, .. } | Declar::Theorem { info, val, .. } => {
+                Some((info.uparams, *val))
+            }
             _ => None,
         }
     }

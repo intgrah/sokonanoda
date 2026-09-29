@@ -11,8 +11,14 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
         let r = match v {
             Value::Sort { level, .. } => self.ctx.mk_sort(*level),
-            Value::NatLit { ptr, .. } => self.ctx.mk_nat_lit(*ptr).expect("quote: nat literal without extension"),
-            Value::StrLit { ptr, .. } => self.ctx.mk_string_lit(*ptr).expect("quote: string literal without extension"),
+            Value::NatLit { ptr, .. } => self
+                .ctx
+                .mk_nat_lit(*ptr)
+                .expect("quote: nat literal without extension"),
+            Value::StrLit { ptr, .. } => self
+                .ctx
+                .mk_string_lit(*ptr)
+                .expect("quote: string literal without extension"),
             Value::Rigid { head, spine, .. } => {
                 let head = self.quote_rigid_head(depth, *head);
                 self.quote_spine(depth, head, spine)
@@ -76,7 +82,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     pub(crate) fn quote_weak(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
         match v {
-            Value::Thunk { env, expr, forced, .. } => {
+            Value::Thunk {
+                env, expr, forced, ..
+            } => {
                 if forced.get().is_none() {
                     let env = *env;
                     let expr = *expr;

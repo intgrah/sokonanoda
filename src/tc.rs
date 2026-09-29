@@ -1,7 +1,5 @@
 use crate::env::{Declar, DeclarInfo, Env, EnvLimit};
-use crate::util::{
-    ExportFile, ExprPtr, TcCache, TcCtx
-};
+use crate::util::{ExportFile, ExprPtr, TcCache, TcCtx};
 use crate::value::E;
 
 use InferFlag::*;
@@ -97,14 +95,21 @@ impl<'p> ExportFile<'p> {
         let env = self.new_env(EnvLimit::ByName(d.info().name));
         let mut tc = TypeChecker::new(ctx, &env, bump, Some(*d.info()), cache);
         match d {
-            Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => tc.check_def_like_v(d, *val),
+            Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => {
+                tc.check_def_like_v(d, *val)
+            }
             Axiom { .. } | Constructor(..) | Recursor(..) => tc.check_declar_info_v(d),
             Inductive(..) | Quot { .. } => unreachable!(),
         }
         match d {
-            Constructor(ctor_data) => assert!(self.declars.get(&ctor_data.inductive_name).is_some()),
+            Constructor(ctor_data) => {
+                assert!(self.declars.get(&ctor_data.inductive_name).is_some())
+            }
             Recursor(recursor_data) => {
-                let rec_idx = self.declars.get_index_of(&recursor_data.info.name).expect("missing recursor");
+                let rec_idx = self
+                    .declars
+                    .get_index_of(&recursor_data.info.name)
+                    .expect("missing recursor");
                 let first = *recursor_data
                     .all_inductives
                     .first()
@@ -131,7 +136,8 @@ impl<'p> ExportFile<'p> {
 
     fn run_session<F>(&self, first: (usize, usize), mut next_chunk: F)
     where
-        F: FnMut() -> Option<(usize, usize)>, {
+        F: FnMut() -> Option<(usize, usize)>,
+    {
         let mut thread_arena = stumpalo::Arena::new();
         thread_arena.with_scope(|tscope| {
             let mut tctx = TcCtx::new(self, tscope);
@@ -139,30 +145,40 @@ impl<'p> ExportFile<'p> {
         })
     }
 
-    fn run_session_inner<'h, F>(&'h self, first: (usize, usize), next_chunk: &mut F, tctx: &mut TcCtx<'h, 'p>)
-    where
-        F: FnMut() -> Option<(usize, usize)>, {
+    fn run_session_inner<'h, F>(
+        &'h self,
+        first: (usize, usize),
+        next_chunk: &mut F,
+        tctx: &mut TcCtx<'h, 'p>,
+    ) where
+        F: FnMut() -> Option<(usize, usize)>,
+    {
         let base = bumpalo::Bump::new();
         let mut session_cache = crate::util::SessionCache::new(&base);
         let mut sbump = crate::util::SessionBump::new();
         let mut pending = Some(first);
         loop {
             let finished = session_cache.enter(|cache| loop {
-                let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else { return true };
+                let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
+                    return true;
+                };
                 while i < end {
-                    let (_, d) = self.declars.get_index(i).expect("declaration index out of range");
+                    let (_, d) = self
+                        .declars
+                        .get_index(i)
+                        .expect("declaration index out of range");
                     i += 1;
                     self.check_declar_with(tctx, cache, sbump.get(), d);
                     if sbump.allocated_bytes() > SESSION_BUDGET {
                         pending = Some((i, end));
-                        return false
+                        return false;
                     }
                 }
             });
             sbump.reset();
             tctx.expr_cache.shrink();
             if finished {
-                return
+                return;
             }
         }
     }
@@ -210,7 +226,8 @@ impl<'p> ExportFile<'p> {
                 )
             }
             for t in handles {
-                t.join().expect("A thread in `check_all_declars` panicked while being joined");
+                t.join()
+                    .expect("A thread in `check_all_declars` panicked while being joined");
             }
         });
     }
@@ -235,28 +252,34 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         tc_cache: &'x mut TcCache<'t, 't>,
     ) -> Self {
         let nat_extension = dag.export_file.config.nat_extension;
-        Self { ctx: dag, env, tc_cache, arena, declar_info, nat_extension }
+        Self {
+            ctx: dag,
+            env,
+            tc_cache,
+            arena,
+            declar_info,
+            nat_extension,
+        }
     }
 
     #[inline]
-    pub(crate) fn empty_env(&self) -> E<'t> { self.tc_cache.empty_env }
+    pub(crate) fn empty_env(&self) -> E<'t> {
+        self.tc_cache.empty_env
+    }
 
     #[inline]
-    pub(crate) fn empty_spine(&self) -> crate::value::S<'t> { self.tc_cache.empty_spine }
+    pub(crate) fn empty_spine(&self) -> crate::value::S<'t> {
+        self.tc_cache.empty_spine
+    }
 
     #[inline]
-    pub(crate) fn empty_ctx(&self) -> crate::value::C<'t> { self.tc_cache.empty_ctx }
+    pub(crate) fn empty_ctx(&self) -> crate::value::C<'t> {
+        self.tc_cache.empty_ctx
+    }
 
     pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) {
         assert!(self.def_eq_core(u, v), "def_eq failed");
     }
-
-
-
-
-
-
-
 
     pub fn is_proposition(&mut self, e: ExprPtr<'t>) -> bool {
         let depth = 0u32;

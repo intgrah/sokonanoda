@@ -1,7 +1,7 @@
 use crate::env::{DeclarMap, Env, EnvLimit, NotationMap};
 use crate::expr::{
-    Expr, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH, STRING_LIT_HASH,
-    VAR_HASH,
+    Expr, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
+    STRING_LIT_HASH, VAR_HASH,
 };
 use crate::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::name::{Name, NUM_HASH, STR_HASH};
@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use stumpalo::{Arena, ArenaRef};
 
-pub(crate) const fn default_true() -> bool { true }
+pub(crate) const fn default_true() -> bool {
+    true
+}
 
 pub(crate) const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
 
@@ -34,12 +36,16 @@ pub(crate) const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Q
 pub struct Decline(pub String);
 
 impl std::fmt::Display for Decline {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "declined: {}", self.0) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "declined: {}", self.0)
+    }
 }
 
 impl Error for Decline {}
 
-pub(crate) fn decline<A>(msg: impl Into<String>) -> Result<A, Box<dyn Error>> { Err(Box::new(Decline(msg.into()))) }
+pub(crate) fn decline<A>(msg: impl Into<String>) -> Result<A, Box<dyn Error>> {
+    Err(Box::new(Decline(msg.into())))
+}
 
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
@@ -48,7 +54,9 @@ pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
 pub(crate) type CowStr<'a> = Cow<'a, str>;
 
 #[cfg(all(feature = "top-byte-ignore", not(target_arch = "aarch64")))]
-compile_error!("the `top-byte-ignore` feature requires the aarch64 target architecture (Top-Byte-Ignore)");
+compile_error!(
+    "the `top-byte-ignore` feature requires the aarch64 target architecture (Top-Byte-Ignore)"
+);
 
 #[cfg(feature = "top-byte-ignore")]
 const PTR_TAG: usize = 1 << 56;
@@ -73,7 +81,9 @@ pub(crate) trait RawHash {
 
 impl RawHash for CowStr<'_> {
     #[inline]
-    fn raw_hash(&self) -> u64 { self.struct_hash() }
+    fn raw_hash(&self) -> u64 {
+        self.struct_hash()
+    }
 }
 
 macro_rules! tagged_ptr {
@@ -172,7 +182,9 @@ pub struct ExprPtr<'a> {
 
 impl<'a> Clone for ExprPtr<'a> {
     #[inline]
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 impl<'a> Copy for ExprPtr<'a> {}
 unsafe impl<'a> Send for ExprPtr<'a> {}
@@ -184,7 +196,10 @@ impl<'a> ExprPtr<'a> {
         let addr = r as *const Expr<'a> as usize as u64;
         debug_assert!(addr & !EXPR_ADDR_MASK == 0);
         let derived = u64::from(r.num_loose_bvars()) << EXPR_BVAR_SHIFT;
-        Self { bits: unsafe { std::num::NonZeroU64::new_unchecked(addr | tag | derived) }, _ph: PhantomData }
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(addr | tag | derived) },
+            _ph: PhantomData,
+        }
     }
 
     #[inline]
@@ -193,17 +208,26 @@ impl<'a> ExprPtr<'a> {
         debug_assert!(addr & !EXPR_ADDR_MASK == 0);
         debug_assert_eq!(num_loose_bvars, r.num_loose_bvars());
         let bits = addr | (u64::from(num_loose_bvars) << EXPR_BVAR_SHIFT);
-        Self { bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) }, _ph: PhantomData }
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) },
+            _ph: PhantomData,
+        }
     }
 
     #[inline]
-    pub(crate) fn local(r: &'a Expr<'a>) -> Self { Self::pack(r, EXPR_LOCAL_BIT) }
+    pub(crate) fn local(r: &'a Expr<'a>) -> Self {
+        Self::pack(r, EXPR_LOCAL_BIT)
+    }
 
     #[inline]
-    pub(crate) fn is_local(self) -> bool { self.bits.get() & EXPR_LOCAL_BIT != 0 }
+    pub(crate) fn is_local(self) -> bool {
+        self.bits.get() & EXPR_LOCAL_BIT != 0
+    }
 
     #[inline]
-    pub(crate) fn num_loose_bvars(self) -> u16 { (self.bits.get() >> EXPR_BVAR_SHIFT) as u16 }
+    pub(crate) fn num_loose_bvars(self) -> u16 {
+        (self.bits.get() >> EXPR_BVAR_SHIFT) as u16
+    }
 
     #[inline]
     pub(crate) fn as_ref(self) -> &'a Expr<'a> {
@@ -214,23 +238,34 @@ impl<'a> ExprPtr<'a> {
 impl<'a> std::ops::Deref for ExprPtr<'a> {
     type Target = Expr<'a>;
     #[inline]
-    fn deref(&self) -> &Expr<'a> { self.as_ref() }
+    fn deref(&self) -> &Expr<'a> {
+        self.as_ref()
+    }
 }
 
 impl<'a> PartialEq for ExprPtr<'a> {
     #[inline]
-    fn eq(&self, o: &Self) -> bool { self.bits == o.bits }
+    fn eq(&self, o: &Self) -> bool {
+        self.bits == o.bits
+    }
 }
 impl<'a> Eq for ExprPtr<'a> {}
 
 impl<'a> std::hash::Hash for ExprPtr<'a> {
     #[inline]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.bits.get()) }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.bits.get())
+    }
 }
 
 impl<'a> std::fmt::Debug for ExprPtr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ExprPtr({:p}{})", self.as_ref(), if self.is_local() { ",L" } else { "" })
+        write!(
+            f,
+            "ExprPtr({:p}{})",
+            self.as_ref(),
+            if self.is_local() { ",L" } else { "" }
+        )
     }
 }
 
@@ -261,24 +296,41 @@ impl<'a> LevelsPtr<'a> {
     #[inline]
     fn pack(s: &'a [LevelPtr<'a>], tag: u64) -> Self {
         let addr = s.as_ptr() as usize as u64;
-        debug_assert!(addr & !LEVELS_ADDR_MASK == 0, "level slice address exceeds 48 bits");
-        assert!(s.len() <= LEVELS_LEN_MAX, "universe parameter list too long");
+        debug_assert!(
+            addr & !LEVELS_ADDR_MASK == 0,
+            "level slice address exceeds 48 bits"
+        );
+        assert!(
+            s.len() <= LEVELS_LEN_MAX,
+            "universe parameter list too long"
+        );
         let bits = addr | ((s.len() as u64) << LEVELS_LEN_SHIFT) | tag | 1;
-        Self { bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) }, _ph: PhantomData }
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) },
+            _ph: PhantomData,
+        }
     }
 
     #[inline]
-    pub(crate) fn global(s: &'a [LevelPtr<'a>]) -> Self { Self::pack(s, 0) }
+    pub(crate) fn global(s: &'a [LevelPtr<'a>]) -> Self {
+        Self::pack(s, 0)
+    }
 
     #[inline]
-    pub(crate) fn local(s: &'a [LevelPtr<'a>]) -> Self { Self::pack(s, LEVELS_TAG) }
+    pub(crate) fn local(s: &'a [LevelPtr<'a>]) -> Self {
+        Self::pack(s, LEVELS_TAG)
+    }
 
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn is_local(self) -> bool { self.bits.get() & LEVELS_TAG != 0 }
+    pub(crate) fn is_local(self) -> bool {
+        self.bits.get() & LEVELS_TAG != 0
+    }
 
     #[inline]
-    pub(crate) fn len(self) -> usize { ((self.bits.get() >> LEVELS_LEN_SHIFT) & 0x7fff) as usize }
+    pub(crate) fn len(self) -> usize {
+        ((self.bits.get() >> LEVELS_LEN_SHIFT) & 0x7fff) as usize
+    }
 
     #[inline]
     pub(crate) fn as_ref(self) -> &'a [LevelPtr<'a>] {
@@ -288,12 +340,16 @@ impl<'a> LevelsPtr<'a> {
 
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn get_hash(&self) -> u64 { self.bits.get() }
+    pub(crate) fn get_hash(&self) -> u64 {
+        self.bits.get()
+    }
 }
 
 impl<'a> Clone for LevelsPtr<'a> {
     #[inline]
-    fn clone(&self) -> Self { *self }
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 impl<'a> Copy for LevelsPtr<'a> {}
 unsafe impl<'a> Send for LevelsPtr<'a> {}
@@ -302,19 +358,27 @@ unsafe impl<'a> Sync for LevelsPtr<'a> {}
 impl<'a> std::ops::Deref for LevelsPtr<'a> {
     type Target = [LevelPtr<'a>];
     #[inline]
-    fn deref(&self) -> &[LevelPtr<'a>] { self.as_ref() }
+    fn deref(&self) -> &[LevelPtr<'a>] {
+        self.as_ref()
+    }
 }
 impl<'a> PartialEq for LevelsPtr<'a> {
     #[inline]
-    fn eq(&self, o: &Self) -> bool { self.bits == o.bits }
+    fn eq(&self, o: &Self) -> bool {
+        self.bits == o.bits
+    }
 }
 impl<'a> Eq for LevelsPtr<'a> {}
 impl<'a> std::hash::Hash for LevelsPtr<'a> {
     #[inline]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.bits.get()) }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.bits.get())
+    }
 }
 impl<'a> std::fmt::Debug for LevelsPtr<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "LevelsPtr({:?})", self.as_ref()) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LevelsPtr({:?})", self.as_ref())
+    }
 }
 
 macro_rules! interner {
@@ -323,18 +387,31 @@ macro_rules! interner {
             table: HashTable<&'a $pointee<'a>>,
         }
         impl<'a> $name<'a> {
-            fn new() -> Self { Self { table: HashTable::new() } }
+            fn new() -> Self {
+                Self {
+                    table: HashTable::new(),
+                }
+            }
             #[allow(dead_code)]
-            fn with_capacity(cap: usize) -> Self { Self { table: HashTable::with_capacity(cap) } }
+            fn with_capacity(cap: usize) -> Self {
+                Self {
+                    table: HashTable::with_capacity(cap),
+                }
+            }
             #[allow(dead_code)]
-            pub(crate) fn len(&self) -> usize { self.table.len() }
+            pub(crate) fn len(&self) -> usize {
+                self.table.len()
+            }
 
             #[allow(dead_code)]
-            pub(crate) fn clear(&mut self) { self.table.clear() }
+            pub(crate) fn clear(&mut self) {
+                self.table.clear()
+            }
 
             pub(crate) fn get<'b>(&self, v: &$pointee<'b>) -> Option<&'a $pointee<'a>>
             where
-                'a: 'b, {
+                'a: 'b,
+            {
                 let hash = v.raw_hash();
                 self.table
                     .find(hash, |stored| {
@@ -344,7 +421,11 @@ macro_rules! interner {
                     .copied()
             }
 
-            pub(crate) fn insert(&mut self, arena: &ArenaRef<'a>, v: $pointee<'a>) -> &'a $pointee<'a> {
+            pub(crate) fn insert(
+                &mut self,
+                arena: &ArenaRef<'a>,
+                v: $pointee<'a>,
+            ) -> &'a $pointee<'a> {
                 let hash = v.raw_hash();
                 let r: &'a $pointee<'a> = arena.alloc(v);
                 self.table.insert_unique(hash, r, |s| s.raw_hash());
@@ -352,7 +433,11 @@ macro_rules! interner {
             }
 
             #[allow(dead_code)]
-            pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: $pointee<'a>) -> &'a $pointee<'a> {
+            pub(crate) fn intern(
+                &mut self,
+                arena: &ArenaRef<'a>,
+                v: $pointee<'a>,
+            ) -> &'a $pointee<'a> {
                 if let Some(r) = self.get(&v) {
                     return r;
                 }
@@ -366,27 +451,46 @@ pub(crate) struct NameInterner<'a> {
     table: HashTable<&'a crate::name::NameNode<'a>>,
 }
 impl<'a> NameInterner<'a> {
-    fn new() -> Self { Self { table: HashTable::new() } }
+    fn new() -> Self {
+        Self {
+            table: HashTable::new(),
+        }
+    }
 
-    fn with_capacity(cap: usize) -> Self { Self { table: HashTable::with_capacity(cap) } }
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            table: HashTable::with_capacity(cap),
+        }
+    }
 
     pub(crate) fn get<'b>(&self, v: &Name<'b>) -> Option<&'a crate::name::NameNode<'a>>
     where
-        'a: 'b, {
+        'a: 'b,
+    {
         let hash = v.get_hash();
         self.table
-            .find(hash, |stored| stored.kind.get_hash() == hash && &stored.kind == unsafe { transmute_name(v) })
+            .find(hash, |stored| {
+                stored.kind.get_hash() == hash && &stored.kind == unsafe { transmute_name(v) }
+            })
             .copied()
     }
 
-    pub(crate) fn insert(&mut self, arena: &ArenaRef<'a>, v: Name<'a>) -> &'a crate::name::NameNode<'a> {
+    pub(crate) fn insert(
+        &mut self,
+        arena: &ArenaRef<'a>,
+        v: Name<'a>,
+    ) -> &'a crate::name::NameNode<'a> {
         let hash = v.get_hash();
         let r: &'a crate::name::NameNode<'a> = arena.alloc(crate::name::NameNode::new(v));
         self.table.insert_unique(hash, r, |s| s.kind.get_hash());
         r
     }
 
-    pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: Name<'a>) -> &'a crate::name::NameNode<'a> {
+    pub(crate) fn intern(
+        &mut self,
+        arena: &ArenaRef<'a>,
+        v: Name<'a>,
+    ) -> &'a crate::name::NameNode<'a> {
         if let Some(r) = self.get(&v) {
             return r;
         }
@@ -395,7 +499,9 @@ impl<'a> NameInterner<'a> {
 }
 
 #[inline]
-unsafe fn transmute_name<'r, 'x, 'y>(n: &'r Name<'x>) -> &'r Name<'y> { unsafe { std::mem::transmute(n) } }
+unsafe fn transmute_name<'r, 'x, 'y>(n: &'r Name<'x>) -> &'r Name<'y> {
+    unsafe { std::mem::transmute(n) }
+}
 
 interner!(LevelInterner, Level);
 interner!(ExprInterner, Expr);
@@ -407,7 +513,11 @@ pub(crate) struct BigUintInterner<'a> {
     table: HashTable<&'a BigUint>,
 }
 impl<'a> BigUintInterner<'a> {
-    fn new() -> Self { Self { table: HashTable::new() } }
+    fn new() -> Self {
+        Self {
+            table: HashTable::new(),
+        }
+    }
     pub(crate) fn get(&self, v: &BigUint) -> Option<&'a BigUint> {
         let hash = v.struct_hash();
         self.table.find(hash, |stored| **stored == *v).copied()
@@ -430,11 +540,20 @@ pub(crate) struct LevelsInterner<'a> {
     table: HashTable<&'a [LevelPtr<'a>]>,
 }
 impl<'a> LevelsInterner<'a> {
-    fn new() -> Self { Self { table: HashTable::new() } }
-    fn with_capacity(cap: usize) -> Self { Self { table: HashTable::with_capacity(cap) } }
+    fn new() -> Self {
+        Self {
+            table: HashTable::new(),
+        }
+    }
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            table: HashTable::with_capacity(cap),
+        }
+    }
     pub(crate) fn get<'b>(&self, v: &[LevelPtr<'b>]) -> Option<&'a [LevelPtr<'a>]>
     where
-        'a: 'b, {
+        'a: 'b,
+    {
         let hash = v.struct_hash();
         self.table
             .find(hash, |stored| {
@@ -443,7 +562,11 @@ impl<'a> LevelsInterner<'a> {
             })
             .copied()
     }
-    pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: &[LevelPtr<'a>]) -> &'a [LevelPtr<'a>] {
+    pub(crate) fn intern(
+        &mut self,
+        arena: &ArenaRef<'a>,
+        v: &[LevelPtr<'a>],
+    ) -> &'a [LevelPtr<'a>] {
         if let Some(r) = self.get(v) {
             return r;
         }
@@ -471,7 +594,11 @@ impl<'a> Dag<'a> {
             exprs: ExprInterner::new(),
             uparams: LevelsInterner::new(),
             strings: StringInterner::with_capacity(input_len / 16384 + 16),
-            bignums: if config.nat_extension { Some(BigUintInterner::new()) } else { None },
+            bignums: if config.nat_extension {
+                Some(BigUintInterner::new())
+            } else {
+                None
+            },
         }
     }
 
@@ -482,14 +609,22 @@ impl<'a> Dag<'a> {
             exprs: ExprInterner::with_capacity(14),
             uparams: LevelsInterner::with_capacity(14),
             strings: StringInterner::new(),
-            bignums: if config.nat_extension { Some(BigUintInterner::new()) } else { None },
+            bignums: if config.nat_extension {
+                Some(BigUintInterner::new())
+            } else {
+                None
+            },
         }
     }
 }
 
-pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> { FxIndexMap::with_hasher(Default::default()) }
+pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> {
+    FxIndexMap::with_hasher(Default::default())
+}
 
-pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> { FxHashMap::with_hasher(Default::default()) }
+pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> {
+    FxHashMap::with_hasher(Default::default())
+}
 
 pub(crate) fn small_fx_hash_map<K, V>() -> FxHashMap<K, V> {
     FxHashMap::with_capacity_and_hasher(14, Default::default())
@@ -511,9 +646,13 @@ pub(crate) fn session_fx_hash_map<K, V>() -> FxHashMap<K, V> {
     FxHashMap::with_capacity_and_hasher(SESSION_MAP_CAP, Default::default())
 }
 
-pub(crate) fn small_fx_hash_set<K>() -> FxHashSet<K> { FxHashSet::with_capacity_and_hasher(14, Default::default()) }
+pub(crate) fn small_fx_hash_set<K>() -> FxHashSet<K> {
+    FxHashSet::with_capacity_and_hasher(14, Default::default())
+}
 
-pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> { FxHashSet::with_hasher(Default::default()) }
+pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> {
+    FxHashSet::with_hasher(Default::default())
+}
 
 #[macro_export]
 macro_rules! hash64 {
@@ -553,11 +692,17 @@ pub(crate) fn nat_mod(x: BigUint, y: BigUint) -> BigUint {
     }
 }
 
-pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint { x.gcd(y) }
+pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint {
+    x.gcd(y)
+}
 
-pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint { x ^ y }
+pub(crate) fn nat_xor(x: &BigUint, y: &BigUint) -> BigUint {
+    x ^ y
+}
 
-fn shift_amount(y: &BigUint) -> Option<u64> { u64::try_from(y).ok() }
+fn shift_amount(y: &BigUint) -> Option<u64> {
+    u64::try_from(y).ok()
+}
 
 pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
     let sh = shift_amount(&y).expect("Nat.shiftLeft: shift does not fit in a machine word");
@@ -571,8 +716,12 @@ pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
     }
 }
 
-pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint { x & y }
-pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint { x | y }
+pub(crate) fn nat_land(x: BigUint, y: BigUint) -> BigUint {
+    x & y
+}
+pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint {
+    x | y
+}
 
 pub struct ExprCache<'t> {
     pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
@@ -619,7 +768,8 @@ impl<'p> ExportFile<'p> {
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
-        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t bumpalo::Bump) -> A, {
+        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t bumpalo::Bump) -> A,
+    {
         let mut arena = Arena::new();
         arena.with_scope(|scope| {
             let bump = bumpalo::Bump::new();
@@ -631,7 +781,8 @@ impl<'p> ExportFile<'p> {
 
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit<'p>, f: F) -> A
     where
-        F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A, {
+        F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A,
+    {
         self.with_ctx(|ctx, cache, bump| {
             let env = ctx.export_file.new_env(env_limit);
             let mut tc = TypeChecker::new(ctx, &env, bump, None, cache);
@@ -670,7 +821,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         f: F,
     ) -> A
     where
-        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
+        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A,
+    {
         let env = self.export_file.new_env(env_limit);
         let mut tc = TypeChecker::new(self, &env, arena, None, cache);
         f(&mut tc)
@@ -685,34 +837,54 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         f: F,
     ) -> A
     where
-        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A, {
-        let env = Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), &self.export_file.notations, env_limit);
+        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A,
+    {
+        let env = Env::new_w_temp_ext(
+            &self.export_file.declars,
+            Some(env_ext),
+            &self.export_file.notations,
+            env_limit,
+        );
         let mut tc = TypeChecker::new(self, &env, arena, None, cache);
         f(&mut tc)
     }
 
-    pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> { p.as_ref().kind }
+    pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> {
+        p.as_ref().kind
+    }
 
     pub fn read_name_pr(&self, p: NamePtr<'t>, q: NamePtr<'t>) -> (Name<'t>, Name<'t>) {
         (self.read_name(p), self.read_name(q))
     }
 
-    pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> { *p.as_ref() }
+    pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> {
+        *p.as_ref()
+    }
 
     pub fn read_level_pair(&self, a: LevelPtr<'t>, x: LevelPtr<'t>) -> (Level<'t>, Level<'t>) {
         (self.read_level(a), self.read_level(x))
     }
 
-    pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> { *p.as_ref() }
+    pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> {
+        *p.as_ref()
+    }
 
     #[inline]
-    pub fn read_expr_ref(&self, p: ExprPtr<'t>) -> &Expr<'t> { p.as_ref() }
+    pub fn read_expr_ref(&self, p: ExprPtr<'t>) -> &Expr<'t> {
+        p.as_ref()
+    }
 
-    pub fn read_string(&self, p: StringPtr<'t>) -> &CowStr<'t> { p.as_ref() }
+    pub fn read_string(&self, p: StringPtr<'t>) -> &CowStr<'t> {
+        p.as_ref()
+    }
 
-    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&BigUint> { Some(p.as_ref()) }
+    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&BigUint> {
+        Some(p.as_ref())
+    }
 
-    pub fn read_levels(&self, p: LevelsPtr<'t>) -> &'t [LevelPtr<'t>] { p.as_ref() }
+    pub fn read_levels(&self, p: LevelsPtr<'t>) -> &'t [LevelPtr<'t>] {
+        p.as_ref()
+    }
 
     pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
         if let Some(r) = self.export_file.dag.names.get(&n) {
@@ -759,9 +931,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         LevelsPtr::local(self.dag.uparams.intern(self.arena, ls))
     }
 
-    pub fn alloc_levels_slice(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> { self.alloc_levels(ls) }
+    pub fn alloc_levels_slice(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> {
+        self.alloc_levels(ls)
+    }
 
-    pub fn anonymous(&self) -> NamePtr<'t> { self.export_file.anon }
+    pub fn anonymous(&self) -> NamePtr<'t> {
+        self.export_file.anon
+    }
 
     pub fn str(&mut self, pfx: NamePtr<'t>, sfx: StringPtr<'t>) -> NamePtr<'t> {
         let hash = hash64!(STR_HASH, pfx, sfx);
@@ -788,7 +964,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         self.str(n, s2)
     }
 
-    pub fn zero(&self) -> LevelPtr<'t> { self.export_file.zero }
+    pub fn zero(&self) -> LevelPtr<'t> {
+        self.export_file.zero
+    }
 
     pub fn num(&mut self, pfx: NamePtr<'t>, sfx: u64) -> NamePtr<'t> {
         let hash = hash64!(NUM_HASH, pfx, sfx);
@@ -831,19 +1009,34 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn mk_app(&mut self, fun: ExprPtr<'t>, arg: ExprPtr<'t>) -> ExprPtr<'t> {
         let hash = hash64!(APP_HASH, fun, arg);
         let fv_mask = crate::expr::child_mask(fun) | crate::expr::child_mask(arg);
-        self.alloc_expr(Expr::App { fun, arg, fv_mask, hash })
+        self.alloc_expr(Expr::App {
+            fun,
+            arg,
+            fv_mask,
+            hash,
+        })
     }
 
     pub fn mk_lambda(&mut self, binder_type: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
         let hash = hash64!(LAMBDA_HASH, binder_type, body);
         let fv_mask = crate::expr::child_mask(binder_type) | crate::expr::body_mask(body);
-        self.alloc_expr(Expr::Lambda { binder_type, body, fv_mask, hash })
+        self.alloc_expr(Expr::Lambda {
+            binder_type,
+            body,
+            fv_mask,
+            hash,
+        })
     }
 
     pub fn mk_pi(&mut self, binder_type: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
         let hash = hash64!(PI_HASH, binder_type, body);
         let fv_mask = crate::expr::child_mask(binder_type) | crate::expr::body_mask(body);
-        self.alloc_expr(Expr::Pi { binder_type, body, fv_mask, hash })
+        self.alloc_expr(Expr::Pi {
+            binder_type,
+            body,
+            fv_mask,
+            hash,
+        })
     }
 
     pub fn mk_let(
@@ -854,16 +1047,37 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         nondep: bool,
     ) -> ExprPtr<'t> {
         let hash = hash64!(LET_HASH, binder_type, val, body, nondep);
-        let fv_mask =
-            crate::expr::child_mask(binder_type) | crate::expr::child_mask(val) | crate::expr::body_mask(body);
-        let data = self.arena.alloc(crate::expr::LetData { binder_type, val, body, nondep });
-        self.alloc_expr(Expr::Let { data, fv_mask, hash })
+        let fv_mask = crate::expr::child_mask(binder_type)
+            | crate::expr::child_mask(val)
+            | crate::expr::body_mask(body);
+        let data = self.arena.alloc(crate::expr::LetData {
+            binder_type,
+            val,
+            body,
+            nondep,
+        });
+        self.alloc_expr(Expr::Let {
+            data,
+            fv_mask,
+            hash,
+        })
     }
 
-    pub fn mk_proj(&mut self, ty_name: NamePtr<'t>, idx: u16, structure: ExprPtr<'t>) -> ExprPtr<'t> {
+    pub fn mk_proj(
+        &mut self,
+        ty_name: NamePtr<'t>,
+        idx: u16,
+        structure: ExprPtr<'t>,
+    ) -> ExprPtr<'t> {
         let hash = hash64!(PROJ_HASH, ty_name, idx, structure);
         let fv_mask = crate::expr::child_mask(structure);
-        self.alloc_expr(Expr::Proj { ty_name, idx, structure, fv_mask, hash })
+        self.alloc_expr(Expr::Proj {
+            ty_name,
+            idx,
+            structure,
+            fv_mask,
+            hash,
+        })
     }
 
     pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {
@@ -871,7 +1085,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             return None;
         }
         let hash = hash64!(STRING_LIT_HASH, string_ptr);
-        Some(self.alloc_expr(Expr::StringLit { ptr: string_ptr, hash }))
+        Some(self.alloc_expr(Expr::StringLit {
+            ptr: string_ptr,
+            hash,
+        }))
     }
 
     pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> Option<ExprPtr<'t>> {
@@ -899,12 +1116,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 impl<'a> StringInterner<'a> {
     pub(crate) fn get_str(&self, s: &str) -> Option<&'a CowStr<'a>> {
         let hash = s.struct_hash();
-        self.table.find(hash, |stored| stored.as_ref() == s).copied()
+        self.table
+            .find(hash, |stored| stored.as_ref() == s)
+            .copied()
     }
 }
 
 impl<'a> Dag<'a> {
-    fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> { self.strings.get_str(s).map(StringPtr::global) }
+    fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> {
+        self.strings.get_str(s).map(StringPtr::global)
+    }
 
     fn find_name(&self, anon: NamePtr<'a>, dot_separated_name: &str) -> Option<NamePtr<'a>> {
         let mut pfx = anon;
@@ -1067,7 +1288,8 @@ pub struct TcCache<'a, 't> {
     pub(crate) quote_cache: FxHashMap<(usize, u32), ExprPtr<'t>>,
     pub(crate) frames: hashbrown::HashTable<E<'a>>,
     pub(crate) lsub_bases: FxHashMap<usize, E<'a>>,
-    pub(crate) level_subs: FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>), &'a crate::value::LevelSub<'a>>,
+    pub(crate) level_subs:
+        FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>), &'a crate::value::LevelSub<'a>>,
     pub(crate) prune_dm: Box<[(usize, u64, Option<E<'a>>); PRUNE_DM_LEN]>,
     pub(crate) wide_fvars: FxHashMap<ExprPtr<'t>, &'a [u16]>,
     pub(crate) wide_prune: FxHashMap<(usize, ExprPtr<'t>), E<'a>>,
@@ -1103,7 +1325,10 @@ impl<'a, 't> TcCache<'a, 't> {
             whnf_store: new_fx_hash_map(),
             whnf_store_filter: Box::new([0u64; 1024]),
             whnf_head_filter: Box::new([0u64; 1024]),
-            whnf_admit: vec![0u8; WHNF_ADMIT_LEN].into_boxed_slice().try_into().expect("admit table size"),
+            whnf_admit: vec![0u8; WHNF_ADMIT_LEN]
+                .into_boxed_slice()
+                .try_into()
+                .expect("admit table size"),
             lam_domain_cache: session_small_fx_hash_map(),
             global_value_cache: session_fx_hash_map(),
             open_eval_cache: session_fx_hash_map(),
@@ -1249,13 +1474,23 @@ pub(crate) struct SessionBump {
 }
 
 impl SessionBump {
-    pub(crate) fn new() -> Self { Self { inner: bumpalo::Bump::new() } }
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: bumpalo::Bump::new(),
+        }
+    }
 
-    pub(crate) fn allocated_bytes(&self) -> usize { self.inner.allocated_bytes() }
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.inner.allocated_bytes()
+    }
 
-    pub(crate) fn get<'a>(&self) -> &'a bumpalo::Bump { unsafe { &*(&self.inner as *const bumpalo::Bump) } }
+    pub(crate) fn get<'a>(&self) -> &'a bumpalo::Bump {
+        unsafe { &*(&self.inner as *const bumpalo::Bump) }
+    }
 
-    pub(crate) fn reset(&mut self) { self.inner = bumpalo::Bump::new() }
+    pub(crate) fn reset(&mut self) {
+        self.inner = bumpalo::Bump::new()
+    }
 }
 
 pub(crate) struct SessionCache<'b> {
@@ -1263,7 +1498,11 @@ pub(crate) struct SessionCache<'b> {
 }
 
 impl<'b> SessionCache<'b> {
-    pub(crate) fn new(base: &'b bumpalo::Bump) -> Self { Self { inner: TcCache::new(base) } }
+    pub(crate) fn new(base: &'b bumpalo::Bump) -> Self {
+        Self {
+            inner: TcCache::new(base),
+        }
+    }
 
     pub(crate) fn enter<'a, R>(&mut self, f: impl FnOnce(&mut TcCache<'a, 'a>) -> R) -> R {
         let p: *mut TcCache<'b, 'b> = &mut self.inner;
@@ -1313,9 +1552,13 @@ impl TryFrom<&Path> for Config {
     type Error = Box<dyn Error>;
     fn try_from(p: &Path) -> Result<Config, Self::Error> {
         match OpenOptions::new().read(true).truncate(false).open(p) {
-            Err(e) => Err(Box::from(format!("failed to open configuration file: {:?}", e))),
+            Err(e) => Err(Box::from(format!(
+                "failed to open configuration file: {:?}",
+                e
+            ))),
             Ok(config_file) => {
-                let config = serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
+                let config =
+                    serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
                 if config.export_file_path.is_none() && !config.use_stdin {
                     return Err(Box::from(
                         "incompatible config options: must specify a path to an export file OR set `use_stdin: true`"
@@ -1355,12 +1598,17 @@ impl TryFrom<&Path> for Config {
 }
 
 impl Config {
-    pub fn to_export_file<'a>(self, arena: &'a ArenaRef<'a>) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+    pub fn to_export_file<'a>(
+        self,
+        arena: &'a ArenaRef<'a>,
+    ) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {
-                    let map = unsafe { memmap2::Mmap::map(&file) }
-                        .map_err(|e| -> Box<dyn Error> { Box::from(format!("Failed to map export file: {:?}", e)) })?;
+                    let map =
+                        unsafe { memmap2::Mmap::map(&file) }.map_err(|e| -> Box<dyn Error> {
+                            Box::from(format!("Failed to map export file: {:?}", e))
+                        })?;
                     parse_export_mapped(arena, &map, self)
                 }
                 Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
@@ -1377,7 +1625,9 @@ impl Config {
 pub(crate) const WHNF_ADMIT_LEN: usize = 1 << 22;
 
 #[inline]
-pub(crate) fn admit_slot(k: u64) -> usize { (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 42) as usize }
+pub(crate) fn admit_slot(k: u64) -> usize {
+    (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 42) as usize
+}
 
 #[inline]
 pub(crate) fn tenure_slot(k: usize) -> (usize, u64) {

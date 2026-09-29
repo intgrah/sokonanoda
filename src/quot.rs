@@ -51,16 +51,26 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let cname = ctx.str2("Eq", "refl");
 
     let prop = ctx.prop();
-    let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+    let env = ctx
+        .export_file
+        .new_env(EnvLimit::ByName(declar.info().name));
     match env.get_inductive(&name).cloned() {
         // The `Eq` declaration offered up by the export file;
-        Some(InductiveData { info, num_params, all_ctor_names, .. }) => {
+        Some(InductiveData {
+            info,
+            num_params,
+            all_ctor_names,
+            ..
+        }) => {
             let eq_const = ctx.mk_const(name, info.uparams);
             assert_eq!(ctx.read_levels(info.uparams).len(), 1);
             assert_eq!(num_params, 2);
             let uparam = match ctx.read_levels(info.uparams).as_ref() {
                 &[u] => ctx.mk_sort(u),
-                owise => panic!("Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}", owise.len()),
+                owise => panic!(
+                    "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
+                    owise.len()
+                ),
             };
 
             let a1 = ctx.mk_var(1);
@@ -99,7 +109,10 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
                 ),
             }
         }
-        None => panic!("cannot add Quot; improperly formed `Eq` type := {:?} ", ctx.debug_print(declar.info().name)),
+        None => panic!(
+            "cannot add Quot; improperly formed `Eq` type := {:?} ",
+            ctx.debug_print(declar.info().name)
+        ),
     }
 }
 
@@ -221,7 +234,9 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
                 },
             },
         };
-        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+        let env = ctx
+            .export_file
+            .new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
         return;
@@ -265,11 +280,16 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
             },
         };
 
-        let env = ctx.export_file.new_env(EnvLimit::ByName(declar.info().name));
+        let env = ctx
+            .export_file
+            .new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
         return;
     } else {
-        panic!("invalid quotient declaration {:?}", ctx.debug_print(declar.info().name))
+        panic!(
+            "invalid quotient declaration {:?}",
+            ctx.debug_print(declar.info().name)
+        )
     }
 }

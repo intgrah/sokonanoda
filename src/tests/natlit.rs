@@ -55,10 +55,22 @@ fn nat_div_eq() {
 #[test]
 fn nat_shr_eq() {
     use crate::util::nat_shr;
-    assert_eq!(nat_shr(BigUint::from(4u8), BigUint::from(2u8)), BigUint::one());
-    assert_eq!(nat_shr(BigUint::from(8u8), BigUint::from(2u8)), BigUint::from(2u8));
-    assert_eq!(nat_shr(BigUint::from(8u8), BigUint::from(3u8)), BigUint::one());
-    assert_eq!(nat_shr(BigUint::from(0u8), BigUint::from(3u8)), BigUint::zero());
+    assert_eq!(
+        nat_shr(BigUint::from(4u8), BigUint::from(2u8)),
+        BigUint::one()
+    );
+    assert_eq!(
+        nat_shr(BigUint::from(8u8), BigUint::from(2u8)),
+        BigUint::from(2u8)
+    );
+    assert_eq!(
+        nat_shr(BigUint::from(8u8), BigUint::from(3u8)),
+        BigUint::one()
+    );
+    assert_eq!(
+        nat_shr(BigUint::from(0u8), BigUint::from(3u8)),
+        BigUint::zero()
+    );
     //def shiftRight : @& Nat → @& Nat → Nat
     //  | n, 0 => n
     //  | n, succ m => shiftRight n m / 2
@@ -82,10 +94,22 @@ fn nat_shr_eq() {
 #[test]
 fn nat_shl_eq() {
     use crate::util::nat_shl;
-    assert_eq!(nat_shl(BigUint::one(), BigUint::from(2u8)), BigUint::from(4u8));
-    assert_eq!(nat_shl(BigUint::one(), BigUint::from(3u8)), BigUint::from(8u8));
-    assert_eq!(nat_shl(BigUint::zero(), BigUint::from(3u8)), BigUint::zero());
-    assert_eq!(nat_shl(BigUint::from(0xf1 as u32), BigUint::from(4u8)), BigUint::from(0xf10 as u32));
+    assert_eq!(
+        nat_shl(BigUint::one(), BigUint::from(2u8)),
+        BigUint::from(4u8)
+    );
+    assert_eq!(
+        nat_shl(BigUint::one(), BigUint::from(3u8)),
+        BigUint::from(8u8)
+    );
+    assert_eq!(
+        nat_shl(BigUint::zero(), BigUint::from(3u8)),
+        BigUint::zero()
+    );
+    assert_eq!(
+        nat_shl(BigUint::from(0xf1 as u32), BigUint::from(4u8)),
+        BigUint::from(0xf10 as u32)
+    );
     // def shiftLeft : @& Nat → @& Nat → Nat
     //   | n, 0 => n
     //   | n, succ m => shiftLeft (2*n) m
@@ -110,10 +134,22 @@ fn nat_shl_eq() {
 #[test]
 fn nat_gcd_eq() {
     use crate::util::nat_gcd;
-    assert_eq!(nat_gcd(&BigUint::from(10u8), &BigUint::from(15u8)), BigUint::from(5u8));
-    assert_eq!(nat_gcd(&BigUint::zero(), &BigUint::from(5u8)), BigUint::from(5u8));
-    assert_eq!(nat_gcd(&BigUint::from(7u8), &BigUint::zero()), BigUint::from(7u8));
-    assert_eq!(nat_gcd(&BigUint::from(1u8), &BigUint::zero()), BigUint::from(1u8));
+    assert_eq!(
+        nat_gcd(&BigUint::from(10u8), &BigUint::from(15u8)),
+        BigUint::from(5u8)
+    );
+    assert_eq!(
+        nat_gcd(&BigUint::zero(), &BigUint::from(5u8)),
+        BigUint::from(5u8)
+    );
+    assert_eq!(
+        nat_gcd(&BigUint::from(7u8), &BigUint::zero()),
+        BigUint::from(7u8)
+    );
+    assert_eq!(
+        nat_gcd(&BigUint::from(1u8), &BigUint::zero()),
+        BigUint::from(1u8)
+    );
     //def gcd (m n : @& Nat) : Nat :=
     //  if m = 0 then
     //    n
@@ -137,7 +173,7 @@ fn nat_gcd_eq() {
     }
 }
 
-fn bitwise(f: fn(bool, bool) -> bool, n : BigUint, m: BigUint) -> BigUint {
+fn bitwise(f: fn(bool, bool) -> bool, n: BigUint, m: BigUint) -> BigUint {
     if n.is_zero() {
         if f(false, true) {
             m
@@ -167,10 +203,10 @@ fn bitwise(f: fn(bool, bool) -> bool, n : BigUint, m: BigUint) -> BigUint {
 #[test]
 fn nat_xor_eq() {
     fn spec_xor(x: BigUint, y: BigUint) -> BigUint {
-      fn bool_xor(x: bool, y: bool) -> bool {
-          x ^ y
-      }
-      bitwise(bool_xor, x, y)
+        fn bool_xor(x: bool, y: bool) -> bool {
+            x ^ y
+        }
+        bitwise(bool_xor, x, y)
     }
 
     use crate::util::nat_xor;
@@ -188,10 +224,10 @@ fn nat_xor_eq() {
 #[test]
 fn nat_lor_eq() {
     fn spec_lor(x: BigUint, y: BigUint) -> BigUint {
-      fn bool_or(x: bool, y: bool) -> bool {
-          x || y
-      }
-      bitwise(bool_or, x, y)
+        fn bool_or(x: bool, y: bool) -> bool {
+            x || y
+        }
+        bitwise(bool_or, x, y)
     }
 
     use crate::util::nat_lor;
@@ -371,10 +407,13 @@ fn nat_mod_eq_sub_mod() {
             let (a, b) = (rng.gen_biguint(size), rng.gen_biguint(size));
             if a >= b {
                 iterations += 1;
-                assert_eq!(nat_mod(a.clone(), b.clone()), nat_mod(a.clone() - b.clone(), b))
+                assert_eq!(
+                    nat_mod(a.clone(), b.clone()),
+                    nat_mod(a.clone() - b.clone(), b)
+                )
             } else {
                 assert!(b > a);
-                continue
+                continue;
             }
         }
     }

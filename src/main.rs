@@ -14,7 +14,9 @@ fn main() {
     let mut args = std::env::args();
     let _ = args.next();
     let out = match args.next().as_ref() {
-        None => Err(Box::from("This program expects a path to a configuration file.".to_string())),
+        None => Err(Box::from(
+            "This program expects a path to a configuration file.".to_string(),
+        )),
         Some(p) if p == "-h" || p == "--help" => {
             println!("{}", HELP_LONG);
             return;
@@ -44,13 +46,19 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     let global_arena = Arena::new();
     let (export_file, skipped_axioms) = cfg.to_export_file(global_arena.as_arena_ref())?;
     if export_file.config.parse_only {
-        return Ok(Some(format!("Parsed {} declarations", export_file.declars.len())));
+        return Ok(Some(format!(
+            "Parsed {} declarations",
+            export_file.declars.len()
+        )));
     }
     // Check the environment
     export_file.check_all_declars();
     if export_file.config.print_success_message {
         if skipped_axioms.is_empty() {
-            Ok(Some(format!("Checked {} declarations with no errors", export_file.declars.len())))
+            Ok(Some(format!(
+                "Checked {} declarations with no errors",
+                export_file.declars.len()
+            )))
         } else {
             Ok(Some(format!(
                 "Checked {} declarations with no errors, skipping exported but unpermitted axioms {:?}",
@@ -61,14 +69,19 @@ fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
     } else if skipped_axioms.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(format!("Skipped exported but unpermitted axioms {:?}", skipped_axioms)))
+        Ok(Some(format!(
+            "Skipped exported but unpermitted axioms {:?}",
+            skipped_axioms
+        )))
     }
 }
 
 struct MainError(Box<dyn Error>);
 
 impl std::fmt::Debug for MainError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}\n\n{}", self.0, HELP_SHORT) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\n\n{}", self.0, HELP_SHORT)
+    }
 }
 
 const HELP_SHORT: &str = "run with `-h` or `--help` for help";

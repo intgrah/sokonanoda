@@ -31,7 +31,15 @@ fn atomic_type(v: V<'_>) -> bool {
 fn has_deep_bvar_prefix(mut env: E<'_>) -> bool {
     for _ in 0..64 {
         match env {
-            value::Env::Cons { v: Value::Rigid { head: RigidHead::BVar(..), .. }, parent, .. } => env = parent,
+            value::Env::Cons {
+                v:
+                    Value::Rigid {
+                        head: RigidHead::BVar(..),
+                        ..
+                    },
+                parent,
+                ..
+            } => env = parent,
             _ => return false,
         }
     }
@@ -65,7 +73,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         self.ensure_sort_v(depth, t)
     }
 
-    pub(crate) fn arg_value(&mut self, depth: u32, env: E<'t>, a: ExprPtr<'t>) -> V<'t> { self.eval(depth, env, a) }
+    pub(crate) fn arg_value(&mut self, depth: u32, env: E<'t>, a: ExprPtr<'t>) -> V<'t> {
+        self.eval(depth, env, a)
+    }
 
     fn lit_inductive_type(&mut self, n: Option<NamePtr<'t>>) -> V<'t> {
         let name = n.expect("infer: literal type name missing");
@@ -74,7 +84,14 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         value::mk_rigid_head_with_empty(self.arena, RigidHead::Inductive(name, levels), empty)
     }
 
-    pub(crate) fn infer_value(&mut self, flag: InferFlag, depth: u32, env: E<'t>, ctx: C<'t>, e: ExprPtr<'t>) -> V<'t> {
+    pub(crate) fn infer_value(
+        &mut self,
+        flag: InferFlag,
+        depth: u32,
+        env: E<'t>,
+        ctx: C<'t>,
+        e: ExprPtr<'t>,
+    ) -> V<'t> {
         match self.ctx.read_expr(e) {
             Var { dbj_idx, .. } => return ctx.lookup(dbj_idx).expect("loose bvar in infer"),
             Sort { level, .. } => {
@@ -117,7 +134,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
         let r = match self.ctx.read_expr(e) {
             App { .. } => self.infer_app_v(flag, depth, env, ctx, e),
-            Lambda { binder_type, body, .. } => {
+            Lambda {
+                binder_type, body, ..
+            } => {
                 let dom = self.arg_value(depth, env, binder_type);
                 let mut body_ty = None;
                 if flag == Check {
@@ -139,7 +158,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 };
                 value::mk_pi(self.arena, dom, clo)
             }
-            Pi { binder_type, body, .. } => {
+            Pi {
+                binder_type, body, ..
+            } => {
                 let l1 = self.infer_sort_of_v(flag, depth, env, ctx, binder_type);
                 let dom = self.arg_value(depth, env, binder_type);
                 let fresh = self.mk_bvar_hc(depth, dom);
@@ -150,7 +171,16 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let im = self.ctx.simplify(im);
                 value::mk_sort(self.arena, im)
             }
-            Let { data: &crate::expr::LetData { binder_type, val, body, .. }, .. } => {
+            Let {
+                data:
+                    &crate::expr::LetData {
+                        binder_type,
+                        val,
+                        body,
+                        ..
+                    },
+                ..
+            } => {
                 let dom = self.arg_value(depth, env, binder_type);
                 if flag == Check {
                     self.infer_sort_of_v(flag, depth, env, ctx, binder_type);
@@ -162,16 +192,38 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let ctx2 = value::ctx_extend(self.arena, ctx, dom);
                 self.infer_value(flag, depth, env2, ctx2, body)
             }
-            Proj { ty_name, idx, structure, .. } => self.infer_proj_v(flag, depth, env, ctx, ty_name, idx, structure),
+            Proj {
+                ty_name,
+                idx,
+                structure,
+                ..
+            } => self.infer_proj_v(flag, depth, env, ctx, ty_name, idx, structure),
             _ => unreachable!(),
         };
 
-        let checked_under = if flag == Check { scope } else { CheckScope::Unchecked };
-        self.tc_cache.type_cache.insert(key, CachedType { result: r, checked_under });
+        let checked_under = if flag == Check {
+            scope
+        } else {
+            CheckScope::Unchecked
+        };
+        self.tc_cache.type_cache.insert(
+            key,
+            CachedType {
+                result: r,
+                checked_under,
+            },
+        );
         r
     }
 
-    fn infer_app_v(&mut self, flag: InferFlag, depth: u32, env: E<'t>, ctx: C<'t>, e: ExprPtr<'t>) -> V<'t> {
+    fn infer_app_v(
+        &mut self,
+        flag: InferFlag,
+        depth: u32,
+        env: E<'t>,
+        ctx: C<'t>,
+        e: ExprPtr<'t>,
+    ) -> V<'t> {
         let (fun, mut args) = self.ctx.unfold_apps_stack(self.arena, e);
         let mut fty = self.infer_value(flag, depth, env, ctx, fun);
         while let Some(arg) = args.pop() {
@@ -182,7 +234,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             };
             if flag == Check {
                 let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
-                assert!(self.conv_types_at(depth, domain, arg_ty), "app arg def_eq failed");
+                assert!(
+                    self.conv_types_at(depth, domain, arg_ty),
+                    "app arg def_eq failed"
+                );
             }
             if body.ctx.is_none() && self.ctx.num_loose_bvars(body.body) == 0 {
                 fty = self.eval(depth, body.env, body.body);
@@ -210,30 +265,57 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let struct_ty_f = self.force_all(depth, struct_ty);
         let struct_ty_is_prop = self.is_prop_type(depth, struct_ty_f);
         let (ind_name, ind_levels, spine) = match struct_ty_f {
-            Value::Rigid { head: RigidHead::Inductive(n, ls), spine, .. } => (*n, *ls, *spine),
+            Value::Rigid {
+                head: RigidHead::Inductive(n, ls),
+                spine,
+                ..
+            } => (*n, *ls, *spine),
             _ => panic!("projection structure type is not an inductive"),
         };
-        assert!(ind_name == ty_name, "projection type name does not match the structure's inductive");
-        let params = self.spine_apps(depth, spine).expect("projection structure type has a non-applicative spine");
+        assert!(
+            ind_name == ty_name,
+            "projection type name does not match the structure's inductive"
+        );
+        let params = self
+            .spine_apps(depth, spine)
+            .expect("projection structure type has a non-applicative spine");
         let (num_params, num_indices, ctor_name) = {
-            let ind = self.env.get_inductive(&ind_name).expect("projection structure type is not an inductive");
-            assert!(ind.all_ctor_names.len() == 1, "projection of an inductive without exactly one constructor");
-            (usize::from(ind.num_params), usize::from(ind.num_indices), ind.all_ctor_names[0])
+            let ind = self
+                .env
+                .get_inductive(&ind_name)
+                .expect("projection structure type is not an inductive");
+            assert!(
+                ind.all_ctor_names.len() == 1,
+                "projection of an inductive without exactly one constructor"
+            );
+            (
+                usize::from(ind.num_params),
+                usize::from(ind.num_indices),
+                ind.all_ctor_names[0],
+            )
         };
-        assert!(params.len() == num_params + num_indices, "projection structure type is not fully applied");
+        assert!(
+            params.len() == num_params + num_indices,
+            "projection structure type is not fully applied"
+        );
 
         let struct_v = self.arg_value(depth, env, structure);
         let mut cur = self.const_head_type(ctor_name, ind_levels);
         for p in params.iter().take(num_params).copied() {
             match self.force_all(depth, cur) {
-                Value::Pi { domain, body, .. } => cur = self.apply_closure(depth, body, p, Some(*domain)),
+                Value::Pi { domain, body, .. } => {
+                    cur = self.apply_closure(depth, body, p, Some(*domain))
+                }
                 _ => panic!("ran out of param telescope in projection"),
             }
         }
         for i in 0..idx {
             match self.force_all(depth, cur) {
                 Value::Pi { domain, body, .. } => {
-                    if self.ctx.has_loose_bvar(body.body, 0) && struct_ty_is_prop && !self.is_prop_type(depth, domain) {
+                    if self.ctx.has_loose_bvar(body.body, 0)
+                        && struct_ty_is_prop
+                        && !self.is_prop_type(depth, domain)
+                    {
                         panic!("projection of a non-proof field from a Prop structure")
                     }
                     let prior = self.do_proj(depth, ind_name, i, struct_v);
@@ -255,7 +337,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     pub(crate) fn check_declar_info_v(&mut self, d: &Declar<'t>) {
         let info = d.info();
-        assert!(self.ctx.no_dupes_all_params(info.uparams), "duplicate universe parameters in declaration");
+        assert!(
+            self.ctx.no_dupes_all_params(info.uparams),
+            "duplicate universe parameters in declaration"
+        );
         let empty_env = self.empty_env();
         let empty_ctx = self.empty_ctx();
         let ty_ty = self.infer_value(Check, 0, empty_env, empty_ctx, info.ty);

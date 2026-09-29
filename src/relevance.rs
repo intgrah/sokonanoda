@@ -15,14 +15,24 @@ pub(crate) struct Sig {
 }
 
 impl Sig {
-    pub(crate) const ALL_RELEVANT: Sig =
-        Sig { arity: 0, prop_arg: 0, arg_known: 0, absent_arg: 0, prop_result: 0, result_known: 0 };
+    pub(crate) const ALL_RELEVANT: Sig = Sig {
+        arity: 0,
+        prop_arg: 0,
+        arg_known: 0,
+        absent_arg: 0,
+        prop_result: 0,
+        result_known: 0,
+    };
 
     #[inline]
-    fn ignorable(&self) -> u64 { (self.prop_arg & self.arg_known) | self.absent_arg }
+    fn ignorable(&self) -> u64 {
+        (self.prop_arg & self.arg_known) | self.absent_arg
+    }
 
     #[inline]
-    pub(crate) fn masks_any_arg(&self) -> bool { self.ignorable() != 0 }
+    pub(crate) fn masks_any_arg(&self) -> bool {
+        self.ignorable() != 0
+    }
 
     #[inline]
     pub(crate) fn arg_is_ignorable(&self, idx: u32) -> bool {
@@ -73,7 +83,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let mut depth = 0u32;
         let terminal = loop {
             let cur_f = self.force_all(depth, cur);
-            let Value::Pi { domain, body, .. } = cur_f else { break Some(cur_f) };
+            let Value::Pi { domain, body, .. } = cur_f else {
+                break Some(cur_f);
+            };
             if dom.len() >= MAX_TRACKED as usize {
                 break None;
             }
@@ -130,8 +142,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn absent_args(&mut self, name: NamePtr<'t>) -> u64 {
-        let Some((_, val)) = self.env.get_declar_val(&name) else { return 0 };
-        let Some(decl) = self.env.get_declar(&name) else { return 0 };
+        let Some((_, val)) = self.env.get_declar_val(&name) else {
+            return 0;
+        };
+        let Some(decl) = self.env.get_declar(&name) else {
+            return 0;
+        };
         let ty = decl.info().ty;
         let mut body = val;
         let mut arity = 0u32;
@@ -149,7 +165,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let mut absent = 0u64;
         let mut rest_ty = ty;
         for i in 0..arity {
-            let crate::expr::Expr::Pi { body: rest, .. } = self.ctx.read_expr(rest_ty) else { break };
+            let crate::expr::Expr::Pi { body: rest, .. } = self.ctx.read_expr(rest_ty) else {
+                break;
+            };
             let unused_in_value = (used >> (arity - 1 - i)) & 1 == 0;
             if unused_in_value && crate::expr::ignores_binder(rest) {
                 absent |= 1u64 << i;

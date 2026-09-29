@@ -27,12 +27,16 @@ impl<'a> Level<'a> {
 }
 
 impl<'a> std::hash::Hash for Level<'a> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.get_hash())
+    }
 }
 
 impl<'a> crate::util::RawHash for Level<'a> {
     #[inline]
-    fn raw_hash(&self) -> u64 { self.get_hash() }
+    fn raw_hash(&self) -> u64 {
+        self.get_hash()
+    }
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
@@ -82,11 +86,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 if self.is_zero(l_simp) || self.is_one(l_simp) {
                     r_simp
                 } else {
-                  match self.read_level(r_simp) {
-                      Zero => r_simp,
-                      Succ(..) => self.combining(l_simp, r_simp),
-                      _ => self.imax(l_simp, r_simp)
-                  }
+                    match self.read_level(r_simp) {
+                        Zero => r_simp,
+                        Succ(..) => self.combining(l_simp, r_simp),
+                        _ => self.imax(l_simp, r_simp),
+                    }
                 }
             }
         };
@@ -99,12 +103,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let mut set = crate::util::new_fx_hash_set();
         for l in self.read_levels(ls).iter().copied() {
             match self.read_level(l) {
-                Param(..) =>
+                Param(..) => {
                     if set.contains(&l) {
-                        return false
+                        return false;
                     } else {
                         set.insert(l);
-                    },
+                    }
+                }
                 _ => return false,
             }
         }
@@ -112,14 +117,28 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// Return `uparams [ks |-> vs]` for a list of uparams
-    pub fn subst_levels(&mut self, uparams: LevelsPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelsPtr<'t> {
-        let out =
-            self.read_levels(uparams).iter().copied().map(|l| self.subst_level(l, ks, vs)).collect::<Vec<_>>();
+    pub fn subst_levels(
+        &mut self,
+        uparams: LevelsPtr<'t>,
+        ks: LevelsPtr<'t>,
+        vs: LevelsPtr<'t>,
+    ) -> LevelsPtr<'t> {
+        let out = self
+            .read_levels(uparams)
+            .iter()
+            .copied()
+            .map(|l| self.subst_level(l, ks, vs))
+            .collect::<Vec<_>>();
         self.alloc_levels(&out)
     }
 
     /// Return `uparam [ks |-> vs]`
-    pub fn subst_level(&mut self, level: LevelPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelPtr<'t> {
+    pub fn subst_level(
+        &mut self,
+        level: LevelPtr<'t>,
+        ks: LevelsPtr<'t>,
+        vs: LevelsPtr<'t>,
+    ) -> LevelPtr<'t> {
         match self.read_level(level) {
             Zero => self.zero(),
             Succ(val, ..) => {
@@ -140,7 +159,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 let (ks, vs) = (self.read_levels(ks), self.read_levels(vs));
                 for (k, v) in ks.iter().copied().zip(vs.iter().copied()) {
                     if level == k {
-                        return v
+                        return v;
                     }
                 }
                 level
@@ -154,24 +173,40 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         match self.read_level(level) {
             Zero => true,
             Succ(val, ..) => self.all_uparams_defined(val, params),
-            Max(l, r, ..) | IMax(l, r, ..) =>
-                self.all_uparams_defined(l, params) && self.all_uparams_defined(r, params),
+            Max(l, r, ..) | IMax(l, r, ..) => {
+                self.all_uparams_defined(l, params) && self.all_uparams_defined(r, params)
+            }
             Param(..) => self.read_levels(params).iter().copied().any(|x| x == level),
         }
     }
 
-    fn is_any_max(&self, level: LevelPtr<'t>) -> bool { matches!(self.read_level(level), Max(..) | IMax(..)) }
+    fn is_any_max(&self, level: LevelPtr<'t>) -> bool {
+        matches!(self.read_level(level), Max(..) | IMax(..))
+    }
 
-    fn is_param(&self, level: LevelPtr<'t>) -> bool { matches!(self.read_level(level), Param(..)) }
+    fn is_param(&self, level: LevelPtr<'t>) -> bool {
+        matches!(self.read_level(level), Param(..))
+    }
 
-    fn subst_simp(&mut self, level: LevelPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> LevelPtr<'t> {
+    fn subst_simp(
+        &mut self,
+        level: LevelPtr<'t>,
+        ks: LevelsPtr<'t>,
+        vs: LevelsPtr<'t>,
+    ) -> LevelPtr<'t> {
         let l = self.subst_level(level, ks, vs);
         self.simplify(l)
     }
 
     /// Test whether `lhs <= rhs` by checking whether it holds regardless of whether
     /// a parameter `p` is zero or non-zero.
-    fn leq_imax_by_cases(&mut self, param: LevelPtr<'t>, lhs: LevelPtr<'t>, rhs: LevelPtr<'t>, diff: isize) -> bool {
+    fn leq_imax_by_cases(
+        &mut self,
+        param: LevelPtr<'t>,
+        lhs: LevelPtr<'t>,
+        rhs: LevelPtr<'t>,
+        diff: isize,
+    ) -> bool {
         let zero = self.zero();
         let succ_param = self.succ(param);
         let zero_slice = self.alloc_levels_slice(&[zero]);
@@ -197,7 +232,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             (Succ(s, ..), _) => self.leq_core(s, r_in, diff - 1),
             (_, Succ(s, ..)) => self.leq_core(l_in, s, diff + 1),
             (Max(a, b, ..), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
-            (Param(..), Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (Param(..), Max(x, y, ..)) => {
+                self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff)
+            }
             (Zero, Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
             (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) && diff >= 0 => true,
             (IMax(_, b, _), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
@@ -242,7 +279,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn leq(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
         if l == r {
-            return true
+            return true;
         }
         let l_prime = self.simplify(l);
         let r_prime = self.simplify(r);
@@ -255,30 +292,36 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn eq_antisymm_many(&mut self, xs: LevelsPtr<'t>, ys: LevelsPtr<'t>) -> bool {
         if xs == ys {
-            return true
+            return true;
         }
         let xs = self.read_levels(xs);
         let ys = self.read_levels(ys);
         if xs.len() != ys.len() {
-            return false
+            return false;
         }
-        xs.iter().copied().zip(ys.iter().copied()).all(|(x, y)| self.eq_antisymm(x, y))
+        xs.iter()
+            .copied()
+            .zip(ys.iter().copied())
+            .all(|(x, y)| self.eq_antisymm(x, y))
     }
 
     /// Does this list of universe parameters already contain `Param(n)` for some `n : Name`
     ///
     /// Used for generating a unique elim universe in the inductive module
     pub(crate) fn contains_param(&self, uparams: LevelsPtr<'t>, candidate: NamePtr<'t>) -> bool {
-        self.read_levels(uparams).iter().copied().any(|lptr| match self.read_level(lptr) {
-            Param(n, ..) => n == candidate,
-            _ => false,
-        })
+        self.read_levels(uparams)
+            .iter()
+            .copied()
+            .any(|lptr| match self.read_level(lptr) {
+                Param(n, ..) => n == candidate,
+                _ => false,
+            })
     }
-    
+
     fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
         match self.read_level(l) {
             Level::Succ(pred, _) => self.is_zero(pred),
-            _ => false
+            _ => false,
         }
     }
 

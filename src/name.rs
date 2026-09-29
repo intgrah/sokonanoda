@@ -14,7 +14,9 @@ pub enum Name<'a> {
 }
 
 impl<'a> std::hash::Hash for Name<'a> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { state.write_u64(self.get_hash()) }
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.get_hash())
+    }
 }
 
 impl<'a> Name<'a> {
@@ -94,10 +96,15 @@ impl<'a> NameNode<'a> {
     }
 
     #[inline]
-    pub(crate) fn decl_idx(&self) -> u32 { self.decl_idx.load(std::sync::atomic::Ordering::Relaxed) }
+    pub(crate) fn decl_idx(&self) -> u32 {
+        self.decl_idx.load(std::sync::atomic::Ordering::Relaxed)
+    }
 
     #[inline]
-    pub(crate) fn set_decl_idx(&self, idx: u32) { self.decl_idx.store(idx, std::sync::atomic::Ordering::Relaxed) }
+    pub(crate) fn set_decl_idx(&self, idx: u32) {
+        self.decl_idx
+            .store(idx, std::sync::atomic::Ordering::Relaxed)
+    }
 
     #[inline]
     pub(crate) fn is_nat_red(&self) -> bool {
@@ -111,23 +118,30 @@ impl<'a> NameNode<'a> {
 
     #[inline]
     pub(crate) fn set_nat_red(&self, k: NatRed) {
-        self.nat_red.store(k as u8, std::sync::atomic::Ordering::Relaxed)
+        self.nat_red
+            .store(k as u8, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
 impl<'a> PartialEq for NameNode<'a> {
     #[inline]
-    fn eq(&self, o: &Self) -> bool { self.kind == o.kind }
+    fn eq(&self, o: &Self) -> bool {
+        self.kind == o.kind
+    }
 }
 impl<'a> Eq for NameNode<'a> {}
 
 impl<'a> crate::util::RawHash for NameNode<'a> {
     #[inline]
-    fn raw_hash(&self) -> u64 { self.kind.get_hash() }
+    fn raw_hash(&self) -> u64 {
+        self.kind.get_hash()
+    }
 }
 
 impl<'a> std::fmt::Debug for NameNode<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.kind.fmt(f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
 }
 
 impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
@@ -136,13 +150,13 @@ impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
         loop {
             match self.read_name(n) {
                 Anon => return n,
-                Str(pfx, ..) | Num(pfx, ..) => { 
+                Str(pfx, ..) | Num(pfx, ..) => {
                     if pfx == anonymous {
-                        return n
+                        return n;
                     } else {
-                        n = pfx 
+                        n = pfx
                     }
-                },
+                }
             }
         }
     }
@@ -175,7 +189,12 @@ impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn replace_pfx(&mut self, n: NamePtr<'t>, outgoing: NamePtr<'t>, incoming: NamePtr<'t>) -> NamePtr<'t> {
+    pub(crate) fn replace_pfx(
+        &mut self,
+        n: NamePtr<'t>,
+        outgoing: NamePtr<'t>,
+        incoming: NamePtr<'t>,
+    ) -> NamePtr<'t> {
         match self.read_name(n) {
             Anon => match self.read_name(outgoing) {
                 Anon => incoming,
