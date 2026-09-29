@@ -9,6 +9,7 @@ use crate::term::intern::Dag;
 use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use bumpalo::Bump;
 use num_bigint::BigUint;
 use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -17,7 +18,6 @@ use std::error::Error;
 use std::fmt;
 use std::io::BufRead;
 use std::sync::Arc;
-use stumpalo::ArenaRef;
 
 fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
     const MIN_SEMVER: semver::Version = semver::Version::new(3, 1, 0);
@@ -40,7 +40,7 @@ fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
 
 pub struct Parser<'a, R: BufRead> {
     buf_reader: R,
-    arena: &'a ArenaRef<'a>,
+    arena: &'a Bump,
     dag: Dag<'a>,
     anon: NamePtr<'a>,
     zero: LevelPtr<'a>,
@@ -333,7 +333,7 @@ enum ExportJsonVal<'a> {
 }
 
 pub(crate) fn parse_export_mapped<'p>(
-    arena: &'p ArenaRef<'p>,
+    arena: &'p Bump,
     input: &[u8],
     config: Config,
 ) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
@@ -345,7 +345,7 @@ pub(crate) fn parse_export_mapped<'p>(
 const READ_CHUNK: usize = 1 << 22;
 
 pub(crate) fn parse_export_file<'p, R: BufRead>(
-    arena: &'p ArenaRef<'p>,
+    arena: &'p Bump,
     buf_reader: R,
     config: Config,
 ) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
@@ -676,12 +676,12 @@ impl From<Fallback> for FastError {
 }
 
 impl<'a, R: BufRead> Parser<'a, R> {
-    pub fn new(arena: &'a ArenaRef<'a>, buf_reader: R, config: Config) -> Self {
+    pub fn new(arena: &'a Bump, buf_reader: R, config: Config) -> Self {
         Self::with_input_len(arena, buf_reader, config, 0)
     }
 
     pub fn with_input_len(
-        arena: &'a ArenaRef<'a>,
+        arena: &'a Bump,
         buf_reader: R,
         config: Config,
         input_len: usize,
@@ -1704,7 +1704,7 @@ mod semver_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stumpalo::Arena;
+    use bumpalo::Bump;
 
     fn config() -> Config {
         Config {
@@ -1715,8 +1715,8 @@ mod tests {
 
     #[test]
     fn ignore_binder_metadata_in_both_parser_paths() {
-        let arena = Arena::new();
-        let mut parser = Parser::new(arena.as_arena_ref(), &b""[..], config());
+        let arena = Bump::new();
+        let mut parser = Parser::new(&arena, &b""[..], config());
         parser.do_sort(BackRef::Ie(0), 0);
         parser.do_bvar(BackRef::Ie(1), 0).unwrap();
         parser.do_bvar(BackRef::Ie(2), 1).unwrap();
@@ -1788,8 +1788,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "export references expression index 99 before it is defined")]
     fn reject_undefined_binder_type() {
-        let arena = Arena::new();
-        let mut parser = Parser::new(arena.as_arena_ref(), &b""[..], config());
+        let arena = Bump::new();
+        let mut parser = Parser::new(&arena, &b""[..], config());
         parser.do_sort(BackRef::Ie(0), 0);
         parser
             .go1_general(r#"{"ie":1,"lam":{"type":99,"body":0}}"#)

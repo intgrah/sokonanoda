@@ -1,9 +1,9 @@
+use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
 use sokonanoda::config::{AxiomPolicy, Config, DisallowedAxiom};
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use stumpalo::Arena;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -95,8 +95,8 @@ impl From<Cli> for Config {
 fn main() {
     let cfg = Config::from(Cli::parse());
     let result = std::panic::catch_unwind(|| -> Result<(), Box<dyn Error>> {
-        let arena = Arena::new();
-        let (export_file, warned_axioms) = cfg.to_export_file(arena.as_arena_ref())?;
+        let arena = Bump::new();
+        let (export_file, warned_axioms) = cfg.to_export_file(&arena)?;
         if !warned_axioms.is_empty() {
             eprintln!("warning: disallowed axioms: {}", warned_axioms.join(", "));
         }

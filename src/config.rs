@@ -1,10 +1,10 @@
 use crate::checker::context::ExportFile;
 use crate::frontend::parser::{parse_export_file, parse_export_mapped};
+use bumpalo::Bump;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::BufReader;
 use std::path::PathBuf;
-use stumpalo::ArenaRef;
 
 const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
 
@@ -91,7 +91,7 @@ impl Default for Config {
 impl Config {
     pub fn to_export_file<'a>(
         self,
-        arena: &'a ArenaRef<'a>,
+        arena: &'a Bump,
     ) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {

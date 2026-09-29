@@ -140,11 +140,9 @@ impl<'p> ExportFile<'p> {
     where
         F: FnMut() -> Option<(usize, usize)>,
     {
-        let mut thread_arena = stumpalo::Arena::new();
-        thread_arena.with_scope(|tscope| {
-            let mut tctx = TcCtx::new(self, tscope);
-            self.run_session_inner(first, &mut next_chunk, &mut tctx)
-        })
+        let thread_arena = bumpalo::Bump::new();
+        let mut tctx = TcCtx::new(self, &thread_arena);
+        self.run_session_inner(first, &mut next_chunk, &mut tctx)
     }
 
     fn run_session_inner<'h, F>(

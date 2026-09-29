@@ -345,14 +345,13 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::frontend::parser::parse_export_file;
+    use bumpalo::Bump;
     use rand::prelude::*;
     use std::error::Error;
-    use stumpalo::Arena;
 
     fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-        let arena = Arena::new();
-        let (export_file, _) =
-            parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
+        let arena = Bump::new();
+        let (export_file, _) = parse_export_file(&arena, std::io::empty(), Config::default())?;
         Ok(export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
     }
 

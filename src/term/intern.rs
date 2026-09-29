@@ -5,9 +5,9 @@ use crate::hash64;
 use crate::term::expr::Expr;
 use crate::term::level::Level;
 use crate::term::name::{Name, NUM_HASH, STR_HASH};
+use bumpalo::Bump;
 use hashbrown::HashTable;
 use num_bigint::BigUint;
-use stumpalo::ArenaRef;
 
 macro_rules! interner {
     ($name:ident, $pointee:ident) => {
@@ -49,11 +49,7 @@ macro_rules! interner {
                     .copied()
             }
 
-            pub(crate) fn insert(
-                &mut self,
-                arena: &ArenaRef<'a>,
-                v: $pointee<'a>,
-            ) -> &'a $pointee<'a> {
+            pub(crate) fn insert(&mut self, arena: &'a Bump, v: $pointee<'a>) -> &'a $pointee<'a> {
                 let hash = v.raw_hash();
                 let r: &'a $pointee<'a> = arena.alloc(v);
                 self.table.insert_unique(hash, r, |s| s.raw_hash());
@@ -61,11 +57,7 @@ macro_rules! interner {
             }
 
             #[allow(dead_code)]
-            pub(crate) fn intern(
-                &mut self,
-                arena: &ArenaRef<'a>,
-                v: $pointee<'a>,
-            ) -> &'a $pointee<'a> {
+            pub(crate) fn intern(&mut self, arena: &'a Bump, v: $pointee<'a>) -> &'a $pointee<'a> {
                 if let Some(r) = self.get(&v) {
                     return r;
                 }
@@ -112,7 +104,7 @@ impl<'a> NameInterner<'a> {
 
     pub(crate) fn insert(
         &mut self,
-        arena: &ArenaRef<'a>,
+        arena: &'a Bump,
         v: Name<'a>,
     ) -> &'a crate::term::name::NameNode<'a> {
         let hash = v.get_hash();
@@ -124,7 +116,7 @@ impl<'a> NameInterner<'a> {
 
     pub(crate) fn intern(
         &mut self,
-        arena: &ArenaRef<'a>,
+        arena: &'a Bump,
         v: Name<'a>,
     ) -> &'a crate::term::name::NameNode<'a> {
         if let Some(r) = self.get(&v) {
@@ -153,13 +145,13 @@ impl<'a> BigUintInterner<'a> {
         let hash = v.struct_hash();
         self.table.find(hash, |stored| **stored == *v).copied()
     }
-    pub(crate) fn insert(&mut self, arena: &ArenaRef<'a>, v: BigUint) -> &'a BigUint {
+    pub(crate) fn insert(&mut self, arena: &'a Bump, v: BigUint) -> &'a BigUint {
         let hash = v.struct_hash();
         let r: &'a BigUint = arena.alloc(v);
         self.table.insert_unique(hash, r, |s| s.struct_hash());
         r
     }
-    pub(crate) fn intern(&mut self, arena: &ArenaRef<'a>, v: BigUint) -> &'a BigUint {
+    pub(crate) fn intern(&mut self, arena: &'a Bump, v: BigUint) -> &'a BigUint {
         if let Some(r) = self.get(&v) {
             return r;
         }
@@ -193,11 +185,7 @@ impl<'a> LevelsInterner<'a> {
             })
             .copied()
     }
-    pub(crate) fn intern(
-        &mut self,
-        arena: &ArenaRef<'a>,
-        v: &[LevelPtr<'a>],
-    ) -> &'a [LevelPtr<'a>] {
+    pub(crate) fn intern(&mut self, arena: &'a Bump, v: &[LevelPtr<'a>]) -> &'a [LevelPtr<'a>] {
         if let Some(r) = self.get(v) {
             return r;
         }

@@ -95,9 +95,8 @@ mod tests {
 
     #[test]
     fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
-        let arena = stumpalo::Arena::new();
-        let (export, _) =
-            parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
+        let arena = bumpalo::Bump::new();
+        let (export, _) = parse_export_file(&arena, std::io::empty(), Config::default())?;
         let mut rng = rand::thread_rng();
         export.with_ctx(|ctx, _cache, _arena| {
             for size in 0..100 {

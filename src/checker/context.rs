@@ -14,8 +14,8 @@ use crate::term::intern::{Dag, NameCache};
 use crate::term::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::term::name::{Name, NUM_HASH, STR_HASH};
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use bumpalo::Bump;
 use num_bigint::BigUint;
-use stumpalo::{Arena, ArenaRef};
 
 pub struct ExprCache<'t> {
     pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
@@ -62,15 +62,12 @@ impl<'p> ExportFile<'p> {
 
     pub fn with_ctx<F, A>(&self, f: F) -> A
     where
-        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t bumpalo::Bump) -> A,
+        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t Bump) -> A,
     {
-        let mut arena = Arena::new();
-        arena.with_scope(|scope| {
-            let bump = bumpalo::Bump::new();
-            let mut ctx = TcCtx::new(self, scope);
-            let mut cache = TcCache::new(&bump);
-            f(&mut ctx, &mut cache, &bump)
-        })
+        let arena = Bump::new();
+        let mut ctx = TcCtx::new(self, &arena);
+        let mut cache = TcCache::new(&arena);
+        f(&mut ctx, &mut cache, &arena)
     }
 
     pub fn with_tc<F, A>(&self, env_limit: EnvLimit<'p>, f: F) -> A
@@ -87,7 +84,7 @@ impl<'p> ExportFile<'p> {
 
 pub struct TcCtx<'t, 'p> {
     pub(crate) export_file: &'t ExportFile<'p>,
-    pub(crate) arena: &'t ArenaRef<'t>,
+    pub(crate) arena: &'t Bump,
     pub(crate) dag: Dag<'t>,
     pub(crate) expr_cache: ExprCache<'t>,
     pub(crate) sig_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
@@ -95,7 +92,7 @@ pub struct TcCtx<'t, 'p> {
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    pub fn new(export_file: &'t ExportFile<'p>, arena: &'t ArenaRef<'t>) -> Self {
+    pub fn new(export_file: &'t ExportFile<'p>, arena: &'t Bump) -> Self {
         let dag = Dag::new_local(&export_file.config);
         Self {
             export_file,
@@ -110,7 +107,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn with_tc<F, A>(
         &mut self,
         env_limit: EnvLimit<'p>,
-        arena: &'t bumpalo::Bump,
+        arena: &'t Bump,
         cache: &mut TcCache<'t, 't>,
         f: F,
     ) -> A
@@ -126,7 +123,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         &mut self,
         env_ext: &'x DeclarMap<'t>,
         env_limit: EnvLimit<'p>,
-        arena: &'t bumpalo::Bump,
+        arena: &'t Bump,
         cache: &mut TcCache<'t, 't>,
         f: F,
     ) -> A
