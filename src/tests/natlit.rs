@@ -699,32 +699,6 @@ fn nat_mod_eq_sub_mod() {
 //    })
 //}
 //
-///// Runs a series of tests using the same export file so we don't have to
-///// re-parse the file for every test.
-//#[test]
-//fn e_nat_tests() -> Result<(), Box<dyn Error>> {
-//    test_export_file(Some(&Path::new("test_resources/Init/config.json")), |export| {
-//        let mut rng = rand::thread_rng();
-//        e_succ_zero_eq(export, &mut rng);
-//        e_succ_nat_lit_eq(export, &mut rng);
-//        e_nat_zero_add(export, &mut rng);
-//        e_nat_succ_add(export, &mut rng);
-//        e_nat_succ_sub_succ_eq_sub(export, &mut rng);
-//        e_nat_sub_zero(export, &mut rng);
-//        e_nat_sub_le(export, &mut rng);
-//        e_nat_lt_succ_self(export, &mut rng);
-//        e_nat_div_le_self(export, &mut rng);
-//        e_nat_div_lt_self(export, &mut rng);
-//        e_nat_mod_sub_eq(export, &mut rng);
-//        e_nat_pow_zero(export, &mut rng);
-//        e_nat_pow_succ(export, &mut rng);
-//        e_nat_mul_zero(export, &mut rng);
-//        e_nat_mul_succ(export, &mut rng);
-//        e_nat_mul_comm(export, &mut rng);
-//        e_nat_ne_of_lt(export, &mut rng);
-//    })
-//}
-//
 //#[cfg(test)]
 //impl<'t, 'p> TcCtx<'t, 'p> {
 //    fn nat_binop(&mut self, l: ExprPtr<'t>, op: NatBinOp, r: ExprPtr<'t>) -> ExprPtr<'t> {

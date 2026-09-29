@@ -4,7 +4,7 @@ use std::error::Error;
 
 #[test]
 fn leq_test0() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let m = ctx.max(s, s);
@@ -16,7 +16,7 @@ fn leq_test0() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test1() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let ss = ctx.succ(s);
@@ -28,7 +28,7 @@ fn leq_test1() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test2() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let a = ctx.param_quick("a");
         let b = ctx.param_quick("b");
         assert!(!ctx.leq(a, b));
@@ -38,7 +38,7 @@ fn leq_test2() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test_imax_imax() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let a = ctx.param_quick("a");
         let b = ctx.param_quick("b");
         let imax_a_b = ctx.imax(a, b);
@@ -55,7 +55,7 @@ fn leq_test_imax_imax() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test3() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let a = ctx.param_quick("a");
         let b = ctx.param_quick("b");
         assert!(!ctx.leq(a, b));
@@ -65,7 +65,7 @@ fn leq_test3() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test4() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         for _ in 0..100 {
             let mut rng = thread_rng();
             let (small, large) = {
@@ -82,7 +82,7 @@ fn leq_test4() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test5() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
         let mut rng = thread_rng();
         for _ in 0..100 {
@@ -108,7 +108,7 @@ fn leq_test5() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test6() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
         let mut rng = thread_rng();
         for _ in 0..100 {
@@ -134,7 +134,7 @@ fn leq_test6() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn leq_test7() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
         let mut rng = thread_rng();
         for _ in 0..100 {
@@ -160,7 +160,7 @@ fn leq_test7() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn eq_test1() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let ss = ctx.succ(s);
@@ -173,7 +173,7 @@ fn eq_test1() -> Result<(), Box<dyn Error>> {
 #[test]
 fn eq_many_test1() -> Result<(), Box<dyn Error>> {
     // [2] == [max(1, 1) + 1]
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let ss = ctx.succ(s);
@@ -187,7 +187,7 @@ fn eq_many_test1() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn debug_test0() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let ss = ctx.succ(s);
@@ -200,7 +200,7 @@ fn debug_test0() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn debug_test1() -> Result<(), Box<dyn Error>> {
-    test_ctx(None, |ctx| {
+    test_ctx(|ctx| {
         let z = ctx.zero();
         let s = ctx.succ(z);
         let m = ctx.max(s, s);

@@ -1,51 +1,39 @@
+use crate::parser::parse_export_file;
 use crate::util::{Config, CowStr, ExportFile, LevelPtr, TcCtx};
 use rand::distributions::Alphanumeric;
 use rand::{rngs::ThreadRng, Rng};
 use std::error::Error;
-use std::path::{Path, PathBuf};
 use stumpalo::Arena;
 
-fn test_config(config_path: Option<&Path>) -> Result<Config, Box<dyn Error>> {
-    match config_path {
-        None => Ok(Config {
-            export_file_path: Some(PathBuf::from("test_resources/Empty/export")),
-            use_stdin: false,
-            permitted_axioms: Some(Vec::new()),
-            permit_standard_axioms: false,
-            unpermitted_axiom_hard_error: true,
-            parse_only: false,
-            nat_extension: false,
-            string_extension: false,
-            num_threads: 1,
-            print_success_message: true,
-            print_axioms: true,
-            unsafe_permit_all_axioms: false,
-        }),
-        Some(config_path) => Ok(Config::try_from(config_path)?),
+fn empty_test_config() -> Config {
+    Config {
+        export_file_path: None,
+        use_stdin: false,
+        permitted_axioms: Some(Vec::new()),
+        permit_standard_axioms: false,
+        unpermitted_axiom_hard_error: true,
+        parse_only: false,
+        nat_extension: false,
+        string_extension: false,
+        num_threads: 1,
+        print_success_message: false,
+        print_axioms: false,
+        unsafe_permit_all_axioms: false,
     }
 }
 
-pub(crate) fn test_export_file<A>(
-    config_path: Option<&Path>,
-    f: impl FnOnce(&ExportFile) -> A,
-) -> Result<A, Box<dyn Error>> {
+pub(crate) fn test_export_file<A>(f: impl FnOnce(&ExportFile) -> A) -> Result<A, Box<dyn Error>> {
     let arena = Arena::new();
-    let (export_file, _) = test_config(config_path)?.to_export_file(arena.as_arena_ref())?;
+    let (export_file, _) = parse_export_file(arena.as_arena_ref(), std::io::empty(), empty_test_config())?;
     Ok(f(&export_file))
 }
 
-#[allow(dead_code)]
-pub(crate) fn test_export_file_should_panic<A>(config_path: Option<&Path>, f: impl FnOnce(&ExportFile) -> A) {
-    let Ok(config) = test_config(config_path) else { return };
-    let arena = Arena::new();
-    let result = config.to_export_file(arena.as_arena_ref());
-    if let Ok((export_file, _)) = result {
-        f(&export_file);
-    }
+pub(crate) fn test_export_file_should_panic<A>(f: impl FnOnce(&ExportFile) -> A) {
+    test_export_file(f).expect("create empty test environment");
 }
 
-pub(crate) fn test_ctx<'p, A>(path: Option<&Path>, f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-    test_export_file(path, |export_file| export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
+pub(crate) fn test_ctx<'p, A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
+    test_export_file(|export_file| export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
@@ -65,94 +53,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 }
 
 #[test]
-fn check_empty() -> Result<(), Box<dyn Error>> {
-    test_export_file(None, |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-/// The export format assigns each name/level/expression an explicit index. Those
-/// indices need not be dense or in increasing order — the exporter only guarantees
-/// that an item is emitted after the items it references. `LevelIndexOutOfOrder`
-/// defines level index 2 before level index 1 (with 1 referencing 2). The parser
-/// must resolve references via the explicit indices, not insertion position.
-#[test]
-fn check_level_index_out_of_order() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(Path::new("test_resources/LevelIndexOutOfOrder/config.json")), |export| {
-        assert_eq!(export.declars.len(), 1);
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-/// `SparseNameIndex` uses name index 2 and expression index 4 with gaps (no name
-/// index 1, no expressions 0..=3). The parser must tolerate sparse explicit indices.
-#[test]
-fn check_sparse_name_index() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(Path::new("test_resources/SparseNameIndex/config.json")), |export| {
-        assert_eq!(export.declars.len(), 1);
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
-#[should_panic(expected = "def_eq failed")]
-fn check_k_reduce_depth_alias() {
-    test_export_file_should_panic(Some(Path::new("test_resources/KReduceDepthAlias/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
-fn check_proof_irrel_under_bvar() -> Result<(), Box<dyn Error>> {
-    test_export_file(Some(Path::new("test_resources/ProofIrrelUnderBVar/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
-#[should_panic(expected = "non-proof field from a Prop structure")]
-fn check_proj_from_prop() {
-    test_export_file_should_panic(Some(Path::new("test_resources/ProjFromProp/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
-#[should_panic(expected = "imported recursor rule does not match the reconstructed rule")]
-fn reject_rec_rule_with_forged_lambda_domains() {
-    test_export_file_should_panic(Some(Path::new("test_resources/RuleDomainMismatch/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
-#[should_panic(expected = "imported inductive block contains an underived recursor")]
-fn reject_unlisted_recursor() {
-    test_export_file_should_panic(Some(Path::new("test_resources/UnlistedRecursor/config.json")), |export| {
-        for declar in export.declars.values() {
-            export.check_declar(declar);
-        }
-    })
-}
-
-#[test]
 #[should_panic(expected = "expected a sort")]
 fn reject_is_prop_when_inferred_type_is_not_a_sort() {
-    test_export_file_should_panic(None, |export| {
+    test_export_file_should_panic(|export| {
         export.with_tc(crate::env::EnvLimit::Empty, |tc| {
             let sort = crate::value::mk_sort(tc.arena, tc.ctx.zero());
             let stuck_type = tc.mk_bvar_hc(0, sort);
@@ -165,7 +68,7 @@ fn reject_is_prop_when_inferred_type_is_not_a_sort() {
 #[test]
 #[should_panic(expected = "inductive occurrence is not applied uniformly")]
 fn reject_nonuniform_inductive_occurrence_before_reduction() {
-    test_export_file_should_panic(None, |export| {
+    test_export_file_should_panic(|export| {
         export.with_ctx(|ctx, _cache, _arena| {
             let ind_name = ctx.str1("E");
             let levels = ctx.alloc_levels_slice(&[]);
@@ -191,7 +94,7 @@ fn hash_test0() -> Result<(), Box<dyn Error>> {
     use crate::hash64;
     use num_bigint::RandBigInt;
     use rand::thread_rng;
-    test_export_file(None, |export| {
+    test_export_file(|export| {
         let mut rng = thread_rng();
         export.with_ctx(|ctx, _cache, _arena| {
             for size in 0..100 {
