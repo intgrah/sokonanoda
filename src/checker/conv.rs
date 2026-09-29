@@ -738,13 +738,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let domain = self.lam_domain(depth, x);
                 let fresh = self.mk_bvar_hc(depth, domain);
                 let lhs = self.apply_closure(depth + 1, body, fresh, None);
-                let rhs = self.apply_v(depth + 1, y, fresh);
+                let rhs = self.apply(depth + 1, y, fresh);
                 return self.unify::<true>(depth + 1, lhs, rhs);
             }
             (_, Value::Lam { body, .. }) if !matches!(x, Value::Lam { .. }) => {
                 let domain = self.lam_domain(depth, y);
                 let fresh = self.mk_bvar_hc(depth, domain);
-                let lhs = self.apply_v(depth + 1, x, fresh);
+                let lhs = self.apply(depth + 1, x, fresh);
                 let rhs = self.apply_closure(depth + 1, body, fresh, None);
                 return self.unify::<true>(depth + 1, lhs, rhs);
             }
@@ -829,8 +829,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         };
         let domain = self.lam_domain(depth, lam_side);
         let fresh = self.mk_bvar_hc(depth, domain);
-        let xb = self.apply_v(depth + 1, x, fresh);
-        let yb = self.apply_v(depth + 1, y, fresh);
+        let xb = self.apply(depth + 1, x, fresh);
+        let yb = self.apply(depth + 1, y, fresh);
         self.try_proof_irrel_at(depth + 1, xb, yb)
     }
 
