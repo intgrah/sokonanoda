@@ -1,3 +1,4 @@
+use crate::config::{AxiomDecision, Config};
 use crate::env::{
     ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint,
 };
@@ -6,8 +7,8 @@ use crate::hash64;
 use crate::level::Level;
 use crate::name::Name;
 use crate::util::{
-    new_fx_hash_map, new_fx_index_map, BigUintPtr, Config, Dag, ExprPtr, FxHashMap, FxIndexMap,
-    LevelPtr, LevelsPtr, NamePtr, StringPtr,
+    new_fx_hash_map, new_fx_index_map, BigUintPtr, Dag, ExprPtr, FxHashMap, FxIndexMap, LevelPtr,
+    LevelsPtr, NamePtr, StringPtr,
 };
 use num_bigint::BigUint;
 use serde::de::{Error as DeError, Visitor};
@@ -50,7 +51,7 @@ pub struct Parser<'a, R: BufRead> {
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
     notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
     config: Config,
-    skipped: Vec<String>,
+    warned_axioms: Vec<String>,
     mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
     scratch_idxs: Vec<u32>,
 }
@@ -705,7 +706,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             declars: new_fx_index_map(),
             notations: new_fx_hash_map(),
             config,
-            skipped: Vec::new(),
+            warned_axioms: Vec::new(),
             mutual_block_sizes: new_fx_hash_map(),
             scratch_idxs: Vec::new(),
         }
@@ -745,22 +746,6 @@ impl<'a, R: BufRead> Parser<'a, R> {
             self.exprs_by_idx.resize(i + 1, NO_EXPR);
         }
         self.exprs_by_idx[i] = entry;
-    }
-
-    fn axiom_permitted(&self, n: NamePtr<'a>) -> bool {
-        if self.config.unsafe_permit_all_axioms {
-            return true;
-        }
-        let s = self.name_to_string(n);
-        if self.config.permit_standard_axioms && crate::util::STANDARD_AXIOMS.contains(&s.as_str())
-        {
-            return true;
-        }
-        self.config
-            .permitted_axioms
-            .as_ref()
-            .map(|v| v.contains(&s))
-            .unwrap_or(false)
     }
 
     fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
@@ -891,7 +876,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,
         };
-        Ok((export_file, self.skipped))
+        Ok((export_file, self.warned_axioms))
     }
 
     fn fast_line(&mut self, s: &[u8], pos: usize, idxs: &mut Vec<u32>) -> Result<usize, FastError> {
@@ -1458,17 +1443,19 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let ty = self.get_expr_ptr(ty);
                 let info = DeclarInfo { name, ty, uparams };
                 let axiom = Declar::Axiom { info };
-                if self.axiom_permitted(name) {
-                    self.add_declar(name, axiom);
-                } else {
-                    let name_string = self.name_to_string(name);
-                    if self.config.unpermitted_axiom_hard_error {
-                        return crate::util::decline(format!(
-                            "export file declares unpermitted axiom {:?}",
+                let name_string = self.name_to_string(name);
+                match self.config.axiom_policy.decision(&name_string) {
+                    AxiomDecision::Allow => self.add_declar(name, axiom),
+                    AxiomDecision::Warn => {
+                        self.add_declar(name, axiom);
+                        self.warned_axioms.push(name_string);
+                    }
+                    AxiomDecision::Reject => {
+                        return Err(format!(
+                            "export file declares disallowed axiom {:?}",
                             name_string
-                        ));
-                    } else {
-                        self.skipped.push(name_string)
+                        )
+                        .into());
                     }
                 }
             }
@@ -1714,7 +1701,10 @@ mod tests {
     use stumpalo::Arena;
 
     fn config() -> Config {
-        serde_json::from_str(r#"{"use_stdin":true}"#).unwrap()
+        Config {
+            use_stdin: true,
+            ..Config::default()
+        }
     }
 
     #[test]

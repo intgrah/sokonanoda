@@ -1,99 +1,129 @@
-use sokonanoda::util::Config;
+use clap::{ArgGroup, Parser};
+use sokonanoda::config::{AxiomPolicy, Config, DisallowedAxiom};
 use std::error::Error;
-use std::path::Path;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use stumpalo::Arena;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const EXIT_REJECT: i32 = 1;
-
 const EXIT_DECLINE: i32 = 2;
 
-fn main() {
-    let mut args = std::env::args();
-    let _ = args.next();
-    let out = match args.next().as_ref() {
-        None => Err(Box::from(
-            "This program expects a path to a configuration file.".to_string(),
-        )),
-        Some(p) if p == "-h" || p == "--help" => {
-            println!("{}", HELP_LONG);
-            return;
-        }
-        Some(p) => {
-            let path = Path::new(p).to_path_buf();
-            match std::panic::catch_unwind(|| use_config(&path)) {
-                Ok(r) => r,
-                Err(_) => std::process::exit(EXIT_REJECT),
-            }
-        }
-    };
-    match out {
-        Ok(Some(msg)) => println!("{}", msg),
-        Ok(None) => {}
-        Err(e) => {
-            let declined = e.downcast_ref::<sokonanoda::util::Decline>().is_some();
-            eprintln!("{:?}", MainError(e));
-            std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT })
+#[derive(Debug, Parser)]
+#[command(version, about = "Check a Lean export", group(ArgGroup::new("input").required(true).multiple(false)))]
+struct Cli {
+    #[arg(value_name = "EXPORT", group = "input", help = "Export file to check")]
+    export_file_path: Option<PathBuf>,
+
+    #[arg(
+        long = "stdin",
+        group = "input",
+        help = "Read the export from standard input"
+    )]
+    use_stdin: bool,
+
+    #[arg(
+        long = "axiom-allow",
+        value_name = "NAME[,NAME...]",
+        value_delimiter = ',',
+        conflicts_with = "axiom_allow_all",
+        help = "Allow only these axiom names; repeat the option or separate names with commas (replaces the default list)"
+    )]
+    axiom_allow: Vec<String>,
+
+    #[arg(long = "axiom-allow-all", conflicts_with_all = ["axiom_allow", "axiom_ondisallowed_warn", "axiom_ondisallowed_reject"], help = "Allow every axiom")]
+    axiom_allow_all: bool,
+
+    #[arg(long = "axiom-ondisallowed-warn", conflicts_with_all = ["axiom_allow_all", "axiom_ondisallowed_reject"], help = "Report disallowed axioms (default)")]
+    axiom_ondisallowed_warn: bool,
+
+    #[arg(long = "axiom-ondisallowed-reject", conflicts_with_all = ["axiom_allow_all", "axiom_ondisallowed_warn"], help = "Reject an export containing a disallowed axiom")]
+    axiom_ondisallowed_reject: bool,
+
+    #[arg(short = 'j', long = "threads", default_value_t = NonZeroUsize::new(1).unwrap(), help = "Number of checker threads")]
+    num_threads: NonZeroUsize,
+
+    #[arg(long, help = "Parse the export without typechecking declarations")]
+    parse_only: bool,
+
+    #[arg(long, help = "Enable native Nat reduction")]
+    nat_extension: bool,
+
+    #[arg(long, help = "Enable native String reduction")]
+    string_extension: bool,
+
+    #[arg(long, help = "Print a summary after a successful check")]
+    print_success_message: bool,
+}
+
+impl From<Cli> for Config {
+    fn from(cli: Cli) -> Self {
+        Config {
+            export_file_path: cli.export_file_path,
+            use_stdin: cli.use_stdin,
+            axiom_policy: if cli.axiom_allow_all {
+                AxiomPolicy::AllowAll
+            } else {
+                let names = if cli.axiom_allow.is_empty() {
+                    match AxiomPolicy::default() {
+                        AxiomPolicy::Allow { names, .. } => names,
+                        AxiomPolicy::AllowAll => unreachable!(),
+                    }
+                } else {
+                    cli.axiom_allow
+                };
+                AxiomPolicy::Allow {
+                    names,
+                    on_disallowed: if cli.axiom_ondisallowed_reject {
+                        DisallowedAxiom::Reject
+                    } else {
+                        DisallowedAxiom::Warn
+                    },
+                }
+            },
+            num_threads: cli.num_threads.get(),
+            parse_only: cli.parse_only,
+            nat_extension: cli.nat_extension,
+            string_extension: cli.string_extension,
+            print_success_message: cli.print_success_message,
         }
     }
 }
 
-// Returns an optional success message.
-fn use_config(config_path: &Path) -> Result<Option<String>, Box<dyn Error>> {
-    let cfg = Config::try_from(config_path)?;
-    let global_arena = Arena::new();
-    let (export_file, skipped_axioms) = cfg.to_export_file(global_arena.as_arena_ref())?;
-    if export_file.config.parse_only {
-        return Ok(Some(format!(
-            "Parsed {} declarations",
-            export_file.declars.len()
-        )));
-    }
-    // Check the environment
-    export_file.check_all_declars();
-    if export_file.config.print_success_message {
-        if skipped_axioms.is_empty() {
-            Ok(Some(format!(
+fn main() {
+    let cfg = Config::from(Cli::parse());
+    let result = std::panic::catch_unwind(|| -> Result<(), Box<dyn Error>> {
+        let arena = Arena::new();
+        let (export_file, warned_axioms) = cfg.to_export_file(arena.as_arena_ref())?;
+        if !warned_axioms.is_empty() {
+            eprintln!("warning: disallowed axioms: {}", warned_axioms.join(", "));
+        }
+        if export_file.config.parse_only {
+            println!("Parsed {} declarations", export_file.declars.len());
+            return Ok(());
+        }
+
+        export_file.check_all_declars();
+        if export_file.config.print_success_message {
+            println!(
                 "Checked {} declarations with no errors",
                 export_file.declars.len()
-            )))
-        } else {
-            Ok(Some(format!(
-                "Checked {} declarations with no errors, skipping exported but unpermitted axioms {:?}",
-                export_file.declars.len(),
-                skipped_axioms
-            )))
+            );
         }
-    } else if skipped_axioms.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(format!(
-            "Skipped exported but unpermitted axioms {:?}",
-            skipped_axioms
-        )))
+        Ok(())
+    });
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            let declined = e.downcast_ref::<sokonanoda::util::Decline>().is_some();
+            eprintln!("{}\n\n{}", e, HELP_SHORT);
+            std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT });
+        }
+        Err(_) => std::process::exit(EXIT_REJECT),
     }
 }
 
-struct MainError(Box<dyn Error>);
-
-impl std::fmt::Debug for MainError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}\n\n{}", self.0, HELP_SHORT)
-    }
-}
-
-const HELP_SHORT: &str = "run with `-h` or `--help` for help";
-const HELP_LONG: &str = concat!(
-    "sokonanoda",
-    " ",
-    env!("CARGO_PKG_VERSION"),
-    "\n\n",
-    env!("CARGO_PKG_DESCRIPTION"),
-    "\n\n",
-    "get more help at ",
-    env!("CARGO_PKG_REPOSITORY"),
-    "\n\n",
-    include_str!("../README.md")
-);
+const HELP_SHORT: &str = "run with `--help` for command-line options";

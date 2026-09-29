@@ -1,31 +1,15 @@
+use crate::config::Config;
 use crate::parser::parse_export_file;
-use crate::util::{Config, CowStr, ExportFile, LevelPtr, TcCtx};
+use crate::util::{CowStr, ExportFile, LevelPtr, TcCtx};
 use rand::distributions::Alphanumeric;
 use rand::{rngs::ThreadRng, Rng};
 use std::error::Error;
 use stumpalo::Arena;
 
-fn empty_test_config() -> Config {
-    Config {
-        export_file_path: None,
-        use_stdin: false,
-        permitted_axioms: Some(Vec::new()),
-        permit_standard_axioms: false,
-        unpermitted_axiom_hard_error: true,
-        parse_only: false,
-        nat_extension: false,
-        string_extension: false,
-        num_threads: 1,
-        print_success_message: false,
-        print_axioms: false,
-        unsafe_permit_all_axioms: false,
-    }
-}
-
 pub(crate) fn test_export_file<A>(f: impl FnOnce(&ExportFile) -> A) -> Result<A, Box<dyn Error>> {
     let arena = Arena::new();
     let (export_file, _) =
-        parse_export_file(arena.as_arena_ref(), std::io::empty(), empty_test_config())?;
+        parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
     Ok(f(&export_file))
 }
 

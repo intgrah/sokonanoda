@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::env::{DeclarMap, Env, EnvLimit, NotationMap};
 use crate::expr::{
     Expr, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
@@ -5,7 +6,6 @@ use crate::expr::{
 };
 use crate::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::name::{Name, NUM_HASH, STR_HASH};
-use crate::parser::{parse_export_file, parse_export_mapped};
 use crate::tc::TypeChecker;
 use crate::value::{E, S, V};
 use hashbrown::HashTable;
@@ -14,23 +14,13 @@ use num_bigint::BigUint;
 use num_integer::Integer;
 use num_traits::identities::Zero;
 use rustc_hash::FxHasher;
-use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::fs::OpenOptions;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::io::BufReader;
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use stumpalo::{Arena, ArenaRef};
-
-pub(crate) const fn default_true() -> bool {
-    true
-}
-
-pub(crate) const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
 
 #[derive(Debug)]
 pub struct Decline(pub String);
@@ -1509,116 +1499,6 @@ impl<'b> SessionCache<'b> {
         let r = f(unsafe { &mut *(p as *mut TcCache<'a, 'a>) });
         self.inner.clear_session();
         r
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Config {
-    pub export_file_path: Option<PathBuf>,
-
-    #[serde(default)]
-    pub use_stdin: bool,
-
-    pub permitted_axioms: Option<Vec<String>>,
-
-    #[serde(default)]
-    pub permit_standard_axioms: bool,
-
-    #[serde(default = "default_true")]
-    pub unpermitted_axiom_hard_error: bool,
-
-    #[serde(default)]
-    pub num_threads: usize,
-
-    #[serde(default)]
-    pub parse_only: bool,
-
-    #[serde(default)]
-    pub nat_extension: bool,
-    #[serde(default)]
-    pub string_extension: bool,
-
-    #[serde(default)]
-    pub print_success_message: bool,
-
-    #[serde(default = "default_true")]
-    pub print_axioms: bool,
-
-    #[serde(default)]
-    pub unsafe_permit_all_axioms: bool,
-}
-
-impl TryFrom<&Path> for Config {
-    type Error = Box<dyn Error>;
-    fn try_from(p: &Path) -> Result<Config, Self::Error> {
-        match OpenOptions::new().read(true).truncate(false).open(p) {
-            Err(e) => Err(Box::from(format!(
-                "failed to open configuration file: {:?}",
-                e
-            ))),
-            Ok(config_file) => {
-                let config =
-                    serde_json::from_reader::<_, Config>(BufReader::new(config_file)).unwrap();
-                if config.export_file_path.is_none() && !config.use_stdin {
-                    return Err(Box::from(
-                        "incompatible config options: must specify a path to an export file OR set `use_stdin: true`"
-                            .to_string(),
-                    ));
-                }
-                if config.export_file_path.is_some() && config.use_stdin {
-                    return Err(Box::from(
-                        "incompatible config options: if an export file path is given, `use_stdin` cannot be `true`"
-                            .to_string(),
-                    ));
-                }
-                if config.unsafe_permit_all_axioms {
-                    if config.permit_standard_axioms {
-                        return Err(Box::from(
-                            "incompatible config options: unsafe_permit_all_axioms && permit_standard_axioms"
-                                .to_string(),
-                        ));
-                    }
-                    if config.unpermitted_axiom_hard_error {
-                        return Err(Box::from(
-                            "incompatible config options: unsafe_permit_all_axioms && unpermitted_axioms_hard_error"
-                                .to_string(),
-                        ));
-                    }
-                    if config.permitted_axioms.is_some() {
-                        return Err(Box::from(
-                            "incompatible config options: unsafe_permit_all_axioms && nonempty permitted_axioms list"
-                                .to_string(),
-                        ));
-                    }
-                }
-                Ok(config)
-            }
-        }
-    }
-}
-
-impl Config {
-    pub fn to_export_file<'a>(
-        self,
-        arena: &'a ArenaRef<'a>,
-    ) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
-        if let Some(pathbuf) = self.export_file_path.as_ref() {
-            match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
-                Ok(file) => {
-                    let map =
-                        unsafe { memmap2::Mmap::map(&file) }.map_err(|e| -> Box<dyn Error> {
-                            Box::from(format!("Failed to map export file: {:?}", e))
-                        })?;
-                    parse_export_mapped(arena, &map, self)
-                }
-                Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
-            }
-        } else if self.use_stdin {
-            let reader = BufReader::new(std::io::stdin());
-            parse_export_file(arena, reader, self)
-        } else {
-            panic!("Configuration file must specify en export file path or \"use_stdin\": true")
-        }
     }
 }
 
