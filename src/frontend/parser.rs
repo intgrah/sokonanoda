@@ -1,15 +1,14 @@
-use crate::config::{AxiomDecision, Config};
-use crate::env::{
+use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint,
 };
-use crate::expr::Expr;
+use crate::config::{AxiomDecision, Config};
 use crate::hash64;
-use crate::level::Level;
-use crate::name::Name;
-use crate::util::{
-    new_fx_hash_map, new_fx_index_map, BigUintPtr, Dag, ExprPtr, FxHashMap, FxIndexMap, LevelPtr,
-    LevelsPtr, NamePtr, StringPtr,
-};
+use crate::term::expr::Expr;
+use crate::term::hash::{new_fx_hash_map, new_fx_index_map, FxHashMap, FxIndexMap};
+use crate::term::intern::Dag;
+use crate::term::level::Level;
+use crate::term::name::Name;
+use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -25,12 +24,12 @@ fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
     const MAX_SEMVER: semver::Version = semver::Version::new(3, 2, 0);
     let export_file_semver = semver::Version::parse(&meta.format.version)?;
     if export_file_semver < MIN_SEMVER {
-        return crate::util::decline(format!(
+        return crate::frontend::error::decline(format!(
             "export format version is less than the minimum supported version. Found {}, but min supported is {}",
             export_file_semver, MIN_SEMVER
         ));
     } else if export_file_semver >= MAX_SEMVER {
-        return crate::util::decline(format!(
+        return crate::frontend::error::decline(format!(
             "export format version is greater than the maximum supported version. Found {}, but max (exclusive) supported is {}",
             export_file_semver, MAX_SEMVER
         ));
@@ -337,7 +336,7 @@ pub(crate) fn parse_export_mapped<'p>(
     arena: &'p ArenaRef<'p>,
     input: &[u8],
     config: Config,
-) -> Result<(crate::util::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
+) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
     let mut parser = Parser::with_input_len(arena, std::io::empty(), config, input.len());
     parser.run_over(input)?;
     parser.finish()
@@ -349,7 +348,7 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
     arena: &'p ArenaRef<'p>,
     buf_reader: R,
     config: Config,
-) -> Result<(crate::util::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
+) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
     let mut parser = Parser::new(arena, buf_reader, config);
     let mut buf: Vec<u8> = Vec::with_capacity(2 * READ_CHUNK);
     loop {
@@ -736,7 +735,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             ptr: Some(ptr),
             child_mask: if num_loose_bvars > 64 { 0 } else { fv_mask },
         };
-        debug_assert_eq!(entry.child_mask, crate::expr::child_mask(ptr));
+        debug_assert_eq!(entry.child_mask, crate::term::expr::child_mask(ptr));
         let i = expected.index() as usize;
         if i == self.exprs_by_idx.len() {
             self.exprs_by_idx.push(entry);
@@ -770,7 +769,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let mut levels = Vec::with_capacity(name_idxs.len());
         for name_idx in name_idxs.iter().copied() {
             let name_ptr = self.get_name_ptr(name_idx);
-            let hash = hash64!(crate::level::PARAM_HASH, name_ptr);
+            let hash = hash64!(crate::term::level::PARAM_HASH, name_ptr);
             let r = self.dag.levels.get(&Level::Param(name_ptr, hash)).unwrap();
             levels.push(LevelPtr::global(r));
         }
@@ -864,9 +863,11 @@ impl<'a, R: BufRead> Parser<'a, R> {
         out
     }
 
-    fn finish(self) -> Result<(crate::util::ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+    fn finish(
+        self,
+    ) -> Result<(crate::checker::context::ExportFile<'a>, Vec<String>), Box<dyn Error>> {
         let name_cache = self.dag.mk_name_cache(self.anon);
-        let export_file = crate::util::ExportFile {
+        let export_file = crate::checker::context::ExportFile {
             dag: self.dag,
             anon: self.anon,
             zero: self.zero,
@@ -1143,21 +1144,21 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_name_str(&mut self, idx: BackRef, pre: u32, s: &str) {
         let pfx = self.get_name_ptr(pre);
         let sfx = self.intern_str(s);
-        let hash = hash64!(crate::name::STR_HASH, pfx, sfx);
+        let hash = hash64!(crate::term::name::STR_HASH, pfx, sfx);
         self.push_name(idx, Name::Str(pfx, sfx, hash));
     }
 
     #[inline]
     fn do_name_num(&mut self, idx: BackRef, pre: u32, sfx: u64) {
         let pfx = self.get_name_ptr(pre);
-        let hash = hash64!(crate::name::NUM_HASH, pfx, sfx);
+        let hash = hash64!(crate::term::name::NUM_HASH, pfx, sfx);
         self.push_name(idx, Name::Num(pfx, sfx, hash));
     }
 
     #[inline]
     fn do_nat_lit(&mut self, idx: BackRef, big_uint: BigUint) -> Result<(), Box<dyn Error>> {
         if !self.config.nat_extension {
-            return crate::util::decline(
+            return crate::frontend::error::decline(
                 "Nat lit extension disallowed by checker execution config, but export file contains a nat literal",
             );
         }
@@ -1168,7 +1169,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 .unwrap()
                 .intern(self.arena, big_uint),
         );
-        let hash = hash64!(crate::expr::NAT_LIT_HASH, num_ptr);
+        let hash = hash64!(crate::term::expr::NAT_LIT_HASH, num_ptr);
         self.push_expr(idx, Expr::NatLit { ptr: num_ptr, hash }, 0, 0);
         Ok(())
     }
@@ -1176,12 +1177,12 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_str_lit(&mut self, idx: BackRef, s: &str) -> Result<(), Box<dyn Error>> {
         if !self.config.string_extension {
-            return crate::util::decline(
+            return crate::frontend::error::decline(
                 "String lit extension disallowed by checker execution config, but export file contains a string literal",
             );
         }
         let string_ptr = self.intern_str(s);
-        let hash = hash64!(crate::expr::STRING_LIT_HASH, string_ptr);
+        let hash = hash64!(crate::term::expr::STRING_LIT_HASH, string_ptr);
         self.push_expr(
             idx,
             Expr::StringLit {
@@ -1197,7 +1198,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_succ(&mut self, idx: BackRef, l: u32) {
         let l = self.get_level_ptr(l);
-        let hash = hash64!(crate::level::SUCC_HASH, l);
+        let hash = hash64!(crate::term::level::SUCC_HASH, l);
         self.push_level(idx, Level::Succ(l, hash));
     }
 
@@ -1205,7 +1206,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_max(&mut self, idx: BackRef, l: u32, r: u32) {
         let l = self.get_level_ptr(l);
         let r = self.get_level_ptr(r);
-        let hash = hash64!(crate::level::MAX_HASH, l, r);
+        let hash = hash64!(crate::term::level::MAX_HASH, l, r);
         self.push_level(idx, Level::Max(l, r, hash));
     }
 
@@ -1213,21 +1214,21 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_imax(&mut self, idx: BackRef, l: u32, r: u32) {
         let l = self.get_level_ptr(l);
         let r = self.get_level_ptr(r);
-        let hash = hash64!(crate::level::IMAX_HASH, l, r);
+        let hash = hash64!(crate::term::level::IMAX_HASH, l, r);
         self.push_level(idx, Level::IMax(l, r, hash));
     }
 
     #[inline]
     fn do_level_param(&mut self, idx: BackRef, n: u32) {
         let n = self.get_name_ptr(n);
-        let hash = hash64!(crate::level::PARAM_HASH, n);
+        let hash = hash64!(crate::term::level::PARAM_HASH, n);
         self.push_level(idx, Level::Param(n, hash));
     }
 
     #[inline]
     fn do_sort(&mut self, idx: BackRef, level: u32) {
         let level = self.get_level_ptr(level);
-        let hash = hash64!(crate::expr::SORT_HASH, level);
+        let hash = hash64!(crate::term::expr::SORT_HASH, level);
         self.push_expr(idx, Expr::Sort { level, hash }, 0, 0);
     }
 
@@ -1235,7 +1236,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_const(&mut self, idx: BackRef, name: u32, us: &[u32]) {
         let name = self.get_name_ptr(name);
         let levels = self.get_levels_ptr(us);
-        let hash = hash64!(crate::expr::CONST_HASH, name, levels);
+        let hash = hash64!(crate::term::expr::CONST_HASH, name, levels);
         self.push_expr(idx, Expr::Const { name, levels, hash }, 0, 0);
     }
 
@@ -1243,7 +1244,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_app(&mut self, idx: BackRef, fun: u32, arg: u32) {
         let (fun, fun_mask) = self.get_expr(fun);
         let (arg, arg_mask) = self.get_expr(arg);
-        let hash = hash64!(crate::expr::APP_HASH, fun, arg);
+        let hash = hash64!(crate::term::expr::APP_HASH, fun, arg);
         let fv_mask = fun_mask | arg_mask;
         let nlb = fun.num_loose_bvars().max(arg.num_loose_bvars());
         self.push_expr(
@@ -1262,9 +1263,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_bvar(&mut self, idx: BackRef, dbj_idx: u16) -> Result<(), Box<dyn Error>> {
         if dbj_idx == u16::MAX {
-            return crate::util::decline("bvar index exceeds implementation limit");
+            return crate::frontend::error::decline("bvar index exceeds implementation limit");
         }
-        let hash = hash64!(crate::expr::VAR_HASH, dbj_idx);
+        let hash = hash64!(crate::term::expr::VAR_HASH, dbj_idx);
         let fv_mask = if dbj_idx < 64 { 1u64 << dbj_idx } else { 0 };
         self.push_expr(idx, Expr::Var { dbj_idx, hash }, dbj_idx + 1, fv_mask);
         Ok(())
@@ -1274,7 +1275,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_lambda(&mut self, idx: BackRef, binder_type: u32, body: u32) {
         let (binder_type, binder_type_mask) = self.get_expr(binder_type);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::expr::LAMBDA_HASH, binder_type, body);
+        let hash = hash64!(crate::term::expr::LAMBDA_HASH, binder_type, body);
         let fv_mask = binder_type_mask | body_mask;
         let nlb = binder_type
             .num_loose_bvars()
@@ -1296,7 +1297,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn do_pi(&mut self, idx: BackRef, binder_type: u32, body: u32) {
         let (binder_type, binder_type_mask) = self.get_expr(binder_type);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::expr::PI_HASH, binder_type, body);
+        let hash = hash64!(crate::term::expr::PI_HASH, binder_type, body);
         let fv_mask = binder_type_mask | body_mask;
         let nlb = binder_type
             .num_loose_bvars()
@@ -1319,7 +1320,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let (binder_type, binder_type_mask) = self.get_expr(ty);
         let (val, val_mask) = self.get_expr(value);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::expr::LET_HASH, binder_type, val, body, nondep);
+        let hash = hash64!(crate::term::expr::LET_HASH, binder_type, val, body, nondep);
         let fv_mask = binder_type_mask | val_mask | body_mask;
         let nlb = binder_type.num_loose_bvars().max(
             val.num_loose_bvars()
@@ -1328,7 +1329,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         self.push_expr(
             idx,
             Expr::Let {
-                data: self.arena.alloc(crate::expr::LetData {
+                data: self.arena.alloc(crate::term::expr::LetData {
                     binder_type,
                     val,
                     body,
@@ -1347,7 +1348,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let proj_idx = u16::try_from(proj_idx).expect("projection index does not fit in u16");
         let ty_name = self.get_name_ptr(type_name);
         let (structure, fv_mask) = self.get_expr(struct_);
-        let hash = hash64!(crate::expr::PROJ_HASH, ty_name, proj_idx, structure);
+        let hash = hash64!(crate::term::expr::PROJ_HASH, ty_name, proj_idx, structure);
         self.push_expr(
             idx,
             Expr::Proj {
@@ -1364,7 +1365,10 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn add_declar(&mut self, name: NamePtr<'a>, d: Declar<'a>) {
         let idx = u32::try_from(self.declars.len()).expect("declaration count exceeds u32");
-        assert!(idx != crate::name::NO_DECL, "declaration count exceeds u32");
+        assert!(
+            idx != crate::term::name::NO_DECL,
+            "declaration count exceeds u32"
+        );
         assert!(self.declars.insert(name, d).is_none());
         name.as_ref().set_decl_idx(idx);
     }
@@ -1595,11 +1599,13 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let info = DeclarInfo { name, ty, uparams };
                     let rules = rules
                         .into_iter()
-                        .map(|RecursorRule { rhs, ctor, nfields }| crate::env::RecRule {
-                            val: self.get_expr_ptr(rhs),
-                            ctor_name: self.get_name_ptr(ctor),
-                            ctor_telescope_size_wo_params: nfields,
-                        })
+                        .map(
+                            |RecursorRule { rhs, ctor, nfields }| crate::checker::env::RecRule {
+                                val: self.get_expr_ptr(rhs),
+                                ctor_name: self.get_name_ptr(ctor),
+                                ctor_telescope_size_wo_params: nfields,
+                            },
+                        )
                         .collect::<Vec<_>>();
                     let all_inductives = self.get_names(&all);
                     let recursor = Declar::Recursor(RecursorData {
@@ -1741,7 +1747,7 @@ mod tests {
                 parser.go1_general(&slow).unwrap();
                 assert_eq!(parsed.as_ref(), parser.get_expr_ptr(4).as_ref());
                 assert_eq!(parsed.num_loose_bvars(), 1);
-                assert_eq!(crate::expr::child_mask(parsed), 1);
+                assert_eq!(crate::term::expr::child_mask(parsed), 1);
                 if let Some(reference) = reference {
                     assert_eq!(reference.as_ref(), parsed.as_ref());
                 } else {

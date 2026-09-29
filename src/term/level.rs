@@ -1,5 +1,6 @@
 //! Implementation of the `Level` type representing universes
-use crate::util::{LevelPtr, LevelsPtr, NamePtr, TcCtx};
+use crate::checker::context::TcCtx;
+use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
 
 pub(crate) const ZERO_HASH: u64 = 283;
 pub(crate) const SUCC_HASH: u64 = 541;
@@ -32,7 +33,7 @@ impl<'a> std::hash::Hash for Level<'a> {
     }
 }
 
-impl<'a> crate::util::RawHash for Level<'a> {
+impl<'a> crate::term::hash::RawHash for Level<'a> {
     #[inline]
     fn raw_hash(&self) -> u64 {
         self.get_hash()
@@ -100,7 +101,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
     pub(crate) fn no_dupes_all_params(&mut self, ls: LevelsPtr<'t>) -> bool {
-        let mut set = crate::util::new_fx_hash_set();
+        let mut set = crate::term::hash::new_fx_hash_set();
         for l in self.read_levels(ls).iter().copied() {
             match self.read_level(l) {
                 Param(..) => {
@@ -343,7 +344,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::parser::parse_export_file;
+    use crate::frontend::parser::parse_export_file;
     use rand::prelude::*;
     use std::error::Error;
     use stumpalo::Arena;

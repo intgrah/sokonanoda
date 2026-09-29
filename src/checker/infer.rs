@@ -1,8 +1,8 @@
-use crate::env::Declar;
-use crate::expr::Expr;
-use crate::tc::{InferFlag, TypeChecker};
-use crate::util::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
-use crate::value::{self, Closure, RigidHead, Value, C, E, V};
+use crate::checker::env::Declar;
+use crate::checker::tc::{InferFlag, TypeChecker};
+use crate::checker::value::{self, Closure, RigidHead, Value, C, E, V};
+use crate::term::expr::Expr;
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 
 use Expr::*;
 use InferFlag::*;
@@ -173,7 +173,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
             Let {
                 data:
-                    &crate::expr::LetData {
+                    &crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,
@@ -241,7 +241,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
             if body.ctx.is_none() && self.ctx.num_loose_bvars(body.body) == 0 {
                 fty = self.eval(depth, body.env, body.body);
-            } else if crate::expr::ignores_binder(body.body) {
+            } else if crate::term::expr::ignores_binder(body.body) {
                 fty = self.apply_closure(depth, body, domain, Some(domain));
             } else {
                 let av = self.arg_value(depth, env, arg);

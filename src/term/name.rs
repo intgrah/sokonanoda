@@ -1,5 +1,7 @@
 //! Implementaiton of the `Name` type (hierarchical names)
-use crate::util::{CowStr, NamePtr, StringPtr, TcCtx};
+use crate::checker::context::TcCtx;
+use crate::term::hash::CowStr;
+use crate::term::ptr::{NamePtr, StringPtr};
 use Name::*;
 
 pub(crate) const ANON_HASH: u64 = 43;
@@ -131,7 +133,7 @@ impl<'a> PartialEq for NameNode<'a> {
 }
 impl<'a> Eq for NameNode<'a> {}
 
-impl<'a> crate::util::RawHash for NameNode<'a> {
+impl<'a> crate::term::hash::RawHash for NameNode<'a> {
     #[inline]
     fn raw_hash(&self) -> u64 {
         self.kind.get_hash()

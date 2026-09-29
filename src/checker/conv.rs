@@ -1,8 +1,8 @@
-use crate::env::{Declar, ReducibilityHint};
-use crate::relevance::{app_prefix_len, Sig, MAX_TRACKED};
-use crate::tc::TypeChecker;
-use crate::util::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
-use crate::value::{self, ElimView, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
+use crate::checker::env::{Declar, ReducibilityHint};
+use crate::checker::relevance::{app_prefix_len, Sig, MAX_TRACKED};
+use crate::checker::tc::TypeChecker;
+use crate::checker::value::{self, ElimView, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
         (RigidHead::BVar(a, _), RigidHead::BVar(b, _)) => a == b,

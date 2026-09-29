@@ -1,0 +1,128 @@
+use indexmap::IndexMap;
+use rustc_hash::FxHasher;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+
+pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
+pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
+
+pub(crate) type CowStr<'a> = Cow<'a, str>;
+
+pub(crate) trait StructHash {
+    fn struct_hash(&self) -> u64;
+}
+impl<T: Hash + ?Sized> StructHash for T {
+    #[inline]
+    fn struct_hash(&self) -> u64 {
+        let mut hasher = FxHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+pub(crate) trait RawHash {
+    fn raw_hash(&self) -> u64;
+}
+
+impl RawHash for CowStr<'_> {
+    #[inline]
+    fn raw_hash(&self) -> u64 {
+        self.struct_hash()
+    }
+}
+
+pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> {
+    FxIndexMap::with_hasher(Default::default())
+}
+
+pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> {
+    FxHashMap::with_hasher(Default::default())
+}
+
+pub(crate) fn small_fx_hash_map<K, V>() -> FxHashMap<K, V> {
+    FxHashMap::with_capacity_and_hasher(14, Default::default())
+}
+
+pub(crate) const SESSION_MAP_CAP: usize = 1 << 13;
+
+pub(crate) const SESSION_MAP_CAP_SMALL: usize = 1 << 12;
+
+pub(crate) fn session_small_fx_hash_map<K, V>() -> FxHashMap<K, V> {
+    FxHashMap::with_capacity_and_hasher(SESSION_MAP_CAP_SMALL, Default::default())
+}
+
+pub(crate) fn session_small_fx_hash_set<K>() -> FxHashSet<K> {
+    FxHashSet::with_capacity_and_hasher(SESSION_MAP_CAP_SMALL, Default::default())
+}
+
+pub(crate) fn session_fx_hash_map<K, V>() -> FxHashMap<K, V> {
+    FxHashMap::with_capacity_and_hasher(SESSION_MAP_CAP, Default::default())
+}
+
+pub(crate) fn small_fx_hash_set<K>() -> FxHashSet<K> {
+    FxHashSet::with_capacity_and_hasher(14, Default::default())
+}
+
+pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> {
+    FxHashSet::with_hasher(Default::default())
+}
+
+#[macro_export]
+macro_rules! hash64 {
+    ( $( $x:expr ),* ) => {
+        {
+            use std::hash::{ Hash, Hasher };
+            let mut hasher = rustc_hash::FxHasher::default();
+            $(
+                ($x).hash(&mut hasher);
+            )*
+            hasher.finish()
+        }
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::frontend::parser::parse_export_file;
+    use num_bigint::RandBigInt;
+    use rand::distributions::Alphanumeric;
+    use rand::Rng;
+    use std::error::Error;
+
+    #[test]
+    fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
+        let arena = stumpalo::Arena::new();
+        let (export, _) =
+            parse_export_file(arena.as_arena_ref(), std::io::empty(), Config::default())?;
+        let mut rng = rand::thread_rng();
+        export.with_ctx(|ctx, _cache, _arena| {
+            for size in 0..100 {
+                for _ in 0..100 {
+                    let text: String = (&mut rng)
+                        .sample_iter(&Alphanumeric)
+                        .take(size)
+                        .map(char::from)
+                        .collect();
+                    let text = CowStr::Owned(text);
+                    let (left, right) = (
+                        ctx.mk_string_lit_quick(text.clone()),
+                        ctx.mk_string_lit_quick(text),
+                    );
+                    assert_eq!(hash64!(left), hash64!(right));
+                    assert_eq!(left, right);
+
+                    let nat = rng.gen_biguint(size as u64);
+                    let (left, right) =
+                        (ctx.mk_nat_lit_quick(nat.clone()), ctx.mk_nat_lit_quick(nat));
+                    assert_eq!(hash64!(left), hash64!(right));
+                    assert_eq!(left, right);
+                }
+            }
+        });
+        Ok(())
+    }
+}

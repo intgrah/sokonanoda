@@ -1,11 +1,11 @@
-use crate::env::{Declar, RecursorData};
-use crate::expr::Expr;
-use crate::nat::{
+use crate::checker::env::{Declar, RecursorData};
+use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
-use crate::tc::{NatBinOp, TypeChecker};
-use crate::util::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
-use crate::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::checker::tc::{NatBinOp, TypeChecker};
+use crate::checker::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::term::expr::Expr;
+use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
 use std::cell::OnceCell;
@@ -210,7 +210,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
         let slot = (((e as *const value::Env<'t> as usize as u64).wrapping_mul(0x9E3779B97F4A7C15)
             ^ mask.wrapping_mul(0xD6E8FEB86659FD93))
-            >> crate::util::PRUNE_DM_SHIFT) as usize;
+            >> crate::checker::cache::PRUNE_DM_SHIFT) as usize;
         let ent = self.tc_cache.prune_dm[slot];
         if ent.0 == e as *const value::Env<'t> as usize && ent.1 == mask {
             if let Some(hit) = ent.2 {
@@ -825,7 +825,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let mut env = env;
                 let mut cursor = e;
                 while let Expr::Let {
-                    data: &crate::expr::LetData { val, body, .. },
+                    data: &crate::term::expr::LetData { val, body, .. },
                     ..
                 } = self.ctx.read_expr(cursor)
                 {
@@ -1115,7 +1115,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             Some(clo_ctx) => {
                 let ty = binder_ty.expect("apply_closure: infer closure without a binder type");
                 let ctx = value::ctx_extend(self.arena, clo_ctx, ty);
-                self.infer_value(crate::tc::InferFlag::InferOnly, depth, env, ctx, clo.body)
+                self.infer_value(
+                    crate::checker::tc::InferFlag::InferOnly,
+                    depth,
+                    env,
+                    ctx,
+                    clo.body,
+                )
             }
         }
     }
@@ -1151,7 +1157,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn nat_red_defer(&mut self, depth: u32, name: NamePtr<'t>, args: &[V<'t>]) -> bool {
-        use crate::name::NatRed::*;
+        use crate::term::name::NatRed::*;
         let structural_on_second = matches!(name.as_ref().nat_red(), Some(Add | Sub | Mul | Pow));
         if !structural_on_second || args.len() != 2 {
             return false;
@@ -1310,13 +1316,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if !closed {
             return;
         }
-        let (fi, fb) = crate::util::tenure_slot(k as usize);
+        let (fi, fb) = crate::checker::cache::tenure_slot(k as usize);
         if self.tc_cache.whnf_store_filter[fi] & fb != 0
             && self.tc_cache.whnf_store.contains_key(&k)
         {
             return;
         }
-        let ai = crate::util::admit_slot(k);
+        let ai = crate::checker::cache::admit_slot(k);
         let seen = &mut self.tc_cache.whnf_admit[ai];
         if *seen < WHNF_ADMIT_THRESHOLD {
             *seen = seen.saturating_add(1);
@@ -1332,7 +1338,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             return;
         };
         let q = self.quote(0, res);
-        let (hi, hb) = crate::util::tenure_slot(hk as usize);
+        let (hi, hb) = crate::checker::cache::tenure_slot(hk as usize);
         self.tc_cache.whnf_head_filter[hi] |= hb;
         self.tc_cache.whnf_store_filter[fi] |= fb;
         self.tc_cache.whnf_store.insert(k, (full, q));
@@ -1378,7 +1384,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     #[inline]
     fn store_lookup(&mut self, depth: u32, v: V<'t>) -> Option<V<'t>> {
         let hk = Self::shallow_head_key(v)?;
-        let (hi, hb) = crate::util::tenure_slot(hk as usize);
+        let (hi, hb) = crate::checker::cache::tenure_slot(hk as usize);
         if self.tc_cache.whnf_head_filter[hi] & hb == 0 {
             return None;
         }
@@ -1386,7 +1392,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             return None;
         }
         let k = v.digest();
-        let (fi, fb) = crate::util::tenure_slot(k as usize);
+        let (fi, fb) = crate::checker::cache::tenure_slot(k as usize);
         if self.tc_cache.whnf_store_filter[fi] & fb == 0 {
             return None;
         }
@@ -2376,7 +2382,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         args: &[V<'t>],
         deep: bool,
     ) -> Option<V<'t>> {
-        use crate::name::NatRed;
+        use crate::term::name::NatRed;
         let kind = name.as_ref().nat_red()?;
         if let NatRed::Succ = kind {
             if args.len() != 1 {

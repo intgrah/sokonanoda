@@ -1,8 +1,8 @@
 //! Construction of quotient types
 
-use crate::env::{ConstructorData, Declar, DeclarInfo, EnvLimit, InductiveData};
-use crate::tc::TypeChecker;
-use crate::util::TcCtx;
+use crate::checker::context::TcCtx;
+use crate::checker::env::{ConstructorData, Declar, DeclarInfo, EnvLimit, InductiveData};
+use crate::checker::tc::TypeChecker;
 
 /// From `in ctx, [a, b, c, .., n]`, create `app(app(app(a, b), c).. n)`
 #[macro_export]
@@ -43,7 +43,7 @@ macro_rules! arrow {
 /// that a propery constructed `Eq` and `Eq.refl`
 pub fn check_eq<'x, 't: 'x, 'p: 't>(
     ctx: &'x mut TcCtx<'t, 'p>,
-    cache: &mut crate::util::TcCache<'t, 't>,
+    cache: &mut crate::checker::cache::TcCache<'t, 't>,
     arena: &'t bumpalo::Bump,
     declar: &Declar<'t>,
 ) {
@@ -119,7 +119,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
 #[allow(non_snake_case)]
 pub fn check_quot<'x, 't: 'x, 'p: 't>(
     ctx: &'x mut TcCtx<'t, 'p>,
-    cache: &mut crate::util::TcCache<'t, 't>,
+    cache: &mut crate::checker::cache::TcCache<'t, 't>,
     arena: &'t bumpalo::Bump,
     declar: &Declar<'t>,
 ) {

@@ -1,6 +1,6 @@
-use crate::tc::TypeChecker;
-use crate::util::{LevelPtr, LevelsPtr, NamePtr};
-use crate::value::{Spine, Value, S};
+use crate::checker::tc::TypeChecker;
+use crate::checker::value::{Spine, Value, S};
+use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
 
 pub(crate) const MAX_TRACKED: u32 = 64;
 
@@ -151,7 +151,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let ty = decl.info().ty;
         let mut body = val;
         let mut arity = 0u32;
-        while let crate::expr::Expr::Lambda { body: inner, .. } = self.ctx.read_expr(body) {
+        while let crate::term::expr::Expr::Lambda { body: inner, .. } = self.ctx.read_expr(body) {
             if arity == MAX_TRACKED {
                 break;
             }
@@ -165,11 +165,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let mut absent = 0u64;
         let mut rest_ty = ty;
         for i in 0..arity {
-            let crate::expr::Expr::Pi { body: rest, .. } = self.ctx.read_expr(rest_ty) else {
+            let crate::term::expr::Expr::Pi { body: rest, .. } = self.ctx.read_expr(rest_ty) else {
                 break;
             };
             let unused_in_value = (used >> (arity - 1 - i)) & 1 == 0;
-            if unused_in_value && crate::expr::ignores_binder(rest) {
+            if unused_in_value && crate::term::expr::ignores_binder(rest) {
                 absent |= 1u64 << i;
             }
             rest_ty = rest;

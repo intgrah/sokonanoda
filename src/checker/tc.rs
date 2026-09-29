@@ -1,6 +1,8 @@
-use crate::env::{Declar, DeclarInfo, Env, EnvLimit};
-use crate::util::{ExportFile, ExprPtr, TcCache, TcCtx};
-use crate::value::E;
+use crate::checker::cache::TcCache;
+use crate::checker::context::{ExportFile, TcCtx};
+use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
+use crate::checker::value::E;
+use crate::term::ptr::ExprPtr;
 
 use InferFlag::*;
 
@@ -79,7 +81,7 @@ impl<'p> ExportFile<'p> {
         use Declar::*;
         match d {
             Inductive(..) => self.check_inductive_declar(ctx, cache, bump, d),
-            Quot { .. } => crate::quot::check_quot(ctx, cache, bump, d),
+            Quot { .. } => crate::checker::quot::check_quot(ctx, cache, bump, d),
             _ => self.check_simple_declar(ctx, cache, bump, d),
         }
     }
@@ -154,27 +156,29 @@ impl<'p> ExportFile<'p> {
         F: FnMut() -> Option<(usize, usize)>,
     {
         let base = bumpalo::Bump::new();
-        let mut session_cache = crate::util::SessionCache::new(&base);
-        let mut sbump = crate::util::SessionBump::new();
+        let mut session_cache = crate::checker::cache::SessionCache::new(&base);
+        let mut sbump = crate::checker::cache::SessionBump::new();
         let mut pending = Some(first);
         loop {
-            let finished = session_cache.enter(|cache| loop {
-                let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
-                    return true;
-                };
-                while i < end {
-                    let (_, d) = self
-                        .declars
-                        .get_index(i)
-                        .expect("declaration index out of range");
-                    i += 1;
-                    self.check_declar_with(tctx, cache, sbump.get(), d);
-                    if sbump.allocated_bytes() > SESSION_BUDGET {
-                        pending = Some((i, end));
-                        return false;
+            let finished = unsafe {
+                session_cache.enter(|cache| loop {
+                    let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
+                        return true;
+                    };
+                    while i < end {
+                        let (_, d) = self
+                            .declars
+                            .get_index(i)
+                            .expect("declaration index out of range");
+                        i += 1;
+                        self.check_declar_with(tctx, cache, sbump.get(), d);
+                        if sbump.allocated_bytes() > SESSION_BUDGET {
+                            pending = Some((i, end));
+                            return false;
+                        }
                     }
-                }
-            });
+                })
+            };
             sbump.reset();
             tctx.expr_cache.shrink();
             if finished {
@@ -268,12 +272,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     #[inline]
-    pub(crate) fn empty_spine(&self) -> crate::value::S<'t> {
+    pub(crate) fn empty_spine(&self) -> crate::checker::value::S<'t> {
         self.tc_cache.empty_spine
     }
 
     #[inline]
-    pub(crate) fn empty_ctx(&self) -> crate::value::C<'t> {
+    pub(crate) fn empty_ctx(&self) -> crate::checker::value::C<'t> {
         self.tc_cache.empty_ctx
     }
 

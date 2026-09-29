@@ -118,7 +118,9 @@ fn main() {
     match result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            let declined = e.downcast_ref::<sokonanoda::util::Decline>().is_some();
+            let declined = e
+                .downcast_ref::<sokonanoda::frontend::error::Decline>()
+                .is_some();
             eprintln!("{}\n\n{}", e, HELP_SHORT);
             std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT });
         }

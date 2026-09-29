@@ -1,5 +1,7 @@
 //! Implementation of Lean expressions
-use crate::util::{BigUintPtr, ExprPtr, FxHashMap, LevelPtr, LevelsPtr, NamePtr, StringPtr, TcCtx};
+use crate::checker::context::TcCtx;
+use crate::term::hash::FxHashMap;
+use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use Expr::*;
 
@@ -108,7 +110,7 @@ impl<'a> std::hash::Hash for Expr<'a> {
     }
 }
 
-impl<'a> crate::util::RawHash for Expr<'a> {
+impl<'a> crate::term::hash::RawHash for Expr<'a> {
     #[inline]
     fn raw_hash(&self) -> u64 {
         self.get_hash()
@@ -164,7 +166,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.mk_lambda(binder_type, body)
             }
             Let { data, .. } => {
-                let crate::expr::LetData {
+                let crate::term::expr::LetData {
                     binder_type,
                     val,
                     body,
@@ -224,7 +226,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.mk_lambda(binder_type, body)
             }
             Let { data, .. } => {
-                let crate::expr::LetData {
+                let crate::term::expr::LetData {
                     binder_type,
                     val,
                     body,
@@ -292,7 +294,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     self.mk_lambda(binder_type, body)
                 }
                 Let { data, .. } => {
-                    let crate::expr::LetData {
+                    let crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,
@@ -369,7 +371,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.mk_lambda(binder_type, body)
             }
             Let { data, .. } => {
-                let crate::expr::LetData {
+                let crate::term::expr::LetData {
                     binder_type,
                     val,
                     body,
@@ -428,7 +430,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     self.mk_lambda(binder_type, body)
                 }
                 Let { data, .. } => {
-                    let crate::expr::LetData {
+                    let crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,
@@ -602,12 +604,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     where
         F: FnOnce(NamePtr<'t>) -> bool + Copy,
     {
-        let mut cache = crate::util::new_fx_hash_map();
+        let mut cache = crate::term::hash::new_fx_hash_map();
         self.find_const_aux(e, pred, &mut cache)
     }
 
     pub(crate) fn has_nested_name(&self, e: ExprPtr<'t>, nested: NamePtr<'t>) -> bool {
-        let mut cache = crate::util::new_fx_hash_map();
+        let mut cache = crate::term::hash::new_fx_hash_map();
         self.has_nested_name_aux(e, nested, &mut cache)
     }
 
@@ -638,7 +640,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             }
             Let {
                 data:
-                    &crate::expr::LetData {
+                    &crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,
@@ -690,7 +692,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 }
                 Let {
                     data:
-                        &crate::expr::LetData {
+                        &crate::term::expr::LetData {
                             binder_type,
                             val,
                             body,
@@ -741,7 +743,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Get the name of the inductive type which is the major premise for this recursor
     /// by finding the correct binder in the recursor's type.
-    pub fn get_major_induct(&self, rec: &crate::env::RecursorData<'t>) -> Option<NamePtr<'t>> {
+    pub fn get_major_induct(
+        &self,
+        rec: &crate::checker::env::RecursorData<'t>,
+    ) -> Option<NamePtr<'t>> {
         match self
             .get_nth_pi_binder(rec.info.ty, rec.major_idx())
             .map(|x| self.read_expr(self.unfold_apps_fun(x)))
@@ -772,7 +777,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             } => self.has_loose_bvar(binder_type, idx) || self.has_loose_bvar(body, idx + 1),
             Let {
                 data:
-                    &crate::expr::LetData {
+                    &crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,
@@ -809,7 +814,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             }
             Let {
                 data:
-                    &crate::expr::LetData {
+                    &crate::term::expr::LetData {
                         binder_type,
                         val,
                         body,

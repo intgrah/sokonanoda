@@ -1,5 +1,5 @@
-use crate::parser::{parse_export_file, parse_export_mapped};
-use crate::util::ExportFile;
+use crate::checker::context::ExportFile;
+use crate::frontend::parser::{parse_export_file, parse_export_mapped};
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io::BufReader;

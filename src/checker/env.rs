@@ -1,4 +1,5 @@
-use crate::util::{ExprPtr, FxHashMap, FxIndexMap, LevelsPtr, NamePtr};
+use crate::term::hash::{FxHashMap, FxIndexMap};
+use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -296,7 +297,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
             EnvLimit::Empty => 0,
             EnvLimit::ByIndex(idx) => idx,
             EnvLimit::ByName(n) => match n.as_ref().decl_idx() {
-                crate::name::NO_DECL => 0,
+                crate::term::name::NO_DECL => 0,
                 idx => idx as usize,
             },
         };

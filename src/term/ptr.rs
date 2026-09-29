@@ -1,0 +1,314 @@
+use super::hash::CowStr;
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("packed term pointers require a 64-bit target");
+#[cfg(all(feature = "top-byte-ignore", not(target_arch = "aarch64")))]
+compile_error!(
+    "the `top-byte-ignore` feature requires the aarch64 target architecture (Top-Byte-Ignore)"
+);
+
+#[cfg(feature = "top-byte-ignore")]
+const PTR_TAG: usize = 1 << 56;
+#[cfg(not(feature = "top-byte-ignore"))]
+const PTR_TAG: usize = 1;
+
+use crate::term::expr::Expr;
+use crate::term::level::Level;
+use crate::term::name::Name;
+use num_bigint::BigUint;
+use std::marker::PhantomData;
+use std::ptr::NonNull;
+
+macro_rules! tagged_ptr {
+    ($(#[$m:meta])* $name:ident, $pointee:ty) => {
+        $(#[$m])*
+        pub struct $name<'a> {
+            ptr: NonNull<$pointee>,
+            _ph: PhantomData<&'a $pointee>,
+        }
+
+        impl<'a> Clone for $name<'a> {
+            #[inline]
+            fn clone(&self) -> Self { *self }
+        }
+        impl<'a> Copy for $name<'a> {}
+
+        unsafe impl<'a> Send for $name<'a> {}
+        unsafe impl<'a> Sync for $name<'a> {}
+
+        impl<'a> $name<'a> {
+            #[inline]
+            pub(crate) fn global(r: &'a $pointee) -> Self {
+                Self { ptr: NonNull::from(r), _ph: PhantomData }
+            }
+
+            #[inline]
+            pub(crate) fn local(r: &'a $pointee) -> Self {
+                let tagged = NonNull::from(r).as_ptr().map_addr(|a| a | PTR_TAG);
+                Self { ptr: unsafe { NonNull::new_unchecked(tagged) }, _ph: PhantomData }
+            }
+
+            #[inline]
+            pub(crate) fn is_local(self) -> bool { self.ptr.as_ptr().addr() & PTR_TAG != 0 }
+
+            #[cfg(feature = "top-byte-ignore")]
+            #[inline]
+            pub(crate) fn as_ref(self) -> &'a $pointee { unsafe { &*self.ptr.as_ptr() } }
+            #[cfg(not(feature = "top-byte-ignore"))]
+            #[inline]
+            pub(crate) fn as_ref(self) -> &'a $pointee {
+                unsafe { &*self.ptr.as_ptr().map_addr(|a| a & !PTR_TAG) }
+            }
+
+            #[inline]
+            #[allow(dead_code)]
+            pub(crate) fn get_hash(&self) -> u64 { self.ptr.as_ptr().addr() as u64 }
+
+            #[inline]
+            #[allow(dead_code)]
+            pub(crate) unsafe fn from_raw_hash(a: u64) -> Self {
+                let p = std::ptr::without_provenance_mut::<$pointee>(a as usize);
+                Self { ptr: unsafe { NonNull::new_unchecked(p) }, _ph: PhantomData }
+            }
+        }
+
+        impl<'a> std::ops::Deref for $name<'a> {
+            type Target = $pointee;
+            #[inline]
+            fn deref(&self) -> &$pointee { self.as_ref() }
+        }
+
+        impl<'a> PartialEq for $name<'a> {
+            #[inline]
+            fn eq(&self, o: &Self) -> bool { self.ptr.as_ptr().addr() == o.ptr.as_ptr().addr() }
+        }
+        impl<'a> Eq for $name<'a> {}
+
+        impl<'a> std::hash::Hash for $name<'a> {
+            #[inline]
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u64(self.ptr.as_ptr().addr() as u64)
+            }
+        }
+
+        impl<'a> std::fmt::Debug for $name<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}({:p}{})", stringify!($name), self.as_ref(), if self.is_local() { ",L" } else { "" })
+            }
+        }
+    };
+}
+
+tagged_ptr!(StringPtr, CowStr<'a>);
+tagged_ptr!(NamePtr, crate::term::name::NameNode<'a>);
+tagged_ptr!(LevelPtr, Level<'a>);
+tagged_ptr!(BigUintPtr, BigUint);
+
+const EXPR_ADDR_MASK: u64 = 0x0000_ffff_ffff_fff8;
+const EXPR_LOCAL_BIT: u64 = 1;
+const EXPR_BVAR_SHIFT: u32 = 48;
+
+pub struct ExprPtr<'a> {
+    bits: std::num::NonZeroU64,
+    _ph: PhantomData<&'a Expr<'a>>,
+}
+
+impl<'a> Clone for ExprPtr<'a> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'a> Copy for ExprPtr<'a> {}
+unsafe impl<'a> Send for ExprPtr<'a> {}
+unsafe impl<'a> Sync for ExprPtr<'a> {}
+
+impl<'a> ExprPtr<'a> {
+    #[inline]
+    fn pack(r: &'a Expr<'a>, tag: u64) -> Self {
+        let addr = r as *const Expr<'a> as usize as u64;
+        assert!(addr & !EXPR_ADDR_MASK == 0);
+        let derived = u64::from(r.num_loose_bvars()) << EXPR_BVAR_SHIFT;
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(addr | tag | derived) },
+            _ph: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn global(r: &'a Expr<'a>, num_loose_bvars: u16) -> Self {
+        let addr = r as *const Expr<'a> as usize as u64;
+        assert!(addr & !EXPR_ADDR_MASK == 0);
+        debug_assert_eq!(num_loose_bvars, r.num_loose_bvars());
+        let bits = addr | (u64::from(num_loose_bvars) << EXPR_BVAR_SHIFT);
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) },
+            _ph: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn local(r: &'a Expr<'a>) -> Self {
+        Self::pack(r, EXPR_LOCAL_BIT)
+    }
+
+    #[inline]
+    pub(crate) fn is_local(self) -> bool {
+        self.bits.get() & EXPR_LOCAL_BIT != 0
+    }
+
+    #[inline]
+    pub(crate) fn num_loose_bvars(self) -> u16 {
+        (self.bits.get() >> EXPR_BVAR_SHIFT) as u16
+    }
+
+    #[inline]
+    pub(crate) fn as_ref(self) -> &'a Expr<'a> {
+        unsafe { &*((self.bits.get() & EXPR_ADDR_MASK) as usize as *const Expr<'a>) }
+    }
+}
+
+impl<'a> std::ops::Deref for ExprPtr<'a> {
+    type Target = Expr<'a>;
+    #[inline]
+    fn deref(&self) -> &Expr<'a> {
+        self.as_ref()
+    }
+}
+
+impl<'a> PartialEq for ExprPtr<'a> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool {
+        self.bits == o.bits
+    }
+}
+impl<'a> Eq for ExprPtr<'a> {}
+
+impl<'a> std::hash::Hash for ExprPtr<'a> {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.bits.get())
+    }
+}
+
+impl<'a> std::fmt::Debug for ExprPtr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExprPtr({:p}{})",
+            self.as_ref(),
+            if self.is_local() { ",L" } else { "" }
+        )
+    }
+}
+
+const _: () = assert!(std::mem::align_of::<Expr<'static>>() >= 8);
+const _: () = assert!(std::mem::size_of::<Option<ExprPtr<'static>>>() == 8);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<Name<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<Level<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<CowStr<'static>>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<BigUint>() >= 2);
+#[cfg(not(feature = "top-byte-ignore"))]
+const _: () = assert!(std::mem::align_of::<LevelPtr<'static>>() >= 2);
+
+const LEVELS_ADDR_MASK: u64 = 0x0000_ffff_ffff_ffff;
+const LEVELS_TAG: u64 = 1 << 63;
+const LEVELS_LEN_SHIFT: u32 = 48;
+const LEVELS_LEN_MAX: usize = (1 << 15) - 1;
+
+pub struct LevelsPtr<'a> {
+    bits: std::num::NonZeroU64,
+    _ph: PhantomData<&'a [LevelPtr<'a>]>,
+}
+
+impl<'a> LevelsPtr<'a> {
+    #[inline]
+    fn pack(s: &'a [LevelPtr<'a>], tag: u64) -> Self {
+        let addr = s.as_ptr() as usize as u64;
+        assert!(
+            addr & !LEVELS_ADDR_MASK == 0,
+            "level slice address exceeds 48 bits"
+        );
+        assert!(
+            s.len() <= LEVELS_LEN_MAX,
+            "universe parameter list too long"
+        );
+        let bits = addr | ((s.len() as u64) << LEVELS_LEN_SHIFT) | tag | 1;
+        Self {
+            bits: unsafe { std::num::NonZeroU64::new_unchecked(bits) },
+            _ph: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn global(s: &'a [LevelPtr<'a>]) -> Self {
+        Self::pack(s, 0)
+    }
+
+    #[inline]
+    pub(crate) fn local(s: &'a [LevelPtr<'a>]) -> Self {
+        Self::pack(s, LEVELS_TAG)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn is_local(self) -> bool {
+        self.bits.get() & LEVELS_TAG != 0
+    }
+
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        ((self.bits.get() >> LEVELS_LEN_SHIFT) & 0x7fff) as usize
+    }
+
+    #[inline]
+    pub(crate) fn as_ref(self) -> &'a [LevelPtr<'a>] {
+        let p = (self.bits.get() & LEVELS_ADDR_MASK & !1) as usize as *const LevelPtr<'a>;
+        unsafe { std::slice::from_raw_parts(p, self.len()) }
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn get_hash(&self) -> u64 {
+        self.bits.get()
+    }
+}
+
+impl<'a> Clone for LevelsPtr<'a> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'a> Copy for LevelsPtr<'a> {}
+unsafe impl<'a> Send for LevelsPtr<'a> {}
+unsafe impl<'a> Sync for LevelsPtr<'a> {}
+
+impl<'a> std::ops::Deref for LevelsPtr<'a> {
+    type Target = [LevelPtr<'a>];
+    #[inline]
+    fn deref(&self) -> &[LevelPtr<'a>] {
+        self.as_ref()
+    }
+}
+impl<'a> PartialEq for LevelsPtr<'a> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool {
+        self.bits == o.bits
+    }
+}
+impl<'a> Eq for LevelsPtr<'a> {}
+impl<'a> std::hash::Hash for LevelsPtr<'a> {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.bits.get())
+    }
+}
+impl<'a> std::fmt::Debug for LevelsPtr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LevelsPtr({:?})", self.as_ref())
+    }
+}

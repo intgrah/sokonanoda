@@ -1,4 +1,4 @@
-use crate::util::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use bumpalo::Bump;
 use std::cell::{Cell, OnceCell};
 
@@ -86,7 +86,7 @@ impl<'a> Elim<'a> {
             let mask = (1u64 << Self::IDX_SHIFT) - 1;
             let addr = (self.bits & mask) >> 1;
             ElimView::Proj {
-                ty_name: NamePtr::from_raw_hash(addr),
+                ty_name: unsafe { NamePtr::from_raw_hash(addr) },
                 idx: (self.bits >> Self::IDX_SHIFT) as u16,
             }
         }
@@ -227,7 +227,7 @@ impl<'a> Value<'a> {
                 let (b, c) = closure_key(body);
                 let h = kmix(
                     11,
-                    binder_type.as_ref() as *const crate::expr::Expr<'a> as usize as u64,
+                    binder_type.as_ref() as *const crate::term::expr::Expr<'a> as usize as u64,
                 );
                 seal(kmix(h, b), c)
             }
@@ -245,7 +245,7 @@ impl<'a> Value<'a> {
                     kmix(
                         kmix(
                             13,
-                            expr.as_ref() as *const crate::expr::Expr<'a> as usize as u64,
+                            expr.as_ref() as *const crate::term::expr::Expr<'a> as usize as u64,
                         ),
                         e,
                     ),
@@ -287,7 +287,7 @@ fn env_slots_key(env: E<'_>, count: u16) -> (u64, bool) {
 fn closure_key(clo: &Closure<'_>) -> (u64, bool) {
     let (e, c) = env_slots_key(clo.env, clo.body.num_loose_bvars().saturating_sub(1));
     let d = kmix(
-        clo.body.as_ref() as *const crate::expr::Expr<'_> as usize as u64,
+        clo.body.as_ref() as *const crate::term::expr::Expr<'_> as usize as u64,
         e,
     );
     (d, c && clo.ctx.is_none())

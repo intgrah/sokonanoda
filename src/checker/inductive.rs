@@ -1,19 +1,19 @@
-use crate::env::{
+use crate::checker::context::{ExportFile, TcCtx};
+use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData, RecRule, RecursorData,
 };
-use crate::expr::Expr::*;
-use crate::tc::TypeChecker;
-use crate::util::{
-    ExportFile, ExprPtr, FxHashSet, FxIndexMap, LevelPtr, LevelsPtr, NamePtr, TcCtx,
-};
-use crate::value::{Closure, RigidHead, Value, S, V};
+use crate::checker::tc::TypeChecker;
+use crate::checker::value::{Closure, RigidHead, Value, S, V};
+use crate::term::expr::Expr::*;
+use crate::term::hash::{FxHashSet, FxIndexMap};
+use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
     pub(crate) fn check_inductive_declar(
         &'t self,
         ctx: &mut TcCtx<'t, 'p>,
-        cache: &mut crate::util::TcCache<'t, 't>,
+        cache: &mut crate::checker::cache::TcCache<'t, 't>,
         arena: &'t bumpalo::Bump,
         d: &Declar<'t>,
     ) {
@@ -82,7 +82,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                     found
                 };
                 assert_eq!(ind.is_recursive, is_recursive);
-                (ind, crate::env::EnvLimit::ByIndex(start + size))
+                (ind, crate::checker::env::EnvLimit::ByIndex(start + size))
             }
             _ => panic!("expected inductive"),
         };
@@ -290,7 +290,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             .iter()
             .map(|x| x.name)
             .collect();
-        let mut env_extension = crate::util::new_fx_index_map();
+        let mut env_extension = crate::term::hash::new_fx_index_map();
         for (idx, inductive) in st.all_inductives_incl_specialized.iter().enumerate() {
             let t = Declar::Inductive(InductiveData {
                 info: DeclarInfo {
@@ -392,7 +392,7 @@ impl<'a> InductiveCheckState<'a> {
         local_params: Vec<ExprPtr<'a>>,
     ) -> Self {
         Self {
-            nested_to_unspecialized_ty: crate::util::new_fx_index_map(),
+            nested_to_unspecialized_ty: crate::term::hash::new_fx_index_map(),
             uparams: info_uparams,
             num_params,
             all_inductives_incl_specialized: new_tys,
@@ -1068,7 +1068,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 }
                 Let {
                     data:
-                        &crate::expr::LetData {
+                        &crate::term::expr::LetData {
                             binder_type,
                             val,
                             body,
@@ -1239,8 +1239,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn spine_has_ind_occ(&mut self, depth: u32, spine: S<'t>, haystack: &[ExprPtr<'t>]) -> bool {
         let mut cur = spine;
-        while let crate::value::Spine::Snoc { prev, elim, .. } = cur {
-            if let crate::value::ElimView::App(a) = elim.view() {
+        while let crate::checker::value::Spine::Snoc { prev, elim, .. } = cur {
+            if let crate::checker::value::ElimView::App(a) = elim.view() {
                 if self.value_has_ind_occ(depth, a, haystack) {
                     return true;
                 }
@@ -1905,14 +1905,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let lhs = self.mk_rec_rule_lhs(st, recursor.info.name, ctor, minors.as_slice());
                 self.tc_cache.clear();
                 let lhs_ty = self.infer_value(
-                    crate::tc::InferFlag::Check,
+                    crate::checker::tc::InferFlag::Check,
                     0,
                     self.empty_env(),
                     self.empty_ctx(),
                     lhs,
                 );
                 let rhs_ty = self.infer_value(
-                    crate::tc::InferFlag::Check,
+                    crate::checker::tc::InferFlag::Check,
                     0,
                     self.empty_env(),
                     self.empty_ctx(),
@@ -2152,7 +2152,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     ) -> FxIndexMap<NamePtr<'t>, NamePtr<'t>> {
         // The unmodified name of the "main" type being checked, e.g. `Lean.Syntax`
         let main_ind_ty_name = base_mutuals.get(0).map(|zth| zth.name).unwrap();
-        let mut specialized_rec_names_to_unspecialized_rec_names = crate::util::new_fx_index_map();
+        let mut specialized_rec_names_to_unspecialized_rec_names =
+            crate::term::hash::new_fx_index_map();
         let rec_str = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
 
         // The MODIFIED version looked up in the new environment. The modification would
@@ -2273,7 +2274,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 }
                 Let {
                     data:
-                        &crate::expr::LetData {
+                        &crate::term::expr::LetData {
                             binder_type,
                             val,
                             body,

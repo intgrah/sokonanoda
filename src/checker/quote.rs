@@ -1,6 +1,6 @@
-use crate::tc::TypeChecker;
-use crate::util::ExprPtr;
-use crate::value::{ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::checker::tc::TypeChecker;
+use crate::checker::value::{ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::term::ptr::ExprPtr;
 
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     pub(crate) fn quote(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
