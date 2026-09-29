@@ -535,7 +535,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         self.fire_recursor(depth, rec, levels, args, kctor)
     }
 
-    fn fire_recursor(
+    pub(super) fn fire_recursor(
         &mut self,
         depth: u32,
         rec: &RecursorData<'t>,
@@ -806,7 +806,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         self.fire_quot(depth, c_name, args, qmk)
     }
 
-    fn fire_quot(
+    pub(super) fn fire_quot(
         &mut self,
         depth: u32,
         c_name: NamePtr<'t>,

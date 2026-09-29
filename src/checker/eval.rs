@@ -146,15 +146,22 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 }
                 return result;
             }
-            let f = self.eval(depth, env, fun);
-            let a = self.eval(depth, env, arg);
-            if let Value::Lam { body: clo, .. } = f {
-                let clo_env = clo.env;
-                let clo_body = clo.body;
-                let new_env = self.env_extend(clo_env, a);
-                return self.eval(depth, new_env, clo_body);
+            let mut arg_exprs = smallvec::SmallVec::<[ExprPtr<'t>; 16]>::new();
+            arg_exprs.push(arg);
+            let mut head = fun;
+            while let &Expr::App { fun, arg, .. } = self.ctx.read_expr_ref(head) {
+                arg_exprs.push(arg);
+                head = fun;
             }
-            return self.apply(depth, f, a);
+            let f = self.eval(depth, env, head);
+            let mut args = smallvec::SmallVec::<[V<'t>; 16]>::with_capacity(arg_exprs.len());
+            for &a in arg_exprs.iter().rev() {
+                args.push(self.eval(depth, env, a));
+            }
+            if let Some(r) = self.fire_saturated(depth, f, &args) {
+                return r;
+            }
+            return self.apply_many(depth, f, &args);
         }
         match first {
             Expr::Var { dbj_idx, .. } => {
@@ -216,6 +223,52 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
             Expr::NatLit { ptr, .. } => value::mk_natlit(self.arena, ptr),
             Expr::StringLit { ptr, .. } => value::mk_strlit(self.arena, ptr),
+        }
+    }
+
+    fn fire_saturated(&mut self, depth: u32, f: V<'t>, args: &[V<'t>]) -> Option<V<'t>> {
+        let Value::Rigid {
+            head,
+            spine: Spine::Empty,
+            ..
+        } = f
+        else {
+            return None;
+        };
+        match *head {
+            RigidHead::Recursor(name, levels) => {
+                let env = self.env;
+                let rec = env.get_recursor(&name)?;
+                let major = self.force_thunk(depth, *args.get(rec.major_idx())?);
+                match major {
+                    Value::Rigid {
+                        head: RigidHead::Ctor(..),
+                        ..
+                    }
+                    | Value::NatLit { .. }
+                    | Value::StrLit { .. } => self.fire_recursor(depth, rec, levels, args, major),
+                    _ => None,
+                }
+            }
+            RigidHead::QuotConst(name, _) => {
+                let cache = self.ctx.export_file.name_cache;
+                let major_idx = if Some(name) == cache.quot_lift {
+                    5
+                } else if Some(name) == cache.quot_ind {
+                    4
+                } else {
+                    return None;
+                };
+                let major = self.force_thunk(depth, *args.get(major_idx)?);
+                match major {
+                    Value::Rigid {
+                        head: RigidHead::QuotConst(..),
+                        ..
+                    } => self.fire_quot(depth, name, args, major),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
