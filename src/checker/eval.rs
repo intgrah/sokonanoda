@@ -529,7 +529,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn try_fire_rigid(&mut self, depth: u32, head: RigidHead<'t>, spine: S<'t>) -> V<'t> {
-        if self.ctx.export_file.config.nat_extension
+        if self.nat_extension
             && let RigidHead::Ctor(name, _) = head
             && Some(name) == self.ctx.export_file.name_cache.nat_succ
             && let Spine::Snoc {

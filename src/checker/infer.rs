@@ -115,7 +115,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 return self.const_head_type(name, levels);
             }
             NatLit { .. } => {
-                assert!(self.ctx.export_file.config.nat_extension);
+                assert!(self.nat_extension);
                 return self.lit_inductive_type(self.ctx.export_file.name_cache.nat);
             }
             StringLit { .. } => {

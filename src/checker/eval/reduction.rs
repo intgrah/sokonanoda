@@ -527,7 +527,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         args: &[V<'t>],
         major: V<'t>,
     ) -> Option<V<'t>> {
-        if self.ctx.export_file.config.nat_extension
+        if self.nat_extension
             && rec.all_inductives.first().copied() == self.ctx.export_file.name_cache.nat
             && let Value::NatLit { ptr, .. } = major
         {
@@ -729,7 +729,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     fn nat_lit_to_ctor_val(&mut self, depth: u32, n: BigUintPtr<'t>) -> Option<V<'t>> {
         use num_traits::Zero;
-        if !self.ctx.export_file.config.nat_extension {
+        if !self.nat_extension {
             return None;
         }
         let nv = self.ctx.read_bignum(n)?.clone();
