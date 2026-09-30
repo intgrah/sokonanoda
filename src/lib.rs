@@ -1,7 +1,3 @@
-//! Placeholder:
-//! ```ignore
-//! Doc comment example
-//! ```
 pub mod checker;
 pub mod config;
 pub mod frontend;
