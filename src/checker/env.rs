@@ -20,13 +20,11 @@ impl ReducibilityHint {
     /// Check whether `self` is "less than" `other` in terms of reducibility; during
     /// delta reduction in equality checking, we want to unfold the greater of the two
     /// definitions to try and bring the two closer.
-    pub(crate) fn is_lt(&self, other: &Self) -> bool {
-        use ReducibilityHint::*;
+    pub(crate) fn is_lt(self, other: Self) -> bool {
+        use ReducibilityHint::{Abbrev, Opaque, Regular};
         match (self, other) {
-            (_, Opaque) => false,
-            (Abbrev, _) => false,
-            (Opaque, _) => true,
-            (_, Abbrev) => true,
+            (_, Opaque) | (Abbrev, _) => false,
+            (Opaque, _) | (_, Abbrev) => true,
             (Regular(h1), Regular(h2)) => h1 < h2,
         }
     }
@@ -100,7 +98,7 @@ pub struct InductiveData<'a> {
     pub(crate) all_ctor_names: Arc<[NamePtr<'a>]>,
 }
 
-impl<'a> InductiveData<'a> {
+impl InductiveData<'_> {
     pub fn aux_data_ck(&self, other: &Self) -> bool {
         self.info.name == other.info.name
             && self.num_params == other.num_params
@@ -124,8 +122,8 @@ impl<'a> InductiveData<'a> {
 ///
 /// `ctor_idx` is 0-based; e.g. `List.nil (ctor_idx := 0)`, `List.cons (ctor_idx := 1)`
 ///
-/// num_params is the number of parameters in the inductive specification, not including ctor args;
-/// num_fields is the number of ctor args, not including parameters.
+/// `num_params` is the number of parameters in the inductive specification, not including ctor args;
+/// `num_fields` is the number of ctor args, not including parameters.
 ///
 /// `Prod.mk (A B) (a b) ;;
 /// (num_params := 2) (num_fields := 2)`
@@ -145,7 +143,7 @@ pub struct ConstructorData<'a> {
     pub num_fields: u16,
 }
 
-impl<'a> ConstructorData<'a> {
+impl ConstructorData<'_> {
     pub fn aux_data_ck(&self, other: &Self) -> bool {
         self.info.name == other.info.name
             && self.inductive_name == other.inductive_name
@@ -168,7 +166,7 @@ pub struct RecursorData<'a> {
     pub is_k: bool,
 }
 
-impl<'a> RecursorData<'a> {
+impl RecursorData<'_> {
     /// Compute the index in the recursor's type (in the telescope) where the major premise is located.
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
@@ -188,7 +186,7 @@ impl<'a> RecursorData<'a> {
 
 impl<'a> Declar<'a> {
     pub fn info(&self) -> &DeclarInfo<'a> {
-        use Declar::*;
+        use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         match self {
             Axiom { info, .. }
             | Quot { info, .. }
@@ -303,9 +301,9 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         };
         Self {
             declars,
-            cutoff,
             temp_declars,
             notation,
+            cutoff,
         }
     }
 
@@ -364,16 +362,12 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     /// characteristics required of a structure. The requirements to be a structure are
     /// (1) the inductive declaration is not recursive, (2) the declaration has only one
     /// constructor, and (3) the type is declared with no indices.
-    pub(crate) fn can_be_struct(&self, n: &NamePtr<'a>) -> bool {
+    pub(crate) fn can_be_struct(&self, n: NamePtr<'a>) -> bool {
         self.get_structure(n, false).is_some()
     }
 
-    pub(crate) fn get_structure(
-        &self,
-        n: &NamePtr<'a>,
-        rec_ok: bool,
-    ) -> Option<&InductiveData<'a>> {
-        match self.get_inductive(n) {
+    pub(crate) fn get_structure(&self, n: NamePtr<'a>, rec_ok: bool) -> Option<&InductiveData<'a>> {
+        match self.get_inductive(&n) {
             Some(
                 i @ InductiveData {
                     is_recursive,

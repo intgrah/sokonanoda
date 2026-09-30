@@ -11,7 +11,7 @@ fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
 }
 
 #[inline]
-fn is_cacheable<'a>(v: &Value<'a>) -> bool {
+fn is_cacheable(v: &Value<'_>) -> bool {
     matches!(
         v,
         Value::Pi { .. }
@@ -24,7 +24,7 @@ fn is_cacheable<'a>(v: &Value<'a>) -> bool {
     )
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn def_eq_core(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
         let depth = 0u32;
         let env = self.empty_env();
@@ -244,12 +244,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     spine: sy,
                     ..
                 },
-            ) => {
-                let (nx, ny, lx, ly) = (*nx, *ny, *lx, *ly);
-                let heads_match = nx == ny && self.ctx.eq_antisymm_many(lx, ly);
-                self.unify_iota::<RIGID>(depth, t, t2, heads_match, nx, lx, sx, sy)
-            }
-            (
+            )
+            | (
                 Value::Rigid {
                     head: RigidHead::QuotConst(nx, lx),
                     spine: sx,
@@ -353,7 +349,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     }
                     let lh = self.unfold_hint(nx);
                     let rh = self.unfold_hint(ny);
-                    if lh.is_lt(&rh) {
+                    if lh.is_lt(rh) {
                         let v2 = self.unfold_value(depth, t2);
                         if !std::ptr::eq(v2, t2) {
                             return self.unify::<true>(depth, t, v2);
@@ -367,7 +363,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                             return false;
                         }
                         self.unify::<true>(depth, t, f2)
-                    } else if rh.is_lt(&lh) {
+                    } else if rh.is_lt(lh) {
                         let v1 = self.unfold_value(depth, t);
                         if !std::ptr::eq(v1, t) {
                             return self.unify::<true>(depth, v1, t2);
@@ -477,13 +473,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
     }
 
-    fn probe_pairs(
-        &self,
-        sx: S<'t>,
-        sy: S<'t>,
-        sig: Sig,
-        limit: u32,
-    ) -> Option<Vec<(V<'t>, V<'t>)>> {
+    fn probe_pairs(sx: S<'t>, sy: S<'t>, sig: Sig, limit: u32) -> Option<Vec<(V<'t>, V<'t>)>> {
         let (mut a, mut b) = (sx, sy);
         let mut elims = Vec::new();
         loop {
@@ -539,7 +529,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if self.tc_cache.probe_depth > 0 {
             return self.unify_spine::<true>(depth, sx, sy, sig, limit);
         }
-        let Some(pairs) = self.probe_pairs(sx, sy, sig, limit) else {
+        let Some(pairs) = Self::probe_pairs(sx, sy, sig, limit) else {
             return false;
         };
         let outer = std::mem::replace(&mut self.tc_cache.probe_exhausted, false);
@@ -862,7 +852,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn is_unit_inductive(&self, ind_name: NamePtr<'t>) -> bool {
-        let Some(ind) = self.env.get_structure(&ind_name, false) else {
+        let Some(ind) = self.env.get_structure(ind_name, false) else {
             return false;
         };
         let Some(ctor) = self.env.get_constructor(&ind.all_ctor_names[0]) else {
@@ -912,13 +902,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 spine,
                 ..
             } => Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty(),
-            Value::NatLit { ptr, .. } => {
-                use num_traits::Zero;
-                self.ctx
-                    .read_bignum(*ptr)
-                    .map(|n| n.is_zero())
-                    .unwrap_or(false)
-            }
+            Value::NatLit { ptr, .. } => self
+                .ctx
+                .read_bignum(*ptr)
+                .is_some_and(num_traits::Zero::is_zero),
             _ => false,
         }
     }

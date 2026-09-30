@@ -12,6 +12,7 @@ const EXIT_REJECT: i32 = 1;
 const EXIT_DECLINE: i32 = 2;
 
 #[derive(Debug, Parser)]
+#[expect(clippy::struct_excessive_bools)]
 #[command(version, about = "Check a Lean export", group(ArgGroup::new("input").required(true).multiple(false)))]
 struct Cli {
     #[arg(value_name = "EXPORT", group = "input", help = "Export file to check")]
@@ -121,7 +122,7 @@ fn main() {
             let declined = e
                 .downcast_ref::<sokonanoda::frontend::error::Decline>()
                 .is_some();
-            eprintln!("{}\n\n{}", e, HELP_SHORT);
+            eprintln!("{e}\n\n{HELP_SHORT}");
             std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT });
         }
         Err(_) => std::process::exit(EXIT_REJECT),

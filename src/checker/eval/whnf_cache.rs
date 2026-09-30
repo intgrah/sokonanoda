@@ -22,7 +22,7 @@ const WHNF_ADMIT_THRESHOLD: u8 = 2;
 const FAIL_CLOSURE: u8 = 1;
 const FAIL_DEPTH: u8 = 7;
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     #[inline]
     pub(super) fn note_whnf(&mut self, depth: u32, src: V<'t>, res: V<'t>, steps: u32) {
         if steps == 0 {
@@ -33,7 +33,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if !closed {
             return;
         }
-        let (fi, fb) = crate::checker::cache::tenure_slot(k as usize);
+        let (fi, fb) = crate::checker::cache::tenure_slot(k);
         if self.tc_cache.whnf_store_filter[fi] & fb != 0
             && self.tc_cache.whnf_store.contains_key(&k)
         {
@@ -55,7 +55,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             return;
         };
         let q = self.quote(0, res);
-        let (hi, hb) = crate::checker::cache::tenure_slot(hk as usize);
+        let (hi, hb) = crate::checker::cache::tenure_slot(hk);
         self.tc_cache.whnf_head_filter[hi] |= hb;
         self.tc_cache.whnf_store_filter[fi] |= fb;
         self.tc_cache.whnf_store.insert(k, (full, q));
@@ -86,7 +86,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     #[inline]
     pub(super) fn store_lookup(&mut self, depth: u32, v: V<'t>) -> Option<V<'t>> {
         let hk = Self::shallow_head_key(v)?;
-        let (hi, hb) = crate::checker::cache::tenure_slot(hk as usize);
+        let (hi, hb) = crate::checker::cache::tenure_slot(hk);
         if self.tc_cache.whnf_head_filter[hi] & hb == 0 {
             return None;
         }
@@ -94,7 +94,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             return None;
         }
         let k = v.digest();
-        let (fi, fb) = crate::checker::cache::tenure_slot(k as usize);
+        let (fi, fb) = crate::checker::cache::tenure_slot(k);
         if self.tc_cache.whnf_store_filter[fi] & fb == 0 {
             return None;
         }

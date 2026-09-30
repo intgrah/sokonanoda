@@ -20,7 +20,7 @@ enum ConstKind {
     Axiom,
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn eval(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
         if e.num_loose_bvars() == 0 && env.lsub().is_none() {
             return memo!(
@@ -267,12 +267,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     fn const_kind(&mut self, name: NamePtr<'t>) -> ConstKind {
         match self.env.get_declar(&name) {
-            Some(Declar::Definition { .. }) | Some(Declar::Theorem { .. }) => ConstKind::Unfoldable,
+            Some(Declar::Definition { .. } | Declar::Theorem { .. }) => ConstKind::Unfoldable,
             Some(Declar::Constructor(_)) => ConstKind::Ctor,
             Some(Declar::Recursor(_)) => ConstKind::Recursor,
             Some(Declar::Quot { .. }) => ConstKind::Quot,
             Some(Declar::Inductive(_)) => ConstKind::Inductive,
-            Some(Declar::Axiom { .. }) | Some(Declar::Opaque { .. }) | None => ConstKind::Axiom,
+            Some(Declar::Axiom { .. } | Declar::Opaque { .. }) | None => ConstKind::Axiom,
         }
     }
 
@@ -360,7 +360,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             return cached;
         }
         let Some(d) = self.env.get_declar(&name) else {
-            panic!("const_head_type: unknown const {:?}", name)
+            panic!("const_head_type: unknown const {name:?}")
         };
         let info = *d.info();
         let v = self.eval_inst(info.ty, info.uparams, levels);
@@ -548,16 +548,13 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn nat_red_defer(&mut self, depth: u32, name: NamePtr<'t>, args: &[V<'t>]) -> bool {
-        use crate::term::name::NatRed::*;
+        use crate::term::name::NatRed::{Add, Mul, Pow, Sub};
         let structural_on_second = matches!(name.as_ref().nat_red(), Some(Add | Sub | Mul | Pow));
         if !structural_on_second || args.len() != 2 {
             return false;
         }
         if let Value::NatLit { ptr, .. } = self.force_thunk(depth, args[1]) {
-            self.ctx
-                .read_bignum(*ptr)
-                .map(|n| n.bits() > 8)
-                .unwrap_or(false)
+            self.ctx.read_bignum(*ptr).is_some_and(|n| n.bits() > 8)
         } else {
             false
         }

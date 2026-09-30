@@ -1,5 +1,5 @@
 use crate::checker::context::TcCtx;
-use crate::term::expr::Expr::*;
+use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use crate::term::level::Level;
 use crate::term::name::Name;
 use crate::term::ptr::{ExprPtr, LevelPtr, NamePtr};
@@ -18,20 +18,20 @@ impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, NamePtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, NamePtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Name::*;
+        use Name::{Anon, Num, Str};
         match self.ctx.read_name(self.elem_to_print) {
             Anon => Ok(()),
             Str(pfx, sfx, _) => {
                 let sfx = self.ctx.read_string(sfx);
                 match self.ctx.read_name(pfx) {
-                    Anon => write!(f, "{}", sfx),
+                    Anon => write!(f, "{sfx}"),
                     _ => write!(f, "{:?}.{}", self.ctx.debug_print(pfx), sfx),
                 }
             }
             Num(pfx, sfx, _) => match self.ctx.read_name(pfx) {
-                Anon => write!(f, "{}", sfx),
+                Anon => write!(f, "{sfx}"),
                 _ => write!(f, "{:?}.{}", self.ctx.debug_print(pfx), sfx),
             },
         }
@@ -114,15 +114,15 @@ where
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, LevelPtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, LevelPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Level::*;
+        use Level::{IMax, Max, Param, Succ, Zero};
         match self.ctx.read_level(self.elem_to_print) {
             Zero => write!(f, "0"),
             Succ(..) => {
                 let (val, n) = self.ctx.level_succs(self.elem_to_print);
                 if self.ctx.read_level(val) == Zero {
-                    write!(f, "{}", n)
+                    write!(f, "{n}")
                 } else {
                     write!(f, "{:?} + {}", self.ctx.debug_print(val), n)
                 }
@@ -140,10 +140,10 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, LevelPtr<'t>> {
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, ExprPtr<'t>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ctx.read_expr(self.elem_to_print) {
-            Var { dbj_idx, .. } => write!(f, "${}", dbj_idx),
+            Var { dbj_idx, .. } => write!(f, "${dbj_idx}"),
             Sort { level, .. } => write!(f, "Sort({:?})", self.ctx.debug_print(level)),
             Const { name, levels, .. } => {
                 let levels = self.ctx.read_levels(levels);
@@ -207,7 +207,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, ExprPtr<'t>> {
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::term::ptr::LevelsPtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::LevelsPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -217,20 +217,18 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::term::ptr::
         )
     }
 }
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::term::ptr::StringPtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::StringPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.ctx.read_string(self.elem_to_print))
     }
 }
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::term::ptr::BigUintPtr<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::BigUintPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.ctx.read_bignum(self.elem_to_print).unwrap())
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug
-    for DebugPrinter<'x, 't, 'p, &crate::checker::env::DeclarInfo<'t>>
-{
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, &crate::checker::env::DeclarInfo<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeclarInfo")
             .field("name", &self.ctx.debug_print(self.elem_to_print.name))
@@ -245,7 +243,7 @@ impl<'x, 't, 'p> std::fmt::Debug
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::checker::env::RecRule<'t>> {
+impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::checker::env::RecRule<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecRule")
             .field(
@@ -261,9 +259,7 @@ impl<'x, 't, 'p> std::fmt::Debug for DebugPrinter<'x, 't, 'p, crate::checker::en
     }
 }
 
-impl<'x, 't, 'p> std::fmt::Debug
-    for DebugPrinter<'x, 't, 'p, crate::checker::env::ReducibilityHint>
-{
+impl std::fmt::Debug for DebugPrinter<'_, '_, '_, crate::checker::env::ReducibilityHint> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.elem_to_print)
     }

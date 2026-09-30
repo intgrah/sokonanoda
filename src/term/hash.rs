@@ -1,16 +1,16 @@
 use indexmap::IndexMap;
-use rustc_hash::FxHasher;
+use rustc_hash::{FxBuildHasher, FxHasher};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 
-pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
-pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
-pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
+pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
+pub(crate) type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
+pub(crate) type FxHashSet<K> = HashSet<K, FxBuildHasher>;
 
 pub(crate) type CowStr<'a> = Cow<'a, str>;
 
-/// https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing
+/// <https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing>
 /// 2 ^ 64 / φ
 pub(crate) const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
 
@@ -38,15 +38,15 @@ impl RawHash for CowStr<'_> {
 }
 
 pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> {
-    FxIndexMap::with_hasher(Default::default())
+    FxIndexMap::with_hasher(FxBuildHasher)
 }
 
 pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> {
-    FxHashMap::with_hasher(Default::default())
+    FxHashMap::with_hasher(FxBuildHasher)
 }
 
 pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> {
-    FxHashSet::with_hasher(Default::default())
+    FxHashSet::with_hasher(FxBuildHasher)
 }
 
 #[macro_export]

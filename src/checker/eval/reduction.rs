@@ -17,7 +17,7 @@ enum ForceStep<'a> {
     Done,
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn ctor_shape(&mut self, name: NamePtr<'t>) -> Option<(u16, u16, NamePtr<'t>)> {
         self.env
             .get_constructor(&name)
@@ -25,7 +25,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn can_be_struct_memo(&mut self, name: NamePtr<'t>) -> bool {
-        self.env.can_be_struct(&name)
+        self.env.can_be_struct(name)
     }
 
     pub(crate) fn do_proj(
@@ -47,7 +47,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 {
                     let np = usize::from(num_params);
                     if let Some(ElimView::App(field)) =
-                        spine.get(np + usize::from(idx)).map(|e| e.view())
+                        spine.get(np + usize::from(idx)).map(Elim::view)
                     {
                         return self.force_thunk(depth, field);
                     }
@@ -116,7 +116,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if ind_name != ty_name {
             return None;
         }
-        let ind = self.env.get_structure(&ind_name, true)?;
+        let ind = self.env.get_structure(ind_name, true)?;
         let ctor_name = ind.all_ctor_names[0];
         let ctor_info = match self.env.get_declar(&ctor_name)? {
             Declar::Constructor(c) => c.info,
@@ -198,18 +198,14 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     None => break 'done cur,
                     Some(rec_val) => {
                         let key = Id::of(rec_val);
-                        match self.fire_value(depth, rec_val, cur) {
-                            Some(res) => {
-                                self.tc_cache.iota_cache.insert(key, res);
-                                steps += 1;
-                                cur = res;
-                                break;
-                            }
-                            None => {
-                                self.tc_cache.iota_stuck.insert(key);
-                                cur = rec_val;
-                            }
+                        if let Some(res) = self.fire_value(depth, rec_val, cur) {
+                            self.tc_cache.iota_cache.insert(key, res);
+                            steps += 1;
+                            cur = res;
+                            break;
                         }
+                        self.tc_cache.iota_stuck.insert(key);
+                        cur = rec_val;
                     }
                 }
             }
@@ -242,7 +238,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if args.len() <= rec.major_idx() {
                     return ForceStep::Done;
                 }
-                if let Some(r) = self.k_pre_reduce(depth, &rec, *levels, &args) {
+                if let Some(r) = self.k_pre_reduce(depth, rec, *levels, &args) {
                     self.tc_cache.iota_cache.insert(key, r);
                     return ForceStep::Reduced(r);
                 }
@@ -250,15 +246,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if self.is_iota_reducible(major_h) {
                     return ForceStep::Descend(major_h);
                 }
-                match self.fire_recursor(depth, &rec, *levels, &args, major_h) {
-                    Some(res) => {
-                        self.tc_cache.iota_cache.insert(key, res);
-                        ForceStep::Reduced(res)
-                    }
-                    None => {
-                        self.tc_cache.iota_stuck.insert(key);
-                        ForceStep::Done
-                    }
+                if let Some(res) = self.fire_recursor(depth, rec, *levels, &args, major_h) {
+                    self.tc_cache.iota_cache.insert(key, res);
+                    ForceStep::Reduced(res)
+                } else {
+                    self.tc_cache.iota_stuck.insert(key);
+                    ForceStep::Done
                 }
             }
             Value::Rigid {
@@ -285,15 +278,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if self.is_iota_reducible(major_h) {
                     return ForceStep::Descend(major_h);
                 }
-                match self.fire_quot(depth, name, &args, major_h) {
-                    Some(res) => {
-                        self.tc_cache.iota_cache.insert(key, res);
-                        ForceStep::Reduced(res)
-                    }
-                    None => {
-                        self.tc_cache.iota_stuck.insert(key);
-                        ForceStep::Done
-                    }
+                if let Some(res) = self.fire_quot(depth, name, &args, major_h) {
+                    self.tc_cache.iota_cache.insert(key, res);
+                    ForceStep::Reduced(res)
+                } else {
+                    self.tc_cache.iota_stuck.insert(key);
+                    ForceStep::Done
                 }
             }
             _ => ForceStep::Done,
@@ -347,7 +337,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 if args.len() <= rec.major_idx() {
                     return None;
                 }
-                self.fire_recursor(depth, &rec, *levels, &args, major)
+                self.fire_recursor(depth, rec, *levels, &args, major)
             }
             Value::Rigid {
                 head: RigidHead::QuotConst(name, _),
@@ -393,18 +383,15 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     return v;
                 }
             }
-            let head_value = match head_value.get() {
-                Some(hv) => *hv,
-                None => match self.unfold_const(head.name, head.levels) {
-                    Some(hv) => {
-                        let _ = head_value.set(hv);
-                        hv
-                    }
-                    None => {
-                        let _ = forced.set(v);
-                        return v;
-                    }
-                },
+            let head_value = if let Some(&hv) = head_value.get() {
+                hv
+            } else {
+                let Some(hv) = self.unfold_const(head.name, head.levels) else {
+                    let _ = forced.set(v);
+                    return v;
+                };
+                let _ = head_value.set(hv);
+                hv
             };
             let spine = *spine;
             let mut cur = head_value;
@@ -509,11 +496,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if args.len() <= rec.major_idx() {
             return None;
         }
-        if let Some(r) = self.k_pre_reduce(depth, &rec, levels, args) {
+        if let Some(r) = self.k_pre_reduce(depth, rec, levels, args) {
             return Some(r);
         }
         let major = self.whnf_head(depth, args[rec.major_idx()]);
-        self.fire_recursor(depth, &rec, levels, args, major)
+        self.fire_recursor(depth, rec, levels, args, major)
     }
 
     fn k_pre_reduce(
@@ -559,15 +546,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let num_extra = ctor_args
             .len()
             .checked_sub(usize::from(rec_rule.ctor_telescope_size_wo_params))?;
-        let cache_key = (rec_rule.val, levels);
-        let mut result = match self.tc_cache.rec_rule_cache.get(&cache_key) {
-            Some(v) => *v,
-            None => {
-                let v = self.eval_inst(rec_rule.val, rec.info.uparams, levels);
-                self.tc_cache.rec_rule_cache.insert(cache_key, v);
-                v
-            }
-        };
+        let mut result = memo!(
+            self.tc_cache.rec_rule_cache,
+            (rec_rule.val, levels),
+            self.eval_inst(rec_rule.val, rec.info.uparams, levels)
+        );
         let nprefix = usize::from(rec.num_params + rec.num_motives + rec.num_minors);
         result = self.apply_many(depth, result, &args[..nprefix]);
         result = self.apply_many(depth, result, &ctor_args[num_extra..]);
@@ -693,8 +676,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             .rec_rules
             .iter()
             .find(|r| r.ctor_name == ctor_name)
-            .map(|r| usize::from(r.ctor_telescope_size_wo_params))
-            .unwrap_or(0);
+            .map_or(0, |r| usize::from(r.ctor_telescope_size_wo_params));
         let take = (np + ctor_self).min(ty_args.len());
         let mut new_ctor = value::mk_rigid_head_with_empty(
             self.arena,
@@ -745,10 +727,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn nat_lit_to_ctor_val(&mut self, depth: u32, n: BigUintPtr<'t>) -> Option<V<'t>> {
+        use num_traits::Zero;
         if !self.ctx.export_file.config.nat_extension {
             return None;
         }
-        use num_traits::Zero;
         let nv = self.ctx.read_bignum(n)?.clone();
         let levels = self.ctx.alloc_levels_slice(&[]);
         let empty = self.empty_spine();
@@ -903,7 +885,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn do_nat_bin_val(&mut self, x: BigUint, y: BigUint, op: NatBinOp) -> Option<V<'t>> {
-        use NatBinOp::*;
+        use NatBinOp::{Add, Beq, Ble, Div, Gcd, LAnd, LOr, Mod, Mul, Pow, Shl, Shr, Sub, XOr};
         match op {
             Add => self.mk_natlit_val(x + y),
             Sub => self.mk_natlit_val(nat_sub(x, y)),
@@ -915,8 +897,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             LAnd => self.mk_natlit_val(nat_land(x, y)),
             LOr => self.mk_natlit_val(nat_lor(x, y)),
             XOr => self.mk_natlit_val(nat_xor(&x, &y)),
-            Shl => self.mk_natlit_val(nat_shl(x, y)),
-            Shr => self.mk_natlit_val(nat_shr(x, y)),
+            Shl => self.mk_natlit_val(nat_shl(x, &y)),
+            Shr => self.mk_natlit_val(nat_shr(x, &y)),
             Beq => self.bool_val(x == y),
             Ble => self.bool_val(x <= y),
         }
@@ -948,7 +930,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             self.tc_cache.fvar_cache,
             Id::of(v),
             match v {
-                Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => false,
+                Value::Sort { .. }
+                | Value::NatLit { .. }
+                | Value::StrLit { .. }
+                | Value::Lam { .. }
+                | Value::Pi { .. } => false,
                 Value::Rigid {
                     head: RigidHead::BVar(..),
                     ..
@@ -958,7 +944,6 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                         matches!(elim.view(), ElimView::App(a) if self.value_has_free_bvar(depth, a))
                     })
                 }
-                Value::Lam { .. } | Value::Pi { .. } => false,
                 Value::Thunk { .. } => unreachable!("force_thunk left a Thunk"),
             }
         )

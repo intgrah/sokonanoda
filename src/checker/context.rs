@@ -17,10 +17,10 @@ use num_bigint::BigUint;
 
 caches! {
     pub struct ExprCache<'t> {
-        #[cap(SMALL)] inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
-        #[cap(SMALL)] subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[cap(SMALL)] dsubst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[cap(SMALL)] simplify_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
+        #[cap(SMALL)] inst: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
+        #[cap(SMALL)] subst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+        #[cap(SMALL)] dsubst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+        #[cap(SMALL)] simplify: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
     }
     fn new();
 }

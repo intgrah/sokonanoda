@@ -26,13 +26,13 @@ fn shift_amount(y: &BigUint) -> Option<u64> {
     u64::try_from(y).ok()
 }
 
-pub(crate) fn nat_shl(x: BigUint, y: BigUint) -> BigUint {
-    let sh = shift_amount(&y).expect("Nat.shiftLeft: shift does not fit in a machine word");
+pub(crate) fn nat_shl(x: BigUint, y: &BigUint) -> BigUint {
+    let sh = shift_amount(y).expect("Nat.shiftLeft: shift does not fit in a machine word");
     x << sh
 }
 
-pub(crate) fn nat_shr(x: BigUint, y: BigUint) -> BigUint {
-    match shift_amount(&y) {
+pub(crate) fn nat_shr(x: BigUint, y: &BigUint) -> BigUint {
+    match shift_amount(y) {
         Some(sh) => x >> sh,
         None => BigUint::zero(),
     }
@@ -95,29 +95,13 @@ mod tests {
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
-                assert_eq!(nat_div_eq_f(x.clone(), y.clone()), nat_div(x, y))
+                assert_eq!(nat_div_eq_f(x.clone(), y.clone()), nat_div(x, y));
             }
         }
     }
 
     #[test]
     fn nat_shr_eq() {
-        assert_eq!(
-            nat_shr(BigUint::from(4u8), BigUint::from(2u8)),
-            BigUint::one()
-        );
-        assert_eq!(
-            nat_shr(BigUint::from(8u8), BigUint::from(2u8)),
-            BigUint::from(2u8)
-        );
-        assert_eq!(
-            nat_shr(BigUint::from(8u8), BigUint::from(3u8)),
-            BigUint::one()
-        );
-        assert_eq!(
-            nat_shr(BigUint::from(0u8), BigUint::from(3u8)),
-            BigUint::zero()
-        );
         //def shiftRight : @& Nat → @& Nat → Nat
         //  | n, 0 => n
         //  | n, succ m => shiftRight n m / 2
@@ -129,33 +113,33 @@ mod tests {
                 nat_shr_eq_f(x, y - BigUint::one()) / BigUint::from(2u8)
             }
         }
+        assert_eq!(
+            nat_shr(BigUint::from(4u8), &BigUint::from(2u8)),
+            BigUint::one()
+        );
+        assert_eq!(
+            nat_shr(BigUint::from(8u8), &BigUint::from(2u8)),
+            BigUint::from(2u8)
+        );
+        assert_eq!(
+            nat_shr(BigUint::from(8u8), &BigUint::from(3u8)),
+            BigUint::one()
+        );
+        assert_eq!(
+            nat_shr(BigUint::from(0u8), &BigUint::from(3u8)),
+            BigUint::zero()
+        );
         let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size % 6));
-                assert_eq!(nat_shr_eq_f(x.clone(), y.clone()), nat_shr(x, y))
+                assert_eq!(nat_shr_eq_f(x.clone(), y.clone()), nat_shr(x, &y));
             }
         }
     }
 
     #[test]
     fn nat_shl_eq() {
-        assert_eq!(
-            nat_shl(BigUint::one(), BigUint::from(2u8)),
-            BigUint::from(4u8)
-        );
-        assert_eq!(
-            nat_shl(BigUint::one(), BigUint::from(3u8)),
-            BigUint::from(8u8)
-        );
-        assert_eq!(
-            nat_shl(BigUint::zero(), BigUint::from(3u8)),
-            BigUint::zero()
-        );
-        assert_eq!(
-            nat_shl(BigUint::from(0xf1 as u32), BigUint::from(4u8)),
-            BigUint::from(0xf10 as u32)
-        );
         // def shiftLeft : @& Nat → @& Nat → Nat
         //   | n, 0 => n
         //   | n, succ m => shiftLeft (2*n) m
@@ -167,18 +151,46 @@ mod tests {
                 nat_shl_eq_f(BigUint::from(2u8) * x, y - BigUint::one())
             }
         }
+        assert_eq!(
+            nat_shl(BigUint::one(), &BigUint::from(2u8)),
+            BigUint::from(4u8)
+        );
+        assert_eq!(
+            nat_shl(BigUint::one(), &BigUint::from(3u8)),
+            BigUint::from(8u8)
+        );
+        assert_eq!(
+            nat_shl(BigUint::zero(), &BigUint::from(3u8)),
+            BigUint::zero()
+        );
+        assert_eq!(
+            nat_shl(BigUint::from(0xf1_u32), &BigUint::from(4u8)),
+            BigUint::from(0xf10_u32)
+        );
 
         let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size % 6));
-                assert_eq!(nat_shl_eq_f(x.clone(), y.clone()), nat_shl(x, y))
+                assert_eq!(nat_shl_eq_f(x.clone(), y.clone()), nat_shl(x, &y));
             }
         }
     }
 
     #[test]
     fn nat_gcd_eq() {
+        //def gcd (m n : @& Nat) : Nat :=
+        //  if m = 0 then
+        //    n
+        //  else
+        //    gcd (n % m) m
+        fn nat_gcd_eq_f(m: BigUint, n: BigUint) -> BigUint {
+            if m.is_zero() {
+                n
+            } else {
+                nat_gcd_eq_f(n % m.clone(), m)
+            }
+        }
         assert_eq!(
             nat_gcd(&BigUint::from(10u8), &BigUint::from(15u8)),
             BigUint::from(5u8)
@@ -195,25 +207,13 @@ mod tests {
             nat_gcd(&BigUint::from(1u8), &BigUint::zero()),
             BigUint::from(1u8)
         );
-        //def gcd (m n : @& Nat) : Nat :=
-        //  if m = 0 then
-        //    n
-        //  else
-        //    gcd (n % m) m
-        fn nat_gcd_eq_f(m: BigUint, n: BigUint) -> BigUint {
-            if m.is_zero() {
-                n
-            } else {
-                nat_gcd_eq_f(n % m.clone(), m)
-            }
-        }
 
         let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 let gcd = nat_gcd(&x, &y);
-                assert_eq!(nat_gcd_eq_f(x, y), gcd)
+                assert_eq!(nat_gcd_eq_f(x, y), gcd);
             }
         }
     }
@@ -251,8 +251,8 @@ mod tests {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 let rhs = nat_xor(&x, &y);
-                eprintln!("{:?} ^ {:?} := {:?}", x, y, rhs);
-                assert_eq!(spec_xor(x, y), rhs)
+                eprintln!("{x:?} ^ {y:?} := {rhs:?}");
+                assert_eq!(spec_xor(x, y), rhs);
             }
         }
     }
@@ -270,7 +270,7 @@ mod tests {
         for size in 0..5 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
-                assert_eq!(spec_lor(x.clone(), y.clone()), nat_lor(x, y))
+                assert_eq!(spec_lor(x.clone(), y.clone()), nat_lor(x, y));
             }
         }
     }
@@ -288,7 +288,7 @@ mod tests {
         for size in 0..5 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
-                assert_eq!(spec_land(x.clone(), y.clone()), nat_land(x, y))
+                assert_eq!(spec_land(x.clone(), y.clone()), nat_land(x, y));
             }
         }
     }
@@ -306,7 +306,7 @@ mod tests {
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
-                assert_eq!(nat_sub_eq_f(x.clone(), y.clone()), nat_sub(x, y))
+                assert_eq!(nat_sub_eq_f(x.clone(), y.clone()), nat_sub(x, y));
             }
         }
     }
@@ -330,7 +330,7 @@ mod tests {
         for size in 0..8 {
             for _ in 0..32 {
                 let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
-                assert_eq!(nat_mod_eq_f(x.clone(), y.clone()), nat_mod(x, y))
+                assert_eq!(nat_mod_eq_f(x.clone(), y.clone()), nat_mod(x, y));
             }
         }
     }
@@ -346,7 +346,7 @@ mod tests {
                 let m_div_n = nat_div(m.clone(), n.clone());
                 let m_mod_n = nat_mod(m.clone(), n.clone());
                 let nat_mul_div = n.clone() * m_div_n;
-                assert_eq!((nat_mul_div + m_mod_n), m)
+                assert_eq!((nat_mul_div + m_mod_n), m);
             }
         }
     }
@@ -366,10 +366,9 @@ mod tests {
                     assert_eq!(
                         nat_mod(a.clone(), b.clone()),
                         nat_mod(a.clone() - b.clone(), b)
-                    )
+                    );
                 } else {
                     assert!(b > a);
-                    continue;
                 }
             }
         }

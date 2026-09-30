@@ -289,7 +289,7 @@ pub struct Dag<'a> {
     pub(crate) bignums: Option<Interner<'a, BigUint>>,
 }
 
-impl<'a> Dag<'a> {
+impl Dag<'_> {
     pub(crate) fn new(config: &Config, input_len: usize) -> Self {
         Self {
             names: Interner::with_capacity(input_len / 1024 + 16),

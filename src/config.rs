@@ -62,6 +62,7 @@ impl AxiomPolicy {
 }
 
 #[derive(Debug, Clone)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct Config {
     pub export_file_path: Option<PathBuf>,
     pub use_stdin: bool,
@@ -89,20 +90,20 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn to_export_file<'a>(
+    pub fn to_export_file(
         self,
-        arena: &'a Bump,
-    ) -> Result<(ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+        arena: &Bump,
+    ) -> Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {
                     let map =
                         unsafe { memmap2::Mmap::map(&file) }.map_err(|e| -> Box<dyn Error> {
-                            Box::from(format!("Failed to map export file: {:?}", e))
+                            Box::from(format!("Failed to map export file: {e:?}"))
                         })?;
                     parse_export_mapped(arena, &map, self)
                 }
-                Err(e) => Err(Box::from(format!("Failed to open export file: {:?}", e))),
+                Err(e) => Err(Box::from(format!("Failed to open export file: {e:?}"))),
             }
         } else if self.use_stdin {
             let reader = BufReader::new(std::io::stdin());

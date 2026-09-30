@@ -58,7 +58,7 @@ pub(crate) fn app_prefix_len(spine: S<'_>) -> u32 {
         .map_or(len, |(_, i)| i)
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn sig_of(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> Sig {
         if self.env.has_temp_ext() {
             return Sig::ALL_RELEVANT;

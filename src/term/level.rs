@@ -7,7 +7,7 @@ pub(crate) const SUCC_HASH: u64 = 541;
 pub(crate) const MAX_HASH: u64 = 1091;
 pub(crate) const IMAX_HASH: u64 = 1747;
 pub(crate) const PARAM_HASH: u64 = 947;
-use Level::*;
+use Level::{IMax, Max, Param, Succ, Zero};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level<'a> {
@@ -18,7 +18,7 @@ pub enum Level<'a> {
     Param(NamePtr<'a>, u64),
 }
 
-impl<'a> Level<'a> {
+impl Level<'_> {
     fn get_hash(&self) -> u64 {
         match self {
             Zero => ZERO_HASH,
@@ -27,13 +27,13 @@ impl<'a> Level<'a> {
     }
 }
 
-impl<'a> std::hash::Hash for Level<'a> {
+impl std::hash::Hash for Level<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.get_hash())
+        state.write_u64(self.get_hash());
     }
 }
 
-impl<'a> crate::term::hash::RawHash for Level<'a> {
+impl crate::term::hash::RawHash for Level<'_> {
     #[inline]
     fn raw_hash(&self) -> u64 {
         self.get_hash()
@@ -67,7 +67,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             Zero | Param(..) => return ptr,
             _ => {}
         }
-        if let Some(cached) = self.expr_cache.simplify_cache.get(&ptr).copied() {
+        if let Some(cached) = self.expr_cache.simplify.get(&ptr).copied() {
             return cached;
         }
         let result = match self.read_level(ptr) {
@@ -95,7 +95,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 }
             }
         };
-        self.expr_cache.simplify_cache.insert(ptr, result);
+        self.expr_cache.simplify.insert(ptr, result);
         result
     }
 
@@ -107,9 +107,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 Param(..) => {
                     if set.contains(&l) {
                         return false;
-                    } else {
-                        set.insert(l);
                     }
+                    set.insert(l);
                 }
                 _ => return false,
             }
@@ -326,7 +325,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    /// l <= 0 -> is_zero(l)
+    /// l <= 0 -> `is_zero(l)`
     pub fn is_zero(&mut self, level: LevelPtr<'t>) -> bool {
         let zero = self.zero();
         self.leq(level, zero)
@@ -430,7 +429,10 @@ mod tests {
                 };
 
                 let p = ctx.param_quick("p");
-                let (a, b) = (ctx.level_n(p, small as u64), ctx.level_n(p, large as u64));
+                let (a, b) = (
+                    ctx.level_n(p, u64::from(small)),
+                    ctx.level_n(p, u64::from(large)),
+                );
                 assert!(ctx.leq(a, b));
             }
         })
@@ -443,7 +445,7 @@ mod tests {
             for _ in 0..100 {
                 let (small, large) = {
                     let (x, y): (u8, u8) = random();
-                    (x.min(y) as u64, x.max(y) as u64)
+                    (u64::from(x.min(y)), u64::from(x.max(y)))
                 };
                 let lhs = {
                     let (p_small, q_small) = (ctx.level_n(p, small), ctx.level_n(q, small));
@@ -468,7 +470,7 @@ mod tests {
             for _ in 0..100 {
                 let (small, large) = {
                     let (x, y): (u8, u8) = random();
-                    (x.min(y) as u64, x.max(y) as u64)
+                    (u64::from(x.min(y)), u64::from(x.max(y)))
                 };
                 let lhs = {
                     let (p_small, q_small) = (ctx.level_n(p, small), ctx.level_n(q, small));
@@ -493,7 +495,7 @@ mod tests {
             for _ in 0..100 {
                 let (u, v, w) = {
                     let (u, v, w): (u8, u8, u8) = random();
-                    (u as u64, v as u64, w as u64)
+                    (u64::from(u), u64::from(v), u64::from(w))
                 };
                 let lhs = {
                     let (p_, q_) = (ctx.level_n(p, u), ctx.level_n(q, v + 1));

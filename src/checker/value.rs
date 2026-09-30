@@ -58,7 +58,7 @@ impl KeyTag {
     }
 }
 
-impl<'a> RigidHead<'a> {
+impl RigidHead<'_> {
     #[inline]
     pub(crate) fn tag(self) -> KeyTag {
         match self {
@@ -143,11 +143,11 @@ impl<'a> Elim<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for Elim<'a> {
+impl std::fmt::Debug for Elim<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.view() {
-            ElimView::App(v) => write!(f, "App({:p})", v),
-            ElimView::Proj { idx, .. } => write!(f, "Proj({})", idx),
+            ElimView::App(v) => write!(f, "App({v:p})"),
+            ElimView::Proj { idx, .. } => write!(f, "Proj({idx})"),
         }
     }
 }
@@ -228,7 +228,7 @@ impl LazyKey {
     }
 }
 
-impl<'a> Value<'a> {
+impl Value<'_> {
     #[inline]
     fn lazy_key(&self) -> &LazyKey {
         match self {
@@ -424,7 +424,7 @@ impl<'a> Env<'a> {
     }
 
     #[inline]
-    pub fn len(&self) -> u32 {
+    pub(crate) fn len(&self) -> u32 {
         match self {
             Env::Nil { .. } => 0,
             Env::Cons { len, .. } | Env::Framed { len, .. } | Env::WideFramed { len, .. } => *len,
@@ -461,7 +461,7 @@ pub enum Spine<'a> {
     },
 }
 
-impl<'a> Spine<'a> {
+impl Spine<'_> {
     #[inline]
     pub fn is_canonical(&self) -> bool {
         match self {
@@ -618,7 +618,7 @@ impl<'a> Iterator for ElimsRev<'a> {
     }
 }
 
-pub fn env_empty<'a>(arena: &'a Bump) -> E<'a> {
+pub fn env_empty(arena: &Bump) -> E<'_> {
     arena.alloc(Env::Nil {
         lsub: None,
         hash: 0,
@@ -638,13 +638,13 @@ pub fn env_extend<'a>(arena: &'a Bump, parent: E<'a>, v: V<'a>) -> E<'a> {
         prune: Cell::new((0, None)),
     })
 }
-pub fn ctx_empty<'a>(arena: &'a Bump) -> C<'a> {
+pub fn ctx_empty(arena: &Bump) -> C<'_> {
     arena.alloc(Ctx::Nil)
 }
 pub fn ctx_extend<'a>(arena: &'a Bump, parent: C<'a>, ty: V<'a>) -> C<'a> {
     arena.alloc(Ctx::Cons { ty, parent })
 }
-pub fn spine_empty<'a>(arena: &'a Bump) -> S<'a> {
+pub fn spine_empty(arena: &Bump) -> S<'_> {
     arena.alloc(Spine::Empty)
 }
 pub fn spine_snoc<'a>(arena: &'a Bump, prev: S<'a>, elim: Elim<'a>) -> S<'a> {
@@ -755,7 +755,7 @@ pub fn mk_thunk<'a>(arena: &'a Bump, env: E<'a>, expr: ExprPtr<'a>) -> V<'a> {
 const _: () = assert!(std::mem::size_of::<Value<'static>>() == 56);
 const _: () = assert!(std::mem::size_of::<Spine<'static>>() == 32);
 
-pub fn forced_of<'a>(v: V<'a>) -> Option<V<'a>> {
+pub fn forced_of(v: V<'_>) -> Option<V<'_>> {
     match v {
         Value::Thunk { forced, .. } | Value::Unfold { forced, .. } => forced.get().copied(),
         _ => None,

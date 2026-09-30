@@ -3,7 +3,7 @@ use crate::checker::tc::TypeChecker;
 use crate::checker::value::{E, ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::ptr::{ExprPtr, Id};
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn quote(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
         let v = self.force_thunk(depth, v);
         memo!(
@@ -127,16 +127,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
         let mut substs: Vec<ExprPtr<'t>> = Vec::with_capacity(usize::from(n));
         for idx in (0..n).rev() {
-            match env.lookup(idx) {
-                Some(slot) => {
-                    let e = self.quote_weak(depth, slot);
-                    substs.push(e);
-                }
-                None => {
-                    let v = self.eval_here(env, expr);
-                    return self.quote(depth, v);
-                }
-            }
+            let Some(slot) = env.lookup(idx) else {
+                let v = self.eval_here(env, expr);
+                return self.quote(depth, v);
+            };
+            let e = self.quote_weak(depth, slot);
+            substs.push(e);
         }
         self.ctx.inst(expr, substs.as_slice())
     }

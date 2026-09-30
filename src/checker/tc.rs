@@ -4,7 +4,7 @@ use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::E;
 use crate::term::ptr::ExprPtr;
 
-use InferFlag::*;
+use InferFlag::InferOnly;
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
 
@@ -68,7 +68,7 @@ pub struct TypeChecker<'x, 't, 'p> {
 impl<'p> ExportFile<'p> {
     /// The entry point for checking a declaration `d`.
     pub fn check_declar(&self, d: &Declar<'p>) {
-        self.with_ctx(|ctx, cache, bump| self.check_declar_with(ctx, cache, bump, d))
+        self.with_ctx(|ctx, cache, bump| self.check_declar_with(ctx, cache, bump, d));
     }
 
     fn check_declar_with<'t>(
@@ -78,7 +78,7 @@ impl<'p> ExportFile<'p> {
         bump: &'t bumpalo::Bump,
         d: &Declar<'t>,
     ) {
-        use Declar::*;
+        use Declar::{Inductive, Quot};
         match d {
             Inductive(..) => self.check_inductive_declar(ctx, cache, bump, d),
             Quot { .. } => crate::checker::quot::check_quot(ctx, cache, bump, d),
@@ -93,19 +93,19 @@ impl<'p> ExportFile<'p> {
         bump: &'t bumpalo::Bump,
         d: &Declar<'t>,
     ) {
-        use Declar::*;
+        use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         let env = self.new_env(EnvLimit::ByName(d.info().name));
         let mut tc = TypeChecker::new(ctx, &env, bump, Some(*d.info()), cache);
         match d {
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => {
-                tc.check_def_like_v(d, *val)
+                tc.check_def_like_v(d, *val);
             }
             Axiom { .. } | Constructor(..) | Recursor(..) => tc.check_declar_info_v(d),
             Inductive(..) | Quot { .. } => unreachable!(),
         }
         match d {
             Constructor(ctor_data) => {
-                assert!(self.declars.get(&ctor_data.inductive_name).is_some())
+                assert!(self.declars.get(&ctor_data.inductive_name).is_some());
             }
             Recursor(recursor_data) => {
                 let rec_idx = self
@@ -142,7 +142,7 @@ impl<'p> ExportFile<'p> {
     {
         let thread_arena = bumpalo::Bump::new();
         let mut tctx = TcCtx::new(self, &thread_arena);
-        self.run_session_inner(first, &mut next_chunk, &mut tctx)
+        self.run_session_inner(first, &mut next_chunk, &mut tctx);
     }
 
     fn run_session_inner<'h, F>(
@@ -219,7 +219,7 @@ impl<'p> ExportFile<'p> {
             for i in 0..num_threads {
                 handles.push(
                     thread::Builder::new()
-                        .name(format!("thread_{}", i))
+                        .name(format!("thread_{i}"))
                         .stack_size(crate::STACK_SIZE)
                         .spawn_scoped(sco, || {
                             if let Some(first) = claim() {
@@ -227,7 +227,7 @@ impl<'p> ExportFile<'p> {
                             }
                         })
                         .unwrap(),
-                )
+                );
             }
             for t in handles {
                 t.join()
@@ -237,12 +237,12 @@ impl<'p> ExportFile<'p> {
     }
 
     /// Check all of the declarations in this export file on the specified number
-    /// of threads (checking will be serial on the main thread is num_threads <= 1).
+    /// of threads (checking will be serial on the main thread is `num_threads <= 1`).
     pub fn check_all_declars(&self) {
         if self.config.num_threads > 1 {
-            self.check_all_declars_par(self.config.num_threads)
+            self.check_all_declars_par(self.config.num_threads);
         } else {
-            self.check_all_declars_serial()
+            self.check_all_declars_serial();
         }
     }
 }

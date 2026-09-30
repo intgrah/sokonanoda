@@ -21,12 +21,12 @@ fn rigid_head_key(head: RigidHead<'_>) -> (KeyTag, u64, u64) {
 }
 
 #[inline]
-fn elim_key<'a>(elim: &Elim<'a>) -> u64 {
+fn elim_key(elim: Elim<'_>) -> u64 {
     const _: () = assert!(std::mem::align_of::<Value<'static>>() >= 8);
     elim.raw()
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     #[inline]
     pub(crate) fn mk_bvar_hc(&mut self, level: u32, ty: V<'t>) -> V<'t> {
         memo!(self.tc_cache.bvar_hc, (level, Id::of(ty)), {
@@ -178,7 +178,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
         }
         let slot = (((Id::of(e).addr() as u64).wrapping_mul(GOLDEN)
-            ^ mask.wrapping_mul(0xD6E8FEB86659FD93))
+            ^ mask.wrapping_mul(0xD6E8_FEB8_6659_FD93))
             >> crate::checker::cache::PRUNE_DM_SHIFT) as usize;
         let ent = self.tc_cache.prune_dm[slot];
         if ent.0 == Some(Id::of(e))
@@ -335,7 +335,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     );
                 }
                 Expr::Proj { structure, .. } => {
-                    indices.extend_from_slice(self.wide_fvars(structure))
+                    indices.extend_from_slice(self.wide_fvars(structure));
                 }
                 Expr::Sort { .. }
                 | Expr::Const { .. }
@@ -428,7 +428,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline]
     pub(super) fn spine_snoc_hc(&mut self, prev: S<'t>, elim: Elim<'t>) -> S<'t> {
-        hashcons!(self.tc_cache.spine_hc, (Id::of(prev), elim_key(&elim)), {
+        hashcons!(self.tc_cache.spine_hc, (Id::of(prev), elim_key(elim)), {
             let s = value::spine_snoc(self.arena, prev, elim);
             let canon = prev.is_canonical()
                 && match elim.view() {

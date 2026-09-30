@@ -70,7 +70,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let eq_const = ctx.mk_const(name, info.uparams);
     assert_eq!(ctx.read_levels(info.uparams).len(), 1);
     assert_eq!(num_params, 2);
-    let &[u] = ctx.read_levels(info.uparams).as_ref() else {
+    let &[u] = ctx.read_levels(info.uparams) else {
         panic!(
             "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
             ctx.read_levels(info.uparams).len()
@@ -97,7 +97,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
             "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
         )
     };
-    let &[uparam] = ctx.read_levels(info.uparams).as_ref() else {
+    let &[uparam] = ctx.read_levels(info.uparams) else {
         panic!()
     };
     let uparam_sort = ctx.mk_sort(uparam);
@@ -234,7 +234,6 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
             .new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
-        return;
     } else if declar.info().name == ctx.str2("Quot", "ind") {
         //           (∀ (a : A), B (@Quot.mk A r a)) → ∀ (q : @Quot A r), B q
         let expected_quot_ind = Declar::Quot {
@@ -280,7 +279,6 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
             .new_env(EnvLimit::ByName(declar.info().name));
         let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
-        return;
     } else {
         panic!(
             "invalid quotient declaration {:?}",

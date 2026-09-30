@@ -4,6 +4,7 @@ use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use bumpalo::Bump;
 use hashbrown::HashTable;
+use rustc_hash::FxBuildHasher;
 use std::cell::OnceCell;
 
 pub(crate) const PRUNE_DM_LEN: usize = 1 << 10;
@@ -22,7 +23,7 @@ pub(crate) trait Reset {
 
 impl<K, V> Reset for FxHashMap<K, V> {
     fn with_cap(cap: usize) -> Self {
-        FxHashMap::with_capacity_and_hasher(cap, Default::default())
+        FxHashMap::with_capacity_and_hasher(cap, FxBuildHasher)
     }
     fn reset(&mut self) {
         self.clear();
@@ -38,7 +39,7 @@ impl<K, V> Reset for FxHashMap<K, V> {
 
 impl<K> Reset for FxHashSet<K> {
     fn with_cap(cap: usize) -> Self {
-        FxHashSet::with_capacity_and_hasher(cap, Default::default())
+        FxHashSet::with_capacity_and_hasher(cap, FxBuildHasher)
     }
     fn reset(&mut self) {
         self.clear();
@@ -214,11 +215,11 @@ impl SessionBump {
     }
 
     pub(crate) unsafe fn get<'a>(&self) -> &'a bumpalo::Bump {
-        unsafe { &*(&self.inner as *const bumpalo::Bump) }
+        unsafe { std::ptr::NonNull::from(&self.inner).as_ref() }
     }
 
     pub(crate) fn reset(&mut self) {
-        self.inner = bumpalo::Bump::new()
+        self.inner = bumpalo::Bump::new();
     }
 }
 
@@ -237,8 +238,8 @@ impl<'b> SessionCache<'b> {
         &mut self,
         f: impl FnOnce(&mut TcCache<'a, 'a>) -> bool,
     ) -> bool {
-        let p: *mut TcCache<'b, 'b> = &mut self.inner;
-        let r = f(unsafe { &mut *(p as *mut TcCache<'a, 'a>) });
+        let p: *mut TcCache<'b, 'b> = &raw mut self.inner;
+        let r = f(unsafe { &mut *p.cast::<TcCache<'a, 'a>>() });
         self.inner.clear_session();
         r
     }
@@ -252,7 +253,7 @@ pub(crate) fn admit_slot(k: u64) -> usize {
 }
 
 #[inline]
-pub(crate) fn tenure_slot(k: usize) -> (usize, u64) {
-    let h = (k as u64).wrapping_mul(GOLDEN) >> 16;
+pub(crate) fn tenure_slot(k: u64) -> (usize, u64) {
+    let h = k.wrapping_mul(GOLDEN) >> 16;
     (((h >> 6) as usize) & 1023, 1u64 << (h & 63))
 }

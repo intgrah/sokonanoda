@@ -98,13 +98,13 @@ pub struct ExprPtr<'a> {
     _ph: PhantomData<&'a Expr<'a>>,
 }
 
-unsafe impl<'a> Send for ExprPtr<'a> {}
-unsafe impl<'a> Sync for ExprPtr<'a> {}
+unsafe impl Send for ExprPtr<'_> {}
+unsafe impl Sync for ExprPtr<'_> {}
 
 impl<'a> ExprPtr<'a> {
     #[inline]
     fn pack(r: &'a Expr<'a>, tag: u64) -> Self {
-        let addr = r as *const Expr<'a> as usize as u64;
+        let addr = std::ptr::from_ref(r) as usize as u64;
         assert!(addr & !EXPR_ADDR_MASK == 0);
         let derived = u64::from(r.num_loose_bvars()) << EXPR_BVAR_SHIFT;
         Self {
@@ -115,7 +115,7 @@ impl<'a> ExprPtr<'a> {
 
     #[inline]
     pub(crate) fn global(r: &'a Expr<'a>, num_loose_bvars: u16) -> Self {
-        let addr = r as *const Expr<'a> as usize as u64;
+        let addr = std::ptr::from_ref(r) as usize as u64;
         assert!(addr & !EXPR_ADDR_MASK == 0);
         debug_assert_eq!(num_loose_bvars, r.num_loose_bvars());
         let bits = addr | (u64::from(num_loose_bvars) << EXPR_BVAR_SHIFT);
@@ -159,7 +159,7 @@ impl<'a> std::ops::Deref for ExprPtr<'a> {
     }
 }
 
-impl<'a> std::fmt::Debug for ExprPtr<'a> {
+impl std::fmt::Debug for ExprPtr<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -242,13 +242,13 @@ impl<'a> LevelsPtr<'a> {
 
     #[inline]
     #[allow(dead_code)]
-    pub(crate) fn get_hash(&self) -> u64 {
+    pub(crate) fn get_hash(self) -> u64 {
         self.bits.get()
     }
 }
 
-unsafe impl<'a> Send for LevelsPtr<'a> {}
-unsafe impl<'a> Sync for LevelsPtr<'a> {}
+unsafe impl Send for LevelsPtr<'_> {}
+unsafe impl Sync for LevelsPtr<'_> {}
 
 impl<'a> std::ops::Deref for LevelsPtr<'a> {
     type Target = [LevelPtr<'a>];
@@ -257,7 +257,7 @@ impl<'a> std::ops::Deref for LevelsPtr<'a> {
         self.as_ref()
     }
 }
-impl<'a> std::fmt::Debug for LevelsPtr<'a> {
+impl std::fmt::Debug for LevelsPtr<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "LevelsPtr({:?})", self.as_ref())
     }
@@ -309,7 +309,7 @@ impl<T> Ord for Id<'_, T> {
 impl<T> std::hash::Hash for Id<'_, T> {
     #[inline]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_usize(self.addr())
+        state.write_usize(self.addr());
     }
 }
 

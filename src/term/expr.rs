@@ -2,7 +2,7 @@
 use crate::checker::context::TcCtx;
 use crate::term::hash::FxHashMap;
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
-use Expr::*;
+use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use num_bigint::BigUint;
 
 pub(crate) const VAR_HASH: u64 = 281;
@@ -88,7 +88,7 @@ pub struct LetData<'a> {
     pub nondep: bool,
 }
 
-impl<'a> Expr<'a> {
+impl Expr<'_> {
     pub(crate) fn get_hash(&self) -> u64 {
         match self {
             Var { hash, .. }
@@ -104,13 +104,13 @@ impl<'a> Expr<'a> {
         }
     }
 }
-impl<'a> std::hash::Hash for Expr<'a> {
+impl std::hash::Hash for Expr<'_> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.get_hash())
+        state.write_u64(self.get_hash());
     }
 }
 
-impl<'a> crate::term::hash::RawHash for Expr<'a> {
+impl crate::term::hash::RawHash for Expr<'_> {
     #[inline]
     fn raw_hash(&self) -> u64 {
         self.get_hash()
@@ -126,7 +126,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     ) -> ExprPtr<'t> {
         for _ in 0..n {
             if let Pi { body, .. } = self.read_expr(e) {
-                e = body
+                e = body;
             } else {
                 panic!()
             }
@@ -135,7 +135,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn lift(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        if amount == 0 || self.num_loose_bvars(e) <= cutoff {
+        if amount == 0 || e.num_loose_bvars() <= cutoff {
             return e;
         }
         match self.read_expr(e) {
@@ -191,7 +191,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn lower(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        if amount == 0 || self.num_loose_bvars(e) <= cutoff {
+        if amount == 0 || e.num_loose_bvars() <= cutoff {
             return e;
         }
         match self.read_expr(e) {
@@ -252,14 +252,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// Instantiate `e` with the substitutions in `substs`
     pub fn inst(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        self.expr_cache.inst_cache.clear();
+        self.expr_cache.inst.clear();
         self.inst_aux(e, substs, 0)
     }
 
     fn inst_aux(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>], offset: u16) -> ExprPtr<'t> {
-        if self.num_loose_bvars(e) <= offset {
+        if e.num_loose_bvars() <= offset {
             e
-        } else if let Some(cached) = self.expr_cache.inst_cache.get(&(e, offset)) {
+        } else if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             *cached
         } else {
             let calcd = match self.read_expr(e) {
@@ -315,16 +315,16 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     self.mk_proj(ty_name, idx, structure)
                 }
             };
-            self.expr_cache.inst_cache.insert((e, offset), calcd);
+            self.expr_cache.inst.insert((e, offset), calcd);
             calcd
         }
     }
 
     pub(crate) fn inst_open(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        if substs.iter().all(|s| self.num_loose_bvars(*s) == 0) {
+        if substs.iter().all(|s| s.num_loose_bvars() == 0) {
             return self.inst(e, substs);
         }
-        self.expr_cache.inst_cache.clear();
+        self.expr_cache.inst.clear();
         self.inst_open_aux(e, substs, 0)
     }
 
@@ -334,10 +334,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         substs: &[ExprPtr<'t>],
         offset: u16,
     ) -> ExprPtr<'t> {
-        if self.num_loose_bvars(e) <= offset {
+        if e.num_loose_bvars() <= offset {
             return e;
         }
-        if let Some(cached) = self.expr_cache.inst_cache.get(&(e, offset)) {
+        if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             return *cached;
         }
         let calcd = match self.read_expr(e) {
@@ -392,12 +392,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.mk_proj(ty_name, idx, structure)
             }
         };
-        self.expr_cache.inst_cache.insert((e, offset), calcd);
+        self.expr_cache.inst.insert((e, offset), calcd);
         calcd
     }
 
     fn subst_aux(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
-        if let Some(cached) = self.expr_cache.subst_cache.get(&(e, ks, vs)) {
+        if let Some(cached) = self.expr_cache.subst.get(&(e, ks, vs)) {
             *cached
         } else {
             let r = match self.read_expr(e) {
@@ -451,7 +451,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     self.mk_proj(ty_name, idx, structure)
                 }
             };
-            self.expr_cache.subst_cache.insert((e, ks, vs), r);
+            self.expr_cache.subst.insert((e, ks, vs), r);
             r
         }
     }
@@ -466,13 +466,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
             return e;
         }
-        if let Some(cached) = self.expr_cache.dsubst_cache.get(&(e, ks, vs)).copied() {
+        if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)).copied() {
             return cached;
         }
-        self.expr_cache.subst_cache.clear();
+        self.expr_cache.subst.clear();
         assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
         let out = self.subst_aux(e, ks, vs);
-        self.expr_cache.dsubst_cache.insert((e, ks, vs), out);
+        self.expr_cache.dsubst.insert((e, ks, vs), out);
         out
     }
 
@@ -751,12 +751,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    /// The number of "loose" bound variables, which is the number of bound variables
-    /// in an expression which are boudn by something above it.
-    pub(crate) fn num_loose_bvars(&self, e: ExprPtr<'t>) -> u16 {
-        e.num_loose_bvars()
-    }
-
     pub(crate) fn has_loose_bvar(&self, e: ExprPtr<'t>, idx: u16) -> bool {
         if e.num_loose_bvars() <= idx {
             return false;
@@ -855,7 +849,7 @@ pub(crate) fn body_mask(body: ExprPtr<'_>) -> u64 {
     }
 }
 
-impl<'t> Expr<'t> {
+impl Expr<'_> {
     /// The number of "loose" bound variables, which is the number of bound variables
     /// in an expression which are boudn by something above it.
     pub(crate) fn num_loose_bvars(&self) -> u16 {

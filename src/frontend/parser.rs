@@ -19,20 +19,18 @@ use std::fmt;
 use std::io::BufRead;
 use std::sync::Arc;
 
-fn check_semver<'a>(meta: &FileMeta<'a>) -> Result<(), Box<dyn Error>> {
+fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     const MIN_SEMVER: semver::Version = semver::Version::new(3, 1, 0);
     const MAX_SEMVER: semver::Version = semver::Version::new(3, 2, 0);
     let export_file_semver = semver::Version::parse(&meta.format.version)?;
     if export_file_semver < MIN_SEMVER {
-        return crate::frontend::error::decline(format!(
-            "export format version is less than the minimum supported version. Found {}, but min supported is {}",
-            export_file_semver, MIN_SEMVER
-        ));
+        crate::frontend::error::decline(format!(
+            "export format version is less than the minimum supported version. Found {export_file_semver}, but min supported is {MIN_SEMVER}"
+        ))
     } else if export_file_semver >= MAX_SEMVER {
-        return crate::frontend::error::decline(format!(
-            "export format version is greater than the maximum supported version. Found {}, but max (exclusive) supported is {}",
-            export_file_semver, MAX_SEMVER
-        ));
+        crate::frontend::error::decline(format!(
+            "export format version is greater than the maximum supported version. Found {export_file_semver}, but max (exclusive) supported is {MAX_SEMVER}"
+        ))
     } else {
         Ok(())
     }
@@ -339,16 +337,16 @@ pub(crate) fn parse_export_mapped<'p>(
 ) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
     let mut parser = Parser::with_input_len(arena, std::io::empty(), config, input.len());
     parser.run_over(input)?;
-    parser.finish()
+    Ok(parser.finish())
 }
 
 const READ_CHUNK: usize = 1 << 22;
 
-pub(crate) fn parse_export_file<'p, R: BufRead>(
-    arena: &'p Bump,
+pub(crate) fn parse_export_file<R: BufRead>(
+    arena: &Bump,
     buf_reader: R,
     config: Config,
-) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
+) -> Result<(crate::checker::context::ExportFile<'_>, Vec<String>), Box<dyn Error>> {
     let mut parser = Parser::new(arena, buf_reader, config);
     let mut buf: Vec<u8> = Vec::with_capacity(2 * READ_CHUNK);
     loop {
@@ -368,7 +366,7 @@ pub(crate) fn parse_export_file<'p, R: BufRead>(
         parser.run_over(&buf)?;
     }
     drop(buf);
-    parser.finish()
+    Ok(parser.finish())
 }
 
 struct Fallback;
@@ -376,23 +374,23 @@ struct Fallback;
 const DIGIT_BIAS: u64 = 0x3030_3030_3030_3030;
 
 #[inline(always)]
-fn digit_run(unbiased: u64) -> u8 {
+fn digit_run(unbiased: u64) -> u32 {
     let non_digit =
         (unbiased.wrapping_add(0x7676_7676_7676_7676) | unbiased) & 0x8080_8080_8080_8080;
     if non_digit == 0 {
         8
     } else {
-        (non_digit.trailing_zeros() / 8) as u8
+        non_digit.trailing_zeros() / 8
     }
 }
 
 #[inline(always)]
-fn packed_digits(unbiased: u64, run: u8) -> u64 {
-    let v = unbiased << ((8 - u32::from(run)) * 8);
-    let x = v.wrapping_mul(10).wrapping_add(v >> 8);
+fn packed_digits(unbiased: u64, run: u32) -> u64 {
     const MASK: u64 = 0x0000_00FF_0000_00FF;
     const MUL1: u64 = 0x000F_4240_0000_0064;
     const MUL2: u64 = 0x0000_2710_0000_0001;
+    let v = unbiased << ((8 - run) * 8);
+    let x = v.wrapping_mul(10).wrapping_add(v >> 8);
     (((x & MASK).wrapping_mul(MUL1)).wrapping_add(((x >> 16) & MASK).wrapping_mul(MUL2))) >> 32
 }
 
@@ -424,7 +422,7 @@ const POW10: [u64; 8] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_0
 
 struct Cur<'s> {
     s: &'s [u8],
-    lim: isize,
+    fast_end: usize,
     i: usize,
     next: usize,
 }
@@ -446,14 +444,14 @@ impl<'s> Cur<'s> {
 
     #[inline(always)]
     fn uint(&mut self) -> Result<u64, Fallback> {
-        if self.i as isize <= self.lim {
+        if self.i < self.fast_end {
             let x = u64::from_le_bytes(self.s[self.i..self.i + 8].try_into().unwrap()) ^ DIGIT_BIAS;
             let run = digit_run(x);
             if run == 0 {
                 return Err(Fallback);
             }
             if run < 8 {
-                self.i += usize::from(run);
+                self.i += run as usize;
                 return Ok(packed_digits(x, run));
             }
             let hi = packed_digits(x, 8);
@@ -465,8 +463,8 @@ impl<'s> Cur<'s> {
                 ^ DIGIT_BIAS;
             let run = digit_run(x);
             if run < 8 {
-                self.i += 8 + usize::from(run);
-                return Ok(hi * POW10[usize::from(run)] + packed_digits(x, run));
+                self.i += 8 + run as usize;
+                return Ok(hi * POW10[run as usize] + packed_digits(x, run));
             }
         }
         let (x, i) = uint_slow(self.s, self.i)?;
@@ -813,22 +811,22 @@ impl<'a, R: BufRead> Parser<'a, R> {
         )
     }
 
-    fn name_to_string(&self, n: NamePtr<'a>) -> String {
+    fn name_to_string(n: NamePtr<'a>) -> String {
         match n.as_ref().kind {
             Name::Anon => String::new(),
             Name::Str(pfx, sfx, _) => {
-                let mut s = self.name_to_string(pfx);
+                let mut s = Self::name_to_string(pfx);
                 if !s.is_empty() {
                     s.push('.');
                 }
                 s + sfx.as_ref()
             }
             Name::Num(pfx, sfx, _) => {
-                let mut s = self.name_to_string(pfx);
+                let mut s = Self::name_to_string(pfx);
                 if !s.is_empty() {
                     s.push('.');
                 }
-                s + format!("{}", sfx).as_str()
+                s + format!("{sfx}").as_str()
             }
         }
     }
@@ -865,9 +863,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         out
     }
 
-    fn finish(
-        self,
-    ) -> Result<(crate::checker::context::ExportFile<'a>, Vec<String>), Box<dyn Error>> {
+    fn finish(self) -> (crate::checker::context::ExportFile<'a>, Vec<String>) {
         let name_cache = self.dag.mk_name_cache(self.anon);
         let export_file = crate::checker::context::ExportFile {
             dag: self.dag,
@@ -879,20 +875,20 @@ impl<'a, R: BufRead> Parser<'a, R> {
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,
         };
-        Ok((export_file, self.warned_axioms))
+        (export_file, self.warned_axioms)
     }
 
     fn fast_line(&mut self, s: &[u8], pos: usize, idxs: &mut Vec<u32>) -> Result<usize, FastError> {
         if s.len() - pos < 8 {
             return Err(FastError::Fallback);
         }
-        let lim = s.len() as isize - 16;
+        let fast_end = s.len().saturating_sub(15);
         if s[pos + 2] != b'a' {
-            return self.other_line(s, lim, pos, idxs);
+            return self.other_line(s, fast_end, pos, idxs);
         }
         let mut c = Cur {
             s,
-            lim,
+            fast_end,
             i: pos,
             next: 0,
         };
@@ -911,13 +907,13 @@ impl<'a, R: BufRead> Parser<'a, R> {
     fn other_line(
         &mut self,
         s: &[u8],
-        lim: isize,
+        fast_end: usize,
         pos: usize,
         idxs: &mut Vec<u32>,
     ) -> Result<usize, FastError> {
         let mut c = Cur {
             s,
-            lim,
+            fast_end,
             i: pos,
             next: 0,
         };
@@ -945,7 +941,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                                 c.lit(b",\"type\":")?;
                                 let binder_type = c.uint_u32()?;
                                 c.close(b"}}")?;
-                                Ok(self.do_lambda(BackRef::Ie(i), binder_type, body))
+                                self.do_lambda(BackRef::Ie(i), binder_type, body);
+                                Ok(())
                             }
                             b'e' => {
                                 c.lit(b"letE\":{\"body\":")?;
@@ -959,7 +956,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                                 c.lit(b",\"value\":")?;
                                 let val = c.uint_u32()?;
                                 c.close(b"}}")?;
-                                Ok(self.do_let(BackRef::Ie(i), binder_type, val, body, nondep))
+                                self.do_let(BackRef::Ie(i), binder_type, val, body, nondep);
+                                Ok(())
                             }
                             _ => Err(FastError::Fallback),
                         },
@@ -983,14 +981,16 @@ impl<'a, R: BufRead> Parser<'a, R> {
                             c.lit(b",\"typeName\":")?;
                             let ty_name = c.uint_u32()?;
                             c.close(b"}}")?;
-                            Ok(self.do_proj(BackRef::Ie(i), ty_name, idx, structure))
+                            self.do_proj(BackRef::Ie(i), ty_name, idx, structure);
+                            Ok(())
                         }
                         b's' => match c.peek(1)? {
                             b'o' => {
                                 c.lit(b"sort\":")?;
                                 let level = c.uint_u32()?;
                                 c.close(b"}")?;
-                                Ok(self.do_sort(BackRef::Ie(i), level))
+                                self.do_sort(BackRef::Ie(i), level);
+                                Ok(())
                             }
                             b't' => {
                                 c.lit(b"strVal\":")?;
@@ -1015,7 +1015,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                             c.lit(b",")?;
                             let r = c.uint_u32()?;
                             c.close(b"]}")?;
-                            Ok(self.do_imax(BackRef::Il(i), l, r))
+                            self.do_imax(BackRef::Il(i), l, r);
+                            Ok(())
                         }
                         b'm' => {
                             c.lit(b"max\":[")?;
@@ -1023,19 +1024,22 @@ impl<'a, R: BufRead> Parser<'a, R> {
                             c.lit(b",")?;
                             let r = c.uint_u32()?;
                             c.close(b"]}")?;
-                            Ok(self.do_max(BackRef::Il(i), l, r))
+                            self.do_max(BackRef::Il(i), l, r);
+                            Ok(())
                         }
                         b'p' => {
                             c.lit(b"param\":")?;
                             let n = c.uint_u32()?;
                             c.close(b"}")?;
-                            Ok(self.do_level_param(BackRef::Il(i), n))
+                            self.do_level_param(BackRef::Il(i), n);
+                            Ok(())
                         }
                         b's' => {
                             c.lit(b"succ\":")?;
                             let l = c.uint_u32()?;
                             c.close(b"}")?;
-                            Ok(self.do_succ(BackRef::Il(i), l))
+                            self.do_succ(BackRef::Il(i), l);
+                            Ok(())
                         }
                         _ => Err(FastError::Fallback),
                     }
@@ -1051,7 +1055,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                             c.lit(b",\"pre\":")?;
                             let pre = c.uint_u32()?;
                             c.close(b"}}")?;
-                            Ok(self.do_name_num(BackRef::In(i), pre, u64::from(n)))
+                            self.do_name_num(BackRef::In(i), pre, u64::from(n));
+                            Ok(())
                         }
                         b's' => {
                             c.lit(b"str\":{\"pre\":")?;
@@ -1059,7 +1064,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                             c.lit(b",\"str\":")?;
                             let string = c.quoted_str()?;
                             c.close(b"}}")?;
-                            Ok(self.do_name_str(BackRef::In(i), pre, string))
+                            self.do_name_str(BackRef::In(i), pre, string);
+                            Ok(())
                         }
                         _ => Err(FastError::Fallback),
                     }
@@ -1083,7 +1089,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 c.lit(b"},\"ie\":")?;
                 let i = c.uint_u32()?;
                 c.close(b"}")?;
-                Ok(self.do_const(BackRef::Ie(i), name, idxs))
+                self.do_const(BackRef::Ie(i), name, idxs);
+                Ok(())
             }
             b'd' => {
                 c.lit(b"{\"def\":{\"all\":")?;
@@ -1099,7 +1106,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 c.lit(b",\"value\":")?;
                 let val = c.uint_u32()?;
                 c.close(b"}}")?;
-                Ok(self.do_def(name, ty, val, idxs, hint))
+                self.do_def(name, ty, val, idxs, hint);
+                Ok(())
             }
             b'f' => {
                 c.lit(b"{\"forallE\":{\"binderInfo\":")?;
@@ -1113,7 +1121,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 c.lit(b"},\"ie\":")?;
                 let i = c.uint_u32()?;
                 c.close(b"}")?;
-                Ok(self.do_pi(BackRef::Ie(i), binder_type, body))
+                self.do_pi(BackRef::Ie(i), binder_type, body);
+                Ok(())
             }
             b't' => {
                 c.lit(b"{\"thm\":{\"all\":")?;
@@ -1127,7 +1136,8 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 c.lit(b",\"value\":")?;
                 let val = c.uint_u32()?;
                 c.close(b"}}")?;
-                Ok(self.do_thm(name, ty, val, idxs))
+                self.do_thm(name, ty, val, idxs);
+                Ok(())
             }
             _ => Err(FastError::Fallback),
         }
@@ -1381,7 +1391,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let ty = self.get_expr_ptr(ty);
         let val = self.get_expr_ptr(value);
         let uparams = self.get_uparams_ptr(uparams);
-        let info = DeclarInfo { name, ty, uparams };
+        let info = DeclarInfo { name, uparams, ty };
         let definition = Declar::Definition { info, val, hint };
         self.add_declar(name, definition);
     }
@@ -1392,23 +1402,27 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let ty = self.get_expr_ptr(ty);
         let val = self.get_expr_ptr(value);
         let uparams = self.get_uparams_ptr(uparams);
-        let info = DeclarInfo { name, ty, uparams };
+        let info = DeclarInfo { name, uparams, ty };
         let theorem = Declar::Theorem { info, val };
         self.add_declar(name, theorem);
     }
 
     fn go1_general(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
-        use ExportJsonVal::*;
+        use ExportJsonVal::{
+            Axiom, Defn, ExprApp, ExprBVar, ExprConst, ExprLambda, ExprLet, ExprMData, ExprPi,
+            ExprProj, ExprSort, Inductive, LevelIMax, LevelMax, LevelParam, LevelSucc, Metadata,
+            NameNum, NameStr, NatLit, Opaque, Quot, StrLit, Thm,
+        };
         let ExportJsonObject {
             val,
             i: assigned_idx,
         } = serde_json::from_str::<ExportJsonObject>(line)?;
         match val {
             Metadata(json_val) => {
-                let _ = check_semver(&json_val)?;
+                check_semver(&json_val)?;
             }
             NameStr { pre, str } => self.do_name_str(assigned_idx.unwrap(), pre, &str),
-            NameNum { pre, i } => self.do_name_num(assigned_idx.unwrap(), pre, i as u64),
+            NameNum { pre, i } => self.do_name_num(assigned_idx.unwrap(), pre, u64::from(i)),
             NatLit(big_uint) => self.do_nat_lit(assigned_idx.unwrap(), big_uint)?,
             StrLit(cow_str) => self.do_str_lit(assigned_idx.unwrap(), &cow_str)?,
             LevelSucc(l) => self.do_succ(assigned_idx.unwrap(), l),
@@ -1423,7 +1437,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             ExprApp { fun, arg } => self.do_app(assigned_idx.unwrap(), fun, arg),
             ExprBVar(dbj_idx) => self.do_bvar(assigned_idx.unwrap(), dbj_idx)?,
             ExprLambda { binder_type, body } => {
-                self.do_lambda(assigned_idx.unwrap(), binder_type, body)
+                self.do_lambda(assigned_idx.unwrap(), binder_type, body);
             }
             ExprPi { binder_type, body } => self.do_pi(assigned_idx.unwrap(), binder_type, body),
             ExprLet {
@@ -1447,9 +1461,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let name = self.get_name_ptr(name);
                 let uparams = self.get_uparams_ptr(&uparams);
                 let ty = self.get_expr_ptr(ty);
-                let info = DeclarInfo { name, ty, uparams };
+                let info = DeclarInfo { name, uparams, ty };
                 let axiom = Declar::Axiom { info };
-                let name_string = self.name_to_string(name);
+                let name_string = Self::name_to_string(name);
                 match self.config.axiom_policy.decision(&name_string) {
                     AxiomDecision::Allow => self.add_declar(name, axiom),
                     AxiomDecision::Warn => {
@@ -1458,8 +1472,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     }
                     AxiomDecision::Reject => {
                         return Err(format!(
-                            "export file declares disallowed axiom {:?}",
-                            name_string
+                            "export file declares disallowed axiom {name_string:?}"
                         )
                         .into());
                     }
@@ -1497,7 +1510,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let ty = self.get_expr_ptr(ty);
                 let val = self.get_expr_ptr(value);
                 let uparams = self.get_uparams_ptr(&uparams);
-                let info = DeclarInfo { name, ty, uparams };
+                let info = DeclarInfo { name, uparams, ty };
                 let definition = Declar::Opaque { info, val };
                 self.add_declar(name, definition);
             }
@@ -1507,7 +1520,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
                 let uparams = self.get_uparams_ptr(&uparams);
-                let info = DeclarInfo { name, ty, uparams };
+                let info = DeclarInfo { name, uparams, ty };
                 let quot = Declar::Quot { info };
                 self.add_declar(name, quot);
             }
@@ -1567,7 +1580,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
                     let uparams = self.get_uparams_ptr(&uparams);
-                    let info = DeclarInfo { name, ty, uparams };
+                    let info = DeclarInfo { name, uparams, ty };
                     let parent_inductive = self.get_name_ptr(induct);
                     let ctor_idx = cidx;
                     let ctor = Declar::Constructor(ConstructorData {
@@ -1598,7 +1611,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
                     let uparams = self.get_uparams_ptr(&uparams);
-                    let info = DeclarInfo { name, ty, uparams };
+                    let info = DeclarInfo { name, uparams, ty };
                     let rules = rules
                         .into_iter()
                         .map(
@@ -1629,7 +1642,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
 }
 
 /// Needed because the lean4export format serializes nat literals as strings:
-/// https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186
+/// <https://github.com/leanprover/lean4export/blob/ddeb0869b0b5679b0104e16291ffd929fbaa6a48/format_ndjson.md?plain=1#L186>
 fn deserialize_biguint_from_string<'de, D>(deserializer: D) -> Result<BigUint, D::Error>
 where
     D: Deserializer<'de>,
@@ -1637,7 +1650,7 @@ where
     use std::str::FromStr;
     struct BigUintStringVisitor;
 
-    impl<'de> Visitor<'de> for BigUintStringVisitor {
+    impl Visitor<'_> for BigUintStringVisitor {
         type Value = BigUint;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1687,10 +1700,10 @@ mod semver_tests {
         let too_big = ["4.0.0", "4.1.0", "3.2.0", "3.2.1"];
 
         for v in too_small {
-            assert!(check_semver(&mk_meta(v)).is_err())
+            assert!(check_semver(&mk_meta(v)).is_err());
         }
         for v in too_big {
-            assert!(check_semver(&mk_meta(v)).is_err())
+            assert!(check_semver(&mk_meta(v)).is_err());
         }
     }
 
@@ -1698,7 +1711,7 @@ mod semver_tests {
     fn format_version_valid() {
         let ok = ["3.1.0", "3.1.9"];
         for v in ok {
-            assert!(check_semver(&mk_meta(v)).is_ok())
+            assert!(check_semver(&mk_meta(v)).is_ok());
         }
     }
 }

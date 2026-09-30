@@ -4,8 +4,8 @@ use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 
-use Expr::*;
-use InferFlag::*;
+use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
+use InferFlag::{Check, InferOnly};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CheckScope<'a> {
@@ -46,7 +46,7 @@ fn has_deep_bvar_prefix(mut env: E<'_>) -> bool {
     true
 }
 
-impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
+impl<'t> TypeChecker<'_, 't, '_> {
     fn uparam_scope(&self) -> CheckScope<'t> {
         match self.declar_info {
             Some(info) => CheckScope::Under(info.uparams),
@@ -150,7 +150,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     atomic_type(bt)
                         && bt.is_closed()
                         && std::ptr::eq(*bt, dom)
-                        && self.ctx.num_loose_bvars(binder_type) == 0
+                        && binder_type.num_loose_bvars() == 0
                         && has_deep_bvar_prefix(env)
                 }) {
                     Some(_) => Closure::mk_eval(self.empty_env(), binder_type),
@@ -239,7 +239,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     "app arg def_eq failed"
                 );
             }
-            if body.ctx.is_none() && self.ctx.num_loose_bvars(body.body) == 0 {
+            if body.ctx.is_none() && body.body.num_loose_bvars() == 0 {
                 fty = self.eval(depth, body.env, body.body);
             } else if crate::term::expr::ignores_binder(body.body) {
                 fty = self.apply_closure(depth, body, domain, Some(domain));
@@ -304,7 +304,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         for p in params.iter().take(num_params).copied() {
             match self.force_all(depth, cur) {
                 Value::Pi { domain, body, .. } => {
-                    cur = self.apply_closure(depth, body, p, Some(*domain))
+                    cur = self.apply_closure(depth, body, p, Some(*domain));
                 }
                 _ => panic!("ran out of param telescope in projection"),
             }
@@ -326,10 +326,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         }
         match self.force_all(depth, cur) {
             Value::Pi { domain, .. } => {
-                if struct_ty_is_prop && !self.is_prop_type(depth, domain) {
-                    panic!("projection of a non-proof field from a Prop structure")
-                }
-                *domain
+                assert!(
+                    !struct_ty_is_prop || self.is_prop_type(depth, domain),
+                    "projection of a non-proof field from a Prop structure"
+                );
+                domain
             }
             _ => panic!("ran out of constructor telescope getting projection field"),
         }
