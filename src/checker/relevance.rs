@@ -140,10 +140,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn absent_args(&mut self, name: NamePtr<'t>) -> u64 {
-        let Some((_, val)) = self.env.get_declar_val(&name) else {
+        let Some((_, val)) = self.env.get_declar_val(name) else {
             return 0;
         };
-        let Some(decl) = self.env.get_declar(&name) else {
+        let Some(decl) = self.env.get_declar(name) else {
             return 0;
         };
         let ty = decl.info().ty;

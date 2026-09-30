@@ -1,3 +1,4 @@
+use crate::term::expr::Expr;
 use crate::term::hash::FxIndexMap;
 use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
 use serde::Deserialize;
@@ -252,10 +253,10 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Retrieve a declaration by first checking the contents of any temporary extension,
     /// then checking the persistent environment.
-    pub fn get_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
+    pub fn get_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
         self.temp_declars
             .as_ref()
-            .and_then(|ext| ext.get(n))
+            .and_then(|ext| ext.get(&n))
             .or_else(|| self.get_old_declar(n))
     }
 
@@ -264,13 +265,13 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 
     /// Get a declaration, only looking in the temporary extension.
-    pub fn get_temp_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
-        self.temp_declars.as_ref().and_then(|ext| ext.get(n))
+    pub fn get_temp_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
+        self.temp_declars.as_ref().and_then(|ext| ext.get(&n))
     }
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
-    pub fn get_old_declar(&self, n: &NamePtr<'a>) -> Option<&Declar<'a>> {
+    pub fn get_old_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
         let idx = n.as_ref().decl_idx() as usize;
         if idx < self.cutoff {
             Some(&self.declars[idx])
@@ -279,14 +280,14 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         }
     }
 
-    pub fn get_inductive(&self, n: &NamePtr<'a>) -> Option<&InductiveData<'a>> {
+    pub fn get_inductive(&self, n: NamePtr<'a>) -> Option<&InductiveData<'a>> {
         match self.get_declar(n) {
             Some(Declar::Inductive(i)) => Some(i),
             _ => None,
         }
     }
 
-    pub fn get_recursor(&self, n: &NamePtr<'a>) -> Option<&RecursorData<'a>> {
+    pub fn get_recursor(&self, n: NamePtr<'a>) -> Option<&RecursorData<'a>> {
         match self.get_declar(n) {
             Some(Declar::Recursor(r)) => Some(r),
             _ => None,
@@ -294,7 +295,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 
     #[inline]
-    pub fn get_constructor(&self, n: &NamePtr<'a>) -> Option<&ConstructorData<'a>> {
+    pub fn get_constructor(&self, n: NamePtr<'a>) -> Option<&ConstructorData<'a>> {
         match self.get_declar(n) {
             Some(Declar::Constructor(c)) => Some(c),
             _ => None,
@@ -310,7 +311,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 
     pub(crate) fn get_structure(&self, n: NamePtr<'a>, rec_ok: bool) -> Option<&InductiveData<'a>> {
-        match self.get_inductive(&n) {
+        match self.get_inductive(n) {
             Some(
                 i @ InductiveData {
                     is_recursive,
@@ -330,11 +331,27 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Get the value of a declaration, if that declaration has an associated value (only
     /// definitions and theorems have values). Also returns the declaration's universe parameters.
-    pub fn get_declar_val(&self, n: &NamePtr<'a>) -> Option<(LevelsPtr<'a>, ExprPtr<'a>)> {
+    pub fn get_declar_val(&self, n: NamePtr<'a>) -> Option<(LevelsPtr<'a>, ExprPtr<'a>)> {
         match self.get_declar(n)? {
             Declar::Definition { info, val, .. } | Declar::Theorem { info, val, .. } => {
                 Some((info.uparams, *val))
             }
+            _ => None,
+        }
+    }
+}
+
+impl<'t> RecursorData<'t> {
+    /// Get the name of the inductive type which is the major premise for this recursor
+    /// by finding the correct binder in the recursor's type.
+    pub fn get_major_induct(&self) -> Option<NamePtr<'t>> {
+        match self
+            .info
+            .ty
+            .get_nth_pi_binder(self.major_idx())
+            .map(|x| *x.unfold_apps_fun())
+        {
+            Some(Expr::Const { name, .. }) => Some(name),
             _ => None,
         }
     }

@@ -1,16 +1,16 @@
 use crate::checker::cache::memo;
 use crate::checker::env::{Declar, RecursorData};
+use crate::checker::eval::nat_red_defer;
 use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
-use crate::checker::value::{self, Elim, ElimView, RigidHead, S, Spine, V, Value};
+use crate::checker::value::SpineArgs;
+use crate::checker::value::{self, Elim, ElimView, RigidHead, Spine, V, Value};
 use crate::outcome::reject;
 use crate::term::ptr::{BigUintPtr, Id, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
-
-type SpineArgs<'t> = smallvec::SmallVec<[V<'t>; 8]>;
 
 enum ForceStep<'a> {
     Reduced(V<'a>),
@@ -21,7 +21,7 @@ enum ForceStep<'a> {
 impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn ctor_shape(&mut self, name: NamePtr<'t>) -> Option<(u16, u16, NamePtr<'t>)> {
         self.env
-            .get_constructor(&name)
+            .get_constructor(name)
             .map(|c| (c.num_params, c.num_fields, c.inductive_name))
     }
 
@@ -108,7 +108,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let aa = self.spine_apps(spine)?;
+                let aa = spine.apps()?;
                 (*n, *ls, aa)
             }
             _ => return None,
@@ -118,7 +118,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let ind = self.env.get_structure(ind_name, true)?;
         let ctor_name = ind.all_ctor_names[0];
-        let ctor_info = match self.env.get_declar(&ctor_name)? {
+        let ctor_info = match self.env.get_declar(ctor_name)? {
             Declar::Constructor(c) => c.info,
             _ => return None,
         };
@@ -223,10 +223,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 ..
             } => {
                 let env = self.env;
-                let Some(rec) = env.get_recursor(name) else {
+                let Some(rec) = env.get_recursor(*name) else {
                     return ForceStep::Done;
                 };
-                let Some(args) = self.spine_apps(spine) else {
+                let Some(args) = spine.apps() else {
                     return ForceStep::Done;
                 };
                 if args.len() <= rec.major_idx() {
@@ -262,7 +262,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return ForceStep::Done;
                 };
                 let name = *name;
-                let Some(args) = self.spine_apps(spine) else {
+                let Some(args) = spine.apps() else {
                     return ForceStep::Done;
                 };
                 let Some(&major) = args.get(qmk_pos) else {
@@ -325,8 +325,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 ..
             } => {
                 let env = self.env;
-                let rec = env.get_recursor(name)?;
-                let args = self.spine_apps(spine)?;
+                let rec = env.get_recursor(*name)?;
+                let args = spine.apps()?;
                 if args.len() <= rec.major_idx() {
                     return None;
                 }
@@ -337,7 +337,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(spine)?;
+                let args = spine.apps()?;
                 self.fire_quot(depth, *name, &args, major)
             }
             _ => None,
@@ -366,13 +366,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             if self.nat_extension
                 && head.name.as_ref().is_nat_red()
-                && let Some(args) = self.spine_apps(spine)
+                && let Some(args) = spine.apps()
             {
                 if let Some(r) = self.do_nat_red(depth, head.name, &args) {
                     let _ = forced.set(r);
                     return r;
                 }
-                if !force && self.nat_red_defer(head.name, &args) {
+                if !force && nat_red_defer(head.name, &args) {
                     return v;
                 }
             }
@@ -424,7 +424,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(spine)?;
+                let args = spine.apps()?;
                 self.do_recursor_iota(depth, *name, *levels, &args)
             }
             Value::Rigid {
@@ -432,7 +432,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(spine)?;
+                let args = spine.apps()?;
                 self.do_quot_iota(depth, *name, &args)
             }
             _ => None,
@@ -465,18 +465,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         Some(v)
     }
 
-    pub(crate) fn spine_apps(&mut self, spine: S<'t>) -> Option<SpineArgs<'t>> {
-        let mut out = SpineArgs::with_capacity(spine.len() as usize);
-        for elim in spine.elims_rev() {
-            let ElimView::App(a) = elim.view() else {
-                return None;
-            };
-            out.push(a);
-        }
-        out.reverse();
-        Some(out)
-    }
-
     fn do_recursor_iota(
         &mut self,
         depth: u32,
@@ -485,7 +473,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         args: &[V<'t>],
     ) -> Option<V<'t>> {
         let env = self.env;
-        let rec = env.get_recursor(&name)?;
+        let rec = env.get_recursor(name)?;
         if args.len() <= rec.major_idx() {
             return None;
         }
@@ -530,7 +518,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             .or_else(|| self.try_k_reduce(depth, major, rec))
             .or_else(|| self.try_struct_eta_reduce(depth, major, rec))
             .unwrap_or(major);
-        let (ctor_name, ctor_args) = self.unwrap_ctor_app(major)?;
+        let (ctor_name, ctor_args) = major.as_ctor_app()?;
         let rec_rule = rec
             .rec_rules
             .iter()
@@ -600,7 +588,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if !matches!(major, Value::Rigid { .. } | Value::Unfold { .. }) {
             return None;
         }
-        let rec_induct = self.ctx.get_major_induct(rec)?;
+        let rec_induct = rec.get_major_induct()?;
         if !self.can_be_struct_memo(rec_induct) {
             return None;
         }
@@ -620,13 +608,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
     ) -> Option<V<'t>> {
         let major_ty = self.value_type(depth, major);
         let major_ty_f = self.force_all(depth, major_ty);
-        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(major_ty_f)?;
+        let (ty_name, ty_levels, ty_args) = major_ty_f.as_inductive_app()?;
         if ty_name != rec_induct {
             return None;
         }
-        let ind = self.env.get_inductive(&ty_name)?;
+        let ind = self.env.get_inductive(ty_name)?;
         let ctor_name = ind.all_ctor_names[0];
-        let ctor_data = self.env.get_constructor(&ctor_name)?;
+        let ctor_data = self.env.get_constructor(ctor_name)?;
         let num_fields = ctor_data.num_fields;
         let np = usize::from(rec.num_params);
         let mut new_ctor = value::mk_rigid_head_with_empty(
@@ -653,12 +641,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let major_ty = self.value_type(depth, major);
         let major_ty_f = self.force_all(depth, major_ty);
-        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(major_ty_f)?;
-        let rec_induct = self.ctx.get_major_induct(rec)?;
+        let (ty_name, ty_levels, ty_args) = major_ty_f.as_inductive_app()?;
+        let rec_induct = rec.get_major_induct()?;
         if ty_name != rec_induct {
             return None;
         }
-        let ind = self.env.get_inductive(&ty_name)?;
+        let ind = self.env.get_inductive(ty_name)?;
         let ctor_name = ind.all_ctor_names[0];
         let np = usize::from(rec.num_params);
         let ctor_self = rec
@@ -680,23 +668,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return None;
         }
         Some(new_ctor)
-    }
-
-    fn unwrap_inductive_app(
-        &mut self,
-        v: V<'t>,
-    ) -> Option<(NamePtr<'t>, LevelsPtr<'t>, SpineArgs<'t>)> {
-        match v {
-            Value::Rigid {
-                head: RigidHead::Inductive(n, ls),
-                spine,
-                ..
-            } => {
-                let args = self.spine_apps(spine)?;
-                Some((*n, *ls, args))
-            }
-            _ => None,
-        }
     }
 
     fn major_to_ctor(&mut self, depth: u32, major: V<'t>) -> Option<V<'t>> {
@@ -742,20 +713,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn unwrap_ctor_app(&mut self, v: V<'t>) -> Option<(NamePtr<'t>, SpineArgs<'t>)> {
-        match v {
-            Value::Rigid {
-                head: RigidHead::Ctor(name, _),
-                spine,
-                ..
-            } => {
-                let args = self.spine_apps(spine)?;
-                Some((*name, args))
-            }
-            _ => None,
-        }
-    }
-
     fn do_quot_iota(&mut self, depth: u32, c_name: NamePtr<'t>, args: &[V<'t>]) -> Option<V<'t>> {
         let cache = self.ctx.export_file.name_cache;
         let qmk_pos = if Some(c_name) == cache.quot_lift {
@@ -795,7 +752,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if Some(qmk_head) != cache.quot_mk {
             return None;
         }
-        let qmk_args = self.spine_apps(qmk_spine)?;
+        let qmk_args = qmk_spine.apps()?;
         if qmk_args.len() != 3 {
             return None;
         }

@@ -41,15 +41,6 @@ impl crate::term::hash::RawHash for Level<'_> {
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    pub(crate) fn level_succs(&self, mut l: LevelPtr<'t>) -> (LevelPtr<'t>, usize) {
-        let mut num_succs = 0usize;
-        while let Succ(pred, ..) = *l {
-            l = pred;
-            num_succs += 1;
-        }
-        (l, num_succs)
-    }
-
     fn combining(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
         match (*l, *r) {
             (Zero, _) => r,
@@ -97,23 +88,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         };
         self.expr_cache.simplify.insert(ptr, result);
         result
-    }
-
-    /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
-    pub(crate) fn no_dupes_all_params(&mut self, ls: LevelsPtr<'t>) -> bool {
-        let mut set = crate::term::hash::new_fx_hash_set();
-        for l in ls.as_ref().iter().copied() {
-            match *l {
-                Param(..) => {
-                    if set.contains(&l) {
-                        return false;
-                    }
-                    set.insert(l);
-                }
-                _ => return false,
-            }
-        }
-        true
     }
 
     /// Return `uparams [ks |-> vs]` for a list of uparams
@@ -167,27 +141,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    /// for some level `l` and list of params `ps`, assert that:\
-    /// `forall Param(n) e. l, n e. params`
-    pub(crate) fn all_uparams_defined(&self, level: LevelPtr<'t>, params: LevelsPtr<'t>) -> bool {
-        match *level {
-            Zero => true,
-            Succ(val, ..) => self.all_uparams_defined(val, params),
-            Max(l, r, ..) | IMax(l, r, ..) => {
-                self.all_uparams_defined(l, params) && self.all_uparams_defined(r, params)
-            }
-            Param(..) => params.as_ref().iter().copied().any(|x| x == level),
-        }
-    }
-
-    fn is_any_max(&self, level: LevelPtr<'t>) -> bool {
-        matches!(*level, Max(..) | IMax(..))
-    }
-
-    fn is_param(&self, level: LevelPtr<'t>) -> bool {
-        matches!(*level, Param(..))
-    }
-
     fn subst_simp(
         &mut self,
         level: LevelPtr<'t>,
@@ -237,11 +190,11 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             }
             (Zero, Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
             (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) && diff >= 0 => true,
-            (IMax(_, b, _), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
+            (IMax(_, b, _), _) if b.is_param() => self.leq_imax_by_cases(b, l_in, r_in, diff),
 
-            (_, IMax(_, y, _)) if self.is_param(y) => self.leq_imax_by_cases(y, l_in, r_in, diff),
+            (_, IMax(_, y, _)) if y.is_param() => self.leq_imax_by_cases(y, l_in, r_in, diff),
 
-            (IMax(a, b, ..), _) if self.is_any_max(b) => match *b {
+            (IMax(a, b, ..), _) if b.is_any_max() => match *b {
                 IMax(x, y, ..) => {
                     let new_lhs = self.imax(a, y);
                     let new_rhs = self.imax(x, y);
@@ -257,7 +210,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 }
                 _ => panic!(),
             },
-            (_, IMax(x, y, ..)) if self.is_any_max(y) => match *y {
+            (_, IMax(x, y, ..)) if y.is_any_max() => match *y {
                 IMax(j, k, ..) => {
                     let new_lhs = self.imax(x, k);
                     let new_rhs = self.imax(j, k);
@@ -305,16 +258,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             .all(|(x, y)| self.eq_antisymm(x, y))
     }
 
-    /// Does this list of universe parameters already contain `Param(n)` for some `n : Name`
-    ///
-    /// Used for generating a unique elim universe in the inductive module
-    pub(crate) fn contains_param(&self, uparams: LevelsPtr<'t>, candidate: NamePtr<'t>) -> bool {
-        uparams.as_ref().iter().copied().any(|lptr| match *lptr {
-            Param(n, ..) => n == candidate,
-            _ => false,
-        })
-    }
-
     fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
         match *l {
             Level::Succ(pred, _) => self.is_zero(pred),
@@ -333,6 +276,67 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let zero = self.zero();
         let one = self.succ(zero);
         self.leq(one, level)
+    }
+}
+
+impl<'t> LevelPtr<'t> {
+    pub(crate) fn level_succs(mut self) -> (LevelPtr<'t>, usize) {
+        let mut num_succs = 0usize;
+        while let Succ(pred, ..) = *self {
+            self = pred;
+            num_succs += 1;
+        }
+        (self, num_succs)
+    }
+
+    /// for some level `l` and list of params `ps`, assert that:\
+    /// `forall Param(n) e. l, n e. params`
+    pub(crate) fn all_uparams_defined(self, params: LevelsPtr<'t>) -> bool {
+        match *self {
+            Zero => true,
+            Succ(val, ..) => val.all_uparams_defined(params),
+            Max(l, r, ..) | IMax(l, r, ..) => {
+                l.all_uparams_defined(params) && r.all_uparams_defined(params)
+            }
+            Param(..) => params.as_ref().iter().copied().any(|x| x == self),
+        }
+    }
+
+    fn is_any_max(self) -> bool {
+        matches!(*self, Max(..) | IMax(..))
+    }
+
+    fn is_param(self) -> bool {
+        matches!(*self, Param(..))
+    }
+}
+
+impl<'t> LevelsPtr<'t> {
+    /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
+    pub(crate) fn no_dupes_all_params(self) -> bool {
+        let mut set = crate::term::hash::new_fx_hash_set();
+        for l in self.as_ref().iter().copied() {
+            match *l {
+                Param(..) => {
+                    if set.contains(&l) {
+                        return false;
+                    }
+                    set.insert(l);
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Does this list of universe parameters already contain `Param(n)` for some `n : Name`
+    ///
+    /// Used for generating a unique elim universe in the inductive module
+    pub(crate) fn contains_param(self, candidate: NamePtr<'t>) -> bool {
+        self.as_ref().iter().copied().any(|lptr| match *lptr {
+            Param(n, ..) => n == candidate,
+            _ => false,
+        })
     }
 }
 
@@ -543,7 +547,7 @@ mod tests {
             let z = ctx.zero();
             let s = ctx.succ(z);
             let ss = ctx.succ(s);
-            let (z_, num) = ctx.level_succs(ss);
+            let (z_, num) = ss.level_succs();
             assert_eq!(z_, z);
             assert_eq!(num, 2);
             assert_eq!("2", format!("{:?}", ctx.debug_print(ss)));
@@ -557,7 +561,7 @@ mod tests {
             let s = ctx.succ(z);
             let m = ctx.max(s, s);
             let sm = ctx.succ(m);
-            let (m_, num) = ctx.level_succs(sm);
+            let (m_, num) = sm.level_succs();
             assert_eq!(m, m_);
             assert_eq!(num, 1);
             assert_eq!("max(1, 1) + 1", format!("{:?}", ctx.debug_print(sm)));

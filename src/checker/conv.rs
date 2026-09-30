@@ -615,7 +615,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn unfold_hint(&mut self, name: NamePtr<'t>) -> ReducibilityHint {
-        match self.env.get_declar(&name) {
+        match self.env.get_declar(name) {
             Some(Declar::Definition { hint, .. }) => *hint,
             _ => ReducibilityHint::Opaque,
         }
@@ -835,7 +835,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if inductive_name != ind_name {
             return false;
         }
-        let yargs = match self.spine_apps(yspine) {
+        let yargs = match yspine.apps() {
             Some(v) if v.len() == usize::from(num_params) + usize::from(num_fields) => v,
             _ => return false,
         };
@@ -853,7 +853,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let Some(ind) = self.env.get_structure(ind_name, false) else {
             return false;
         };
-        let Some(ctor) = self.env.get_constructor(&ind.all_ctor_names[0]) else {
+        let Some(ctor) = self.env.get_constructor(ind.all_ctor_names[0]) else {
             return false;
         };
         ctor.num_fields == 0

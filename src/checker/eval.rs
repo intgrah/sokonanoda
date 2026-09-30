@@ -227,7 +227,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         match *head {
             RigidHead::Recursor(name, levels) => {
                 let env = self.env;
-                let rec = env.get_recursor(&name)?;
+                let rec = env.get_recursor(name)?;
                 let major = *args.get(rec.major_idx())?;
                 match major {
                     Value::Rigid {
@@ -262,7 +262,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn const_kind(&mut self, name: NamePtr<'t>) -> ConstKind {
-        match self.env.get_declar(&name) {
+        match self.env.get_declar(name) {
             Some(Declar::Definition { .. } | Declar::Theorem { .. }) => ConstKind::Unfoldable,
             Some(Declar::Constructor(_)) => ConstKind::Ctor,
             Some(Declar::Recursor(_)) => ConstKind::Recursor,
@@ -273,7 +273,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn declar_val(&mut self, name: NamePtr<'t>) -> Option<(LevelsPtr<'t>, ExprPtr<'t>)> {
-        self.env.get_declar_val(&name)
+        self.env.get_declar_val(name)
     }
 
     pub(crate) fn eval_const(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> V<'t> {
@@ -355,7 +355,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if let Some(cached) = self.tc_cache.const_head_type_cache.get(&(name, levels)) {
             return cached;
         }
-        let Some(d) = self.env.get_declar(&name) else {
+        let Some(d) = self.env.get_declar(name) else {
             reject!("const_head_type: unknown const {name:?}")
         };
         let info = *d.info();
@@ -445,7 +445,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let spine = *spine;
                 if self.nat_extension && head.name.as_ref().is_nat_red() {
                     let new_spine = self.spine_snoc_hc(spine, Elim::app(a));
-                    if let Some(args) = self.spine_apps(new_spine)
+                    if let Some(args) = new_spine.apps()
                         && let Some(r) = self.do_nat_red_shallow(depth, head.name, &args)
                     {
                         return r;
@@ -525,19 +525,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
         }
         self.mk_rigid_hc(head, spine)
-    }
-
-    fn nat_red_defer(&mut self, name: NamePtr<'t>, args: &[V<'t>]) -> bool {
-        use crate::term::name::NatRed::{Add, Mul, Pow, Sub};
-        let structural_on_second = matches!(name.as_ref().nat_red(), Some(Add | Sub | Mul | Pow));
-        if !structural_on_second || args.len() != 2 {
-            return false;
-        }
-        if let Value::NatLit { ptr, .. } = args[1] {
-            ptr.as_ref().bits() > 8
-        } else {
-            false
-        }
     }
 
     pub(crate) fn value_type(&mut self, depth: u32, v: V<'t>) -> V<'t> {
@@ -669,5 +656,18 @@ impl<'t> TypeChecker<'_, 't, '_> {
         };
         self.note_whnf(depth, v, result, steps);
         result
+    }
+}
+
+pub(crate) fn nat_red_defer<'t>(name: NamePtr<'t>, args: &[V<'t>]) -> bool {
+    use crate::term::name::NatRed::{Add, Mul, Pow, Sub};
+    let structural_on_second = matches!(name.as_ref().nat_red(), Some(Add | Sub | Mul | Pow));
+    if !structural_on_second || args.len() != 2 {
+        return false;
+    }
+    if let Value::NatLit { ptr, .. } = args[1] {
+        ptr.as_ref().bits() > 8
+    } else {
+        false
     }
 }

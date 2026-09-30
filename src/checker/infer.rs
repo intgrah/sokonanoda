@@ -98,7 +98,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Sort { level, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
                     ensure!(
-                        self.ctx.all_uparams_defined(level, info.uparams),
+                        level.all_uparams_defined(info.uparams),
                         "universe parameter not declared by the current declaration"
                     );
                 }
@@ -109,7 +109,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Const { name, levels, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
                     for l in levels.as_ref().iter().copied() {
-                        ensure!(self.ctx.all_uparams_defined(l, info.uparams));
+                        ensure!(l.all_uparams_defined(info.uparams));
                     }
                 }
                 return self.const_head_type(name, levels);
@@ -225,7 +225,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         ctx: C<'t>,
         e: ExprPtr<'t>,
     ) -> V<'t> {
-        let (fun, mut args) = self.ctx.unfold_apps_stack(self.arena, e);
+        let (fun, mut args) = e.unfold_apps_stack(self.arena);
         let mut fty = self.infer_value(flag, depth, env, ctx, fun);
         while let Some(arg) = args.pop() {
             let fty_f = self.force_all(depth, fty);
@@ -277,13 +277,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
             ind_name == ty_name,
             "projection type name does not match the structure's inductive"
         );
-        let params = self
-            .spine_apps(spine)
+        let params = spine
+            .apps()
             .expect("projection structure type has a non-applicative spine");
         let (num_params, num_indices, ctor_name) = {
             let ind = self
                 .env
-                .get_inductive(&ind_name)
+                .get_inductive(ind_name)
                 .expect("projection structure type is not an inductive");
             ensure!(
                 ind.all_ctor_names.len() == 1,
@@ -313,7 +313,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         for i in 0..idx {
             match self.force_all(depth, cur) {
                 Value::Pi { domain, body, .. } => {
-                    if self.ctx.has_loose_bvar(body.body, 0)
+                    if body.body.has_loose_bvar(0)
                         && struct_ty_is_prop
                         && !self.is_prop_type(depth, domain)
                     {
@@ -340,7 +340,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn check_declar_info_v(&mut self, d: &Declar<'t>) {
         let info = d.info();
         ensure!(
-            self.ctx.no_dupes_all_params(info.uparams),
+            info.uparams.no_dupes_all_params(),
             "duplicate universe parameters in declaration"
         );
         let empty_env = self.empty_env();

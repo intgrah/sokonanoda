@@ -477,67 +477,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         out
     }
 
-    /// From `f a_0 .. a_N`, return `f`
-    pub fn unfold_apps_fun(&self, mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let App { fun, .. } = *e {
-            e = fun;
-        }
-        e
-    }
-
-    /// From `f a_0 .. a_N`, return `(f, [a_0, ..a_N])`
-    pub fn unfold_apps<'b>(
-        &self,
-        arena: &'b bumpalo::Bump,
-        mut e: ExprPtr<'t>,
-    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
-        let mut args = bumpalo::collections::Vec::new_in(arena);
-        while let App { fun, arg, .. } = *e {
-            e = fun;
-            args.push(arg);
-        }
-        args.reverse();
-        (e, args)
-    }
-
-    /// If this is a const application, return (Const {..}, name, levels, args)
-    pub fn unfold_const_apps<'b>(
-        &self,
-        arena: &'b bumpalo::Bump,
-        e: ExprPtr<'t>,
-    ) -> Option<(
-        ExprPtr<'t>,
-        NamePtr<'t>,
-        LevelsPtr<'t>,
-        bumpalo::collections::Vec<'b, ExprPtr<'t>>,
-    )> {
-        let (f, args) = self.unfold_apps(arena, e);
-        match *f {
-            Const { name, levels, .. } => Some((f, name, levels, args)),
-            _ => None,
-        }
-    }
-    /// If this is an application of `Const(name, levels)`, return `(name, levels)`
-    pub fn try_const_info(&self, e: ExprPtr<'t>) -> Option<(NamePtr<'t>, LevelsPtr<'t>)> {
-        match *e {
-            Const { name, levels, .. } => Some((name, levels)),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn unfold_apps_stack<'b>(
-        &self,
-        arena: &'b bumpalo::Bump,
-        mut e: ExprPtr<'t>,
-    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
-        let mut args = bumpalo::collections::Vec::new_in(arena);
-        while let App { fun, arg, .. } = *e {
-            args.push(arg);
-            e = fun;
-        }
-        (e, args)
-    }
-
     pub fn foldl_apps(
         &mut self,
         mut fun: ExprPtr<'t>,
@@ -585,14 +524,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         let string_of_list_const =
             self.mk_const(self.export_file.name_cache.string_of_list?, empty_levels);
         Some(self.mk_app(string_of_list_const, out))
-    }
-
-    pub(crate) fn find_const<F>(&self, e: ExprPtr<'t>, pred: F) -> bool
-    where
-        F: FnOnce(NamePtr<'t>) -> bool + Copy,
-    {
-        let mut cache = crate::term::hash::new_fx_hash_map();
-        self.find_const_aux(e, pred, &mut cache)
     }
 
     pub(crate) fn has_nested_name(&self, e: ExprPtr<'t>, nested: NamePtr<'t>) -> bool {
@@ -650,166 +581,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         result
     }
 
-    fn find_const_aux<F>(
-        &self,
-        e: ExprPtr<'t>,
-        pred: F,
-        cache: &mut FxHashMap<ExprPtr<'t>, bool>,
-    ) -> bool
-    where
-        F: FnOnce(NamePtr<'t>) -> bool + Copy,
-    {
-        if let Some(cached) = cache.get(&e) {
-            *cached
-        } else {
-            let r = match *e {
-                Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
-                Const { name, .. } => pred(name),
-                App { fun, arg, .. } => {
-                    self.find_const_aux(fun, pred, cache) || self.find_const_aux(arg, pred, cache)
-                }
-                Pi {
-                    binder_type, body, ..
-                }
-                | Lambda {
-                    binder_type, body, ..
-                } => {
-                    self.find_const_aux(binder_type, pred, cache)
-                        || self.find_const_aux(body, pred, cache)
-                }
-                Let {
-                    data:
-                        &crate::term::expr::LetData {
-                            binder_type,
-                            val,
-                            body,
-                            ..
-                        },
-                    ..
-                } => {
-                    self.find_const_aux(binder_type, pred, cache)
-                        || self.find_const_aux(val, pred, cache)
-                        || self.find_const_aux(body, pred, cache)
-                }
-                Proj { structure, .. } => self.find_const_aux(structure, pred, cache),
-            };
-            cache.insert(e, r);
-            r
-        }
-    }
-
-    /// Return the number of leading `Pi` binders on this expression.
-    pub(crate) fn pi_telescope_size(&self, mut e: ExprPtr<'t>) -> u16 {
-        let mut size = 0u16;
-        while let Pi { body, .. } = *e {
-            size += 1;
-            e = body;
-        }
-        size
-    }
-
     /// Is this expression `Sort(Level::Zero)`?
     pub(crate) fn prop(&mut self) -> ExprPtr<'t> {
         self.mk_sort(self.zero())
-    }
-
-    pub fn get_nth_pi_binder(&self, mut e: ExprPtr<'t>, n: usize) -> Option<ExprPtr<'t>> {
-        for _ in 0..n {
-            match *e {
-                Pi { body, .. } => {
-                    e = body;
-                }
-                _ => return None,
-            }
-        }
-        match *e {
-            Pi { binder_type, .. } => Some(binder_type),
-            _ => None,
-        }
-    }
-
-    /// Get the name of the inductive type which is the major premise for this recursor
-    /// by finding the correct binder in the recursor's type.
-    pub fn get_major_induct(
-        &self,
-        rec: &crate::checker::env::RecursorData<'t>,
-    ) -> Option<NamePtr<'t>> {
-        match self
-            .get_nth_pi_binder(rec.info.ty, rec.major_idx())
-            .map(|x| *self.unfold_apps_fun(x))
-        {
-            Some(Const { name, .. }) => Some(name),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn has_loose_bvar(&self, e: ExprPtr<'t>, idx: u16) -> bool {
-        if e.num_loose_bvars() <= idx {
-            return false;
-        }
-        match *e {
-            Var { dbj_idx, .. } => dbj_idx == idx,
-            App { fun, arg, .. } => self.has_loose_bvar(fun, idx) || self.has_loose_bvar(arg, idx),
-            Pi {
-                binder_type, body, ..
-            }
-            | Lambda {
-                binder_type, body, ..
-            } => self.has_loose_bvar(binder_type, idx) || self.has_loose_bvar(body, idx + 1),
-            Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
-                ..
-            } => {
-                self.has_loose_bvar(binder_type, idx)
-                    || self.has_loose_bvar(val, idx)
-                    || self.has_loose_bvar(body, idx + 1)
-            }
-            Proj { structure, .. } => self.has_loose_bvar(structure, idx),
-            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
-        }
-    }
-
-    pub(crate) fn has_loose_bvar_below(&self, e: ExprPtr<'t>, cutoff: u16) -> bool {
-        if cutoff == 0 || e.num_loose_bvars() == 0 {
-            return false;
-        }
-        match *e {
-            Var { dbj_idx, .. } => dbj_idx < cutoff,
-            App { fun, arg, .. } => {
-                self.has_loose_bvar_below(fun, cutoff) || self.has_loose_bvar_below(arg, cutoff)
-            }
-            Pi {
-                binder_type, body, ..
-            }
-            | Lambda {
-                binder_type, body, ..
-            } => {
-                self.has_loose_bvar_below(binder_type, cutoff)
-                    || self.has_loose_bvar_below(body, cutoff + 1)
-            }
-            Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
-                ..
-            } => {
-                self.has_loose_bvar_below(binder_type, cutoff)
-                    || self.has_loose_bvar_below(val, cutoff)
-                    || self.has_loose_bvar_below(body, cutoff + 1)
-            }
-            Proj { structure, .. } => self.has_loose_bvar_below(structure, cutoff),
-            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
-        }
     }
 }
 
@@ -887,3 +661,203 @@ impl Expr<'_> {
 }
 
 const _: () = assert!(std::mem::size_of::<Expr<'static>>() == 40);
+
+impl<'t> ExprPtr<'t> {
+    /// From `f a_0 .. a_N`, return `f`
+    pub fn unfold_apps_fun(mut self) -> ExprPtr<'t> {
+        while let App { fun, .. } = *self {
+            self = fun;
+        }
+        self
+    }
+
+    /// From `f a_0 .. a_N`, return `(f, [a_0, ..a_N])`
+    pub fn unfold_apps<'b>(
+        mut self,
+        arena: &'b bumpalo::Bump,
+    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
+        let mut args = bumpalo::collections::Vec::new_in(arena);
+        while let App { fun, arg, .. } = *self {
+            self = fun;
+            args.push(arg);
+        }
+        args.reverse();
+        (self, args)
+    }
+
+    /// If this is a const application, return (Const {..}, name, levels, args)
+    pub fn unfold_const_apps<'b>(
+        self,
+        arena: &'b bumpalo::Bump,
+    ) -> Option<(
+        ExprPtr<'t>,
+        NamePtr<'t>,
+        LevelsPtr<'t>,
+        bumpalo::collections::Vec<'b, ExprPtr<'t>>,
+    )> {
+        let (f, args) = self.unfold_apps(arena);
+        match *f {
+            Const { name, levels, .. } => Some((f, name, levels, args)),
+            _ => None,
+        }
+    }
+
+    /// If this is an application of `Const(name, levels)`, return `(name, levels)`
+    pub fn try_const_info(self) -> Option<(NamePtr<'t>, LevelsPtr<'t>)> {
+        match *self {
+            Const { name, levels, .. } => Some((name, levels)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unfold_apps_stack<'b>(
+        mut self,
+        arena: &'b bumpalo::Bump,
+    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
+        let mut args = bumpalo::collections::Vec::new_in(arena);
+        while let App { fun, arg, .. } = *self {
+            args.push(arg);
+            self = fun;
+        }
+        (self, args)
+    }
+
+    pub(crate) fn find_const<F>(self, pred: F) -> bool
+    where
+        F: FnOnce(NamePtr<'t>) -> bool + Copy,
+    {
+        let mut cache = crate::term::hash::new_fx_hash_map();
+        self.find_const_aux(pred, &mut cache)
+    }
+
+    fn find_const_aux<F>(self, pred: F, cache: &mut FxHashMap<ExprPtr<'t>, bool>) -> bool
+    where
+        F: FnOnce(NamePtr<'t>) -> bool + Copy,
+    {
+        if let Some(cached) = cache.get(&self) {
+            *cached
+        } else {
+            let r = match *self {
+                Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
+                Const { name, .. } => pred(name),
+                App { fun, arg, .. } => {
+                    fun.find_const_aux(pred, cache) || arg.find_const_aux(pred, cache)
+                }
+                Pi {
+                    binder_type, body, ..
+                }
+                | Lambda {
+                    binder_type, body, ..
+                } => binder_type.find_const_aux(pred, cache) || body.find_const_aux(pred, cache),
+                Let {
+                    data:
+                        &crate::term::expr::LetData {
+                            binder_type,
+                            val,
+                            body,
+                            ..
+                        },
+                    ..
+                } => {
+                    binder_type.find_const_aux(pred, cache)
+                        || val.find_const_aux(pred, cache)
+                        || body.find_const_aux(pred, cache)
+                }
+                Proj { structure, .. } => structure.find_const_aux(pred, cache),
+            };
+            cache.insert(self, r);
+            r
+        }
+    }
+
+    /// Return the number of leading `Pi` binders on this expression.
+    pub(crate) fn pi_telescope_size(mut self) -> u16 {
+        let mut size = 0u16;
+        while let Pi { body, .. } = *self {
+            size += 1;
+            self = body;
+        }
+        size
+    }
+
+    pub fn get_nth_pi_binder(mut self, n: usize) -> Option<ExprPtr<'t>> {
+        for _ in 0..n {
+            match *self {
+                Pi { body, .. } => {
+                    self = body;
+                }
+                _ => return None,
+            }
+        }
+        match *self {
+            Pi { binder_type, .. } => Some(binder_type),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn has_loose_bvar(self, idx: u16) -> bool {
+        if self.num_loose_bvars() <= idx {
+            return false;
+        }
+        match *self {
+            Var { dbj_idx, .. } => dbj_idx == idx,
+            App { fun, arg, .. } => fun.has_loose_bvar(idx) || arg.has_loose_bvar(idx),
+            Pi {
+                binder_type, body, ..
+            }
+            | Lambda {
+                binder_type, body, ..
+            } => binder_type.has_loose_bvar(idx) || body.has_loose_bvar(idx + 1),
+            Let {
+                data:
+                    &crate::term::expr::LetData {
+                        binder_type,
+                        val,
+                        body,
+                        ..
+                    },
+                ..
+            } => {
+                binder_type.has_loose_bvar(idx)
+                    || val.has_loose_bvar(idx)
+                    || body.has_loose_bvar(idx + 1)
+            }
+            Proj { structure, .. } => structure.has_loose_bvar(idx),
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
+        }
+    }
+
+    pub(crate) fn has_loose_bvar_below(self, cutoff: u16) -> bool {
+        if cutoff == 0 || self.num_loose_bvars() == 0 {
+            return false;
+        }
+        match *self {
+            Var { dbj_idx, .. } => dbj_idx < cutoff,
+            App { fun, arg, .. } => {
+                fun.has_loose_bvar_below(cutoff) || arg.has_loose_bvar_below(cutoff)
+            }
+            Pi {
+                binder_type, body, ..
+            }
+            | Lambda {
+                binder_type, body, ..
+            } => binder_type.has_loose_bvar_below(cutoff) || body.has_loose_bvar_below(cutoff + 1),
+            Let {
+                data:
+                    &crate::term::expr::LetData {
+                        binder_type,
+                        val,
+                        body,
+                        ..
+                    },
+                ..
+            } => {
+                binder_type.has_loose_bvar_below(cutoff)
+                    || val.has_loose_bvar_below(cutoff)
+                    || body.has_loose_bvar_below(cutoff + 1)
+            }
+            Proj { structure, .. } => structure.has_loose_bvar_below(cutoff),
+            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
+        }
+    }
+}

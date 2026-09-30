@@ -61,7 +61,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
         num_params,
         all_ctor_names,
         ..
-    }) = env.get_inductive(&name).cloned()
+    }) = env.get_inductive(name).cloned()
     else {
         reject!(
             "cannot add Quot; improperly formed `Eq` type := {:?} ",
@@ -93,7 +93,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
         )
     };
     ensure_eq!(cname, ctor_name);
-    let Some(ConstructorData { info, .. }) = env.get_constructor(&ctor_name) else {
+    let Some(ConstructorData { info, .. }) = env.get_constructor(ctor_name) else {
         reject!(
             "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
         )

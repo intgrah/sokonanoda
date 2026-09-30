@@ -8,6 +8,7 @@ pub type V<'a> = &'a Value<'a>;
 pub type E<'a> = &'a Env<'a>;
 pub type C<'a> = &'a Ctx<'a>;
 pub type S<'a> = &'a Spine<'a>;
+pub(crate) type SpineArgs<'a> = smallvec::SmallVec<[V<'a>; 8]>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Closure<'a> {
@@ -734,3 +735,47 @@ pub fn mk_rigid_head_with_empty<'a>(arena: &'a Bump, head: RigidHead<'a>, empty:
 
 const _: () = assert!(std::mem::size_of::<Value<'static>>() == 56);
 const _: () = assert!(std::mem::size_of::<Spine<'static>>() == 32);
+
+impl<'t> Spine<'t> {
+    pub(crate) fn apps(&'t self) -> Option<SpineArgs<'t>> {
+        let mut out = SpineArgs::with_capacity(self.len() as usize);
+        for elim in self.elims_rev() {
+            let ElimView::App(a) = elim.view() else {
+                return None;
+            };
+            out.push(a);
+        }
+        out.reverse();
+        Some(out)
+    }
+}
+
+impl<'t> Value<'t> {
+    pub(crate) fn as_inductive_app(&self) -> Option<(NamePtr<'t>, LevelsPtr<'t>, SpineArgs<'t>)> {
+        match self {
+            Value::Rigid {
+                head: RigidHead::Inductive(n, ls),
+                spine,
+                ..
+            } => {
+                let args = spine.apps()?;
+                Some((*n, *ls, args))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_ctor_app(&self) -> Option<(NamePtr<'t>, SpineArgs<'t>)> {
+        match self {
+            Value::Rigid {
+                head: RigidHead::Ctor(name, _),
+                spine,
+                ..
+            } => {
+                let args = spine.apps()?;
+                Some((*name, args))
+            }
+            _ => None,
+        }
+    }
+}

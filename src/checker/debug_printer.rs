@@ -120,7 +120,7 @@ impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, LevelPtr<'t>> {
         match *self.elem_to_print {
             Zero => write!(f, "0"),
             Succ(..) => {
-                let (val, n) = self.ctx.level_succs(self.elem_to_print);
+                let (val, n) = self.elem_to_print.level_succs();
                 if *val == Zero {
                     write!(f, "{n}")
                 } else {
