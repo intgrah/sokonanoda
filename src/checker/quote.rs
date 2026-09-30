@@ -1,52 +1,51 @@
+use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{ElimView, RigidHead, Spine, Value, E, S, V};
-use crate::term::ptr::ExprPtr;
+use crate::term::ptr::{ExprPtr, Id};
 
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     pub(crate) fn quote(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
         let v = self.force_thunk(depth, v);
-        let key = (v as *const Value<'t> as usize, depth);
-        if let Some(q) = self.tc_cache.quote_cache.get(&key).copied() {
-            return q;
-        }
-        let r = match v {
-            Value::Sort { level, .. } => self.ctx.mk_sort(*level),
-            Value::NatLit { ptr, .. } => self
-                .ctx
-                .mk_nat_lit(*ptr)
-                .expect("quote: nat literal without extension"),
-            Value::StrLit { ptr, .. } => self
-                .ctx
-                .mk_string_lit(*ptr)
-                .expect("quote: string literal without extension"),
-            Value::Rigid { head, spine, .. } => {
-                let head = self.quote_rigid_head(depth, *head);
-                self.quote_spine(depth, head, spine)
+        memo!(
+            self.tc_cache.quote_cache,
+            (Id::of(v), depth),
+            match v {
+                Value::Sort { level, .. } => self.ctx.mk_sort(*level),
+                Value::NatLit { ptr, .. } => self
+                    .ctx
+                    .mk_nat_lit(*ptr)
+                    .expect("quote: nat literal without extension"),
+                Value::StrLit { ptr, .. } => self
+                    .ctx
+                    .mk_string_lit(*ptr)
+                    .expect("quote: string literal without extension"),
+                Value::Rigid { head, spine, .. } => {
+                    let head = self.quote_rigid_head(depth, *head);
+                    self.quote_spine(depth, head, spine)
+                }
+                Value::Unfold { head, spine, .. } => {
+                    let h = self.ctx.mk_const(head.name, head.levels);
+                    self.quote_spine(depth, h, spine)
+                }
+                Value::Lam { body, .. } => {
+                    let dom = self.lam_domain(depth, v);
+                    let fresh = self.mk_bvar_hc(depth, dom);
+                    let body = self.apply_closure(depth + 1, body, fresh, None);
+                    let dom_e = self.quote(depth, dom);
+                    let body_e = self.quote(depth + 1, body);
+                    self.ctx.mk_lambda(dom_e, body_e)
+                }
+                Value::Pi { domain, body, .. } => {
+                    let domain = *domain;
+                    let fresh = self.mk_bvar_hc(depth, domain);
+                    let body = self.apply_closure(depth + 1, body, fresh, Some(domain));
+                    let dom_e = self.quote(depth, domain);
+                    let body_e = self.quote(depth + 1, body);
+                    self.ctx.mk_pi(dom_e, body_e)
+                }
+                Value::Thunk { .. } => unreachable!("quote: thunk after force"),
             }
-            Value::Unfold { head, spine, .. } => {
-                let h = self.ctx.mk_const(head.name, head.levels);
-                self.quote_spine(depth, h, spine)
-            }
-            Value::Lam { body, .. } => {
-                let dom = self.lam_domain(depth, v);
-                let fresh = self.mk_bvar_hc(depth, dom);
-                let body = self.apply_closure(depth + 1, body, fresh, None);
-                let dom_e = self.quote(depth, dom);
-                let body_e = self.quote(depth + 1, body);
-                self.ctx.mk_lambda(dom_e, body_e)
-            }
-            Value::Pi { domain, body, .. } => {
-                let domain = *domain;
-                let fresh = self.mk_bvar_hc(depth, domain);
-                let body = self.apply_closure(depth + 1, body, fresh, Some(domain));
-                let dom_e = self.quote(depth, domain);
-                let body_e = self.quote(depth + 1, body);
-                self.ctx.mk_pi(dom_e, body_e)
-            }
-            Value::Thunk { .. } => unreachable!("quote: thunk after force"),
-        };
-        self.tc_cache.quote_cache.insert(key, r);
-        r
+        )
     }
 
     fn quote_rigid_head(&mut self, depth: u32, head: RigidHead<'t>) -> ExprPtr<'t> {

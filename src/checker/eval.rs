@@ -1,8 +1,9 @@
+use crate::checker::cache::memo;
 use crate::checker::env::Declar;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
 use crate::term::expr::Expr;
-use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 
@@ -23,12 +24,11 @@ enum ConstKind {
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     pub(crate) fn eval(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
         if e.num_loose_bvars() == 0 && env.lsub().is_none() {
-            if let Some(v) = self.tc_cache.closed_eval_cache.get(&e) {
-                return v;
-            }
-            let v = self.eval_no_cache(depth, env, e);
-            self.tc_cache.closed_eval_cache.insert(e, v);
-            return v;
+            return memo!(
+                self.tc_cache.closed_eval_cache,
+                e,
+                self.eval_no_cache(depth, env, e)
+            );
         }
         if matches!(
             self.ctx.read_expr_ref(e),
@@ -39,13 +39,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 | Expr::Lambda { .. }
         ) {
             let te = self.key_env(env, e);
-            let key = (te as *const value::Env<'t> as usize, e);
-            if let Some(v) = self.tc_cache.open_eval_cache.get(&key) {
-                return v;
-            }
-            let v = self.eval_no_cache(depth, te, e);
-            self.tc_cache.open_eval_cache.insert(key, v);
-            return v;
+            return memo!(
+                self.tc_cache.open_eval_cache,
+                (Id::of(te), e),
+                self.eval_no_cache(depth, te, e)
+            );
         }
         self.eval_no_cache(depth, env, e)
     }
@@ -398,15 +396,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             Value::Lam {
                 binder_type, body, ..
             } => {
-                let addr = v as *const Value<'t> as usize;
-                if let Some(d) = self.tc_cache.lam_domain_cache.get(&addr) {
-                    return d;
-                }
-                let e = body.env;
-                let bt = *binder_type;
-                let d = self.eval(depth, e, bt);
-                self.tc_cache.lam_domain_cache.insert(addr, d);
-                d
+                let (e, bt) = (body.env, *binder_type);
+                memo!(
+                    self.tc_cache.lam_domain_cache,
+                    Id::of(v),
+                    self.eval(depth, e, bt)
+                )
             }
             Value::Pi { domain, .. } => domain,
             _ => panic!("lam_domain: not a Lam/Pi"),
@@ -416,11 +411,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn neutral_app(&mut self, f: V<'t>, a: V<'t>) -> V<'t> {
         let f = self.canonicalize_for_spine(f);
         let a = self.canonicalize_for_spine(a);
-        let key = (
-            f as *const Value<'t> as usize,
-            a as *const Value<'t> as usize,
-        );
-        match self.tc_cache.app_hc.entry(key) {
+        match self.tc_cache.app_hc.entry((Id::of(f), Id::of(a))) {
             Entry::Occupied(o) => o.get(),
             Entry::Vacant(slot) => {
                 let (v, spine) = match f {

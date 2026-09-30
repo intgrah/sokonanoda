@@ -1,19 +1,23 @@
+use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::checker::value::{
+    self, Closure, Elim, ElimView, KeyTag, RigidHead, Spine, Value, E, S, V,
+};
 use crate::term::expr::Expr;
-use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
+use crate::term::hash::GOLDEN;
+use crate::term::ptr::{ExprPtr, Id, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 
 #[inline]
-fn rigid_head_key<'a>(head: &RigidHead<'a>) -> (u8, u64, u64) {
-    match *head {
-        RigidHead::BVar(lvl, ty) => (0, u64::from(lvl), ty as *const Value<'a> as u64),
-        RigidHead::Axiom(n, l) => (2, n.get_hash(), l.get_hash()),
-        RigidHead::Ctor(n, l) => (3, n.get_hash(), l.get_hash()),
-        RigidHead::Recursor(n, l) => (4, n.get_hash(), l.get_hash()),
-        RigidHead::QuotConst(n, l) => (5, n.get_hash(), l.get_hash()),
-        RigidHead::Inductive(n, l) => (6, n.get_hash(), l.get_hash()),
+fn rigid_head_key(head: RigidHead<'_>) -> (KeyTag, u64, u64) {
+    match head {
+        RigidHead::BVar(lvl, ty) => (KeyTag::BVar, u64::from(lvl), Id::of(ty).addr() as u64),
+        RigidHead::Axiom(n, l)
+        | RigidHead::Ctor(n, l)
+        | RigidHead::Recursor(n, l)
+        | RigidHead::QuotConst(n, l)
+        | RigidHead::Inductive(n, l) => (head.tag(), n.get_hash(), l.get_hash()),
     }
 }
 
@@ -26,15 +30,12 @@ fn elim_key<'a>(elim: &Elim<'a>) -> u64 {
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     #[inline]
     pub(crate) fn mk_bvar_hc(&mut self, level: u32, ty: V<'t>) -> V<'t> {
-        let key = (level, ty as *const Value<'t> as usize);
-        if let Some(v) = self.tc_cache.bvar_hc.get(&key) {
-            return v;
-        }
-        let empty = self.empty_spine();
-        let v = value::mk_bvar_with_empty(self.arena, level, ty, empty);
-        v.mark_canonical();
-        self.tc_cache.bvar_hc.insert(key, v);
-        v
+        memo!(self.tc_cache.bvar_hc, (level, Id::of(ty)), {
+            let empty = self.empty_spine();
+            let v = value::mk_bvar_with_empty(self.arena, level, ty, empty);
+            v.mark_canonical();
+            v
+        })
     }
 
     pub(super) fn mk_unfold_hc(
@@ -44,27 +45,21 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         spine: S<'t>,
         head_value: &'t OnceCell<V<'t>>,
     ) -> V<'t> {
-        let key = (
-            head_value as *const OnceCell<V<'t>> as usize,
-            spine as *const Spine<'t> as usize,
-        );
-        if let Some(u) = self.tc_cache.unfold_hc.get(&key) {
-            return u;
-        }
-        let u = value::mk_unfold(self.arena, name, levels, spine, head_value);
-        if spine.is_canonical() {
-            u.mark_canonical();
-        }
-        self.tc_cache.unfold_hc.insert(key, u);
-        u
+        memo!(
+            self.tc_cache.unfold_hc,
+            (Id::of(head_value), Id::of(spine)),
+            {
+                let u = value::mk_unfold(self.arena, name, levels, spine, head_value);
+                if spine.is_canonical() {
+                    u.mark_canonical();
+                }
+                u
+            }
+        )
     }
 
     pub(crate) fn env_extend(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
-        let key = (
-            parent as *const value::Env<'t> as usize,
-            v as *const Value<'t> as usize,
-        );
-        match self.tc_cache.env_hc.entry(key) {
+        match self.tc_cache.env_hc.entry((Id::of(parent), Id::of(v))) {
             Entry::Occupied(o) => o.get(),
             Entry::Vacant(slot) => slot.insert(value::env_extend(self.arena, parent, v)),
         }
@@ -77,7 +72,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         slots: &[V<'t>],
         lsub: Option<&'t value::LevelSub<'t>>,
     ) -> E<'t> {
-        let lsub_addr = lsub.map_or(0, |l| l as *const value::LevelSub<'t> as usize);
+        let lsub_id = lsub.map(Id::of);
         if let Some(e) = self.tc_cache.frames.find(hash, |e: &E<'t>| match e {
             value::Env::Framed {
                 mask: m,
@@ -86,7 +81,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 ..
             } => {
                 *m == mask
-                    && l.map_or(0, |l| l as *const value::LevelSub<'t> as usize) == lsub_addr
+                    && l.map(Id::of) == lsub_id
                     && sl.len() == slots.len()
                     && sl.iter().zip(slots).all(|(a, b)| std::ptr::eq(*a, *b))
             }
@@ -113,16 +108,15 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let Some(ls) = lsub else {
             return self.tc_cache.empty_env;
         };
-        let key = ls as *const value::LevelSub<'t> as usize;
-        if let Some(e) = self.tc_cache.lsub_bases.get(&key) {
-            return e;
-        }
-        let e: E<'t> = self.arena.alloc(value::Env::Nil {
-            lsub,
-            hash: key as u64,
-        });
-        self.tc_cache.lsub_bases.insert(key, e);
-        e
+        let id = Id::of(ls);
+        memo!(
+            self.tc_cache.lsub_bases,
+            id,
+            self.arena.alloc(value::Env::Nil {
+                lsub,
+                hash: id.addr() as u64,
+            })
+        )
     }
 
     fn intern_level_sub(
@@ -130,12 +124,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> &'t value::LevelSub<'t> {
-        if let Some(l) = self.tc_cache.level_subs.get(&(ks, vs)) {
-            return l;
-        }
-        let l: &'t value::LevelSub<'t> = self.arena.alloc(value::LevelSub { ks, vs });
-        self.tc_cache.level_subs.insert((ks, vs), l);
-        l
+        memo!(
+            self.tc_cache.level_subs,
+            (ks, vs),
+            self.arena.alloc(value::LevelSub { ks, vs })
+        )
     }
 
     pub(crate) fn eval_inst(
@@ -184,11 +177,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 }
             }
         }
-        let slot = (((e as *const value::Env<'t> as usize as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        let slot = (((Id::of(e).addr() as u64).wrapping_mul(GOLDEN)
             ^ mask.wrapping_mul(0xD6E8FEB86659FD93))
             >> crate::checker::cache::PRUNE_DM_SHIFT) as usize;
         let ent = self.tc_cache.prune_dm[slot];
-        if ent.0 == e as *const value::Env<'t> as usize && ent.1 == mask {
+        if ent.0 == Some(Id::of(e)) && ent.1 == mask {
             if let Some(hit) = ent.2 {
                 match e {
                     value::Env::Cons { prune, .. }
@@ -206,9 +199,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn prune_env_cold(&mut self, e: E<'t>, mask: u64, slot: usize) -> E<'t> {
         let mut buf: [std::mem::MaybeUninit<V<'t>>; 64] =
             [const { std::mem::MaybeUninit::uninit() }; 64];
-        let mut slots_hash = e
-            .lsub()
-            .map_or(0, |l| l as *const value::LevelSub<'t> as usize as u64);
+        let mut slots_hash = e.lsub().map_or(0, |l| Id::of(l).addr() as u64);
         let mut n = 0usize;
         let mut out_mask = 0u64;
         let mut rem = mask;
@@ -235,8 +226,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                         let sv = slots[i];
                         buf[n].write(sv);
                         slots_hash = slots_hash
-                            .wrapping_mul(0x9E3779B97F4A7C15)
-                            .wrapping_add(sv as *const Value<'t> as usize as u64);
+                            .wrapping_mul(GOLDEN)
+                            .wrapping_add(Id::of(sv).addr() as u64);
                         n += 1;
                     }
                     break;
@@ -249,8 +240,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                         if (rem >> idx) & 1 != 0 {
                             buf[n].write(v);
                             slots_hash = slots_hash
-                                .wrapping_mul(0x9E3779B97F4A7C15)
-                                .wrapping_add(v as *const Value<'t> as usize as u64);
+                                .wrapping_mul(GOLDEN)
+                                .wrapping_add(Id::of(v).addr() as u64);
                             out_mask |= 1u64 << (u32::from(idx) + consumed);
                             n += 1;
                         }
@@ -261,8 +252,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     if rem & 1 != 0 {
                         buf[n].write(*v);
                         slots_hash = slots_hash
-                            .wrapping_mul(0x9E3779B97F4A7C15)
-                            .wrapping_add(*v as *const Value<'t> as usize as u64);
+                            .wrapping_mul(GOLDEN)
+                            .wrapping_add(Id::of(*v).addr() as u64);
                         out_mask |= 1u64 << consumed;
                         n += 1;
                     }
@@ -278,11 +269,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let slots: &[V<'t>] =
             unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<V<'t>>(), n) };
         let lsub = e.lsub();
-        let hash = out_mask
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(slots_hash);
+        let hash = out_mask.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
         let r = self.intern_frame(hash, out_mask, slots, lsub);
-        self.tc_cache.prune_dm[slot] = (e as *const value::Env<'t> as usize, mask, Some(r));
+        self.tc_cache.prune_dm[slot] = (Some(Id::of(e)), mask, Some(r));
         match e {
             value::Env::Cons { prune, .. }
             | value::Env::Framed { prune, .. }
@@ -362,7 +351,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline(never)]
     fn prune_wide_env(&mut self, env: E<'t>, e: ExprPtr<'t>) -> E<'t> {
-        let key = (env as *const value::Env<'t> as usize, e);
+        let key = (Id::of(env), e);
         if let Some(r) = self.tc_cache.wide_prune.get(&key) {
             return r;
         }
@@ -372,7 +361,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let mut cur = env;
         let mut consumed = 0;
         let lsub = env.lsub();
-        let mut slots_hash = lsub.map_or(0, |l| l as *const value::LevelSub<'t> as usize as u64);
+        let mut slots_hash = lsub.map_or(0, |l| Id::of(l).addr() as u64);
         for &idx in wanted {
             while consumed < idx {
                 let value::Env::Cons { parent, .. } = cur else {
@@ -385,30 +374,25 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 indices.push(idx);
                 slots.push(v);
                 slots_hash = slots_hash
-                    .wrapping_mul(0x9E3779B97F4A7C15)
-                    .wrapping_add(v as *const Value<'t> as usize as u64);
+                    .wrapping_mul(GOLDEN)
+                    .wrapping_add(Id::of(v).addr() as u64);
             }
         }
         let r = match indices.last() {
             None => self.lsub_base(lsub),
             Some(&last) if last < 64 => {
                 let mask = indices.iter().fold(0u64, |mask, i| mask | (1u64 << i));
-                let hash = mask
-                    .wrapping_mul(0x9E3779B97F4A7C15)
-                    .wrapping_add(slots_hash);
+                let hash = mask.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
                 self.intern_frame(hash, mask, &slots, lsub)
             }
             Some(&last) => {
                 let hash = indices.iter().fold(slots_hash, |h, i| {
-                    h.wrapping_mul(0x9E3779B97F4A7C15)
-                        .wrapping_add(u64::from(*i))
+                    h.wrapping_mul(GOLDEN).wrapping_add(u64::from(*i))
                 });
-                let lsub_addr = lsub.map_or(0, |l| l as *const value::LevelSub<'t> as usize);
                 if let Some(r) = self.tc_cache.frames.find(hash, |r| match r {
                     value::Env::WideFramed { data, lsub: ls, .. } => {
                         data.indices == indices.as_slice()
-                            && ls.map_or(0, |l| l as *const value::LevelSub<'t> as usize)
-                                == lsub_addr
+                            && ls.map(Id::of) == lsub.map(Id::of)
                             && data
                                 .slots
                                 .iter()
@@ -443,7 +427,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline]
     pub(super) fn spine_snoc_hc(&mut self, prev: S<'t>, elim: Elim<'t>) -> S<'t> {
-        let key = (prev as *const Spine<'t> as usize, elim_key(&elim));
+        let key = (Id::of(prev), elim_key(&elim));
         let arena = self.arena;
         match self.tc_cache.spine_hc.entry(key) {
             Entry::Occupied(o) => *o.get(),
@@ -464,8 +448,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline]
     pub(super) fn mk_rigid_hc(&mut self, head: RigidHead<'t>, spine: S<'t>) -> V<'t> {
-        let hk = rigid_head_key(&head);
-        let key = (hk.0, hk.1, hk.2, spine as *const Spine<'t> as usize);
+        let hk = rigid_head_key(head);
+        let key = (hk.0, hk.1, hk.2, Id::of(spine));
         let arena = self.arena;
         match self.tc_cache.rigid_hc.entry(key) {
             Entry::Occupied(o) => *o.get(),
@@ -482,11 +466,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     #[inline]
     fn mk_lam_hc(&mut self, binder_type: ExprPtr<'t>, body: Closure<'t>) -> V<'t> {
         debug_assert!(body.ctx.is_none());
-        let key = (
-            binder_type,
-            body.env as *const value::Env<'t> as usize,
-            body.body,
-        );
+        let key = (binder_type, Id::of(body.env), body.body);
         let arena = self.arena;
         match self.tc_cache.lam_hc.entry(key) {
             Entry::Occupied(o) => *o.get(),
@@ -506,22 +486,15 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if matches!(v, Value::Thunk { .. }) {
             return v;
         }
-        let key = v as *const Value<'t> as usize;
-        if let Some(c) = self.tc_cache.canon_cache.get(&key) {
-            return c;
-        }
-        let c = self.canon_compute(v);
-        c.mark_canonical();
-        self.tc_cache.canon_cache.insert(key, c);
-        c
+        memo!(self.tc_cache.canon_cache, Id::of(v), {
+            let c = self.canon_compute(v);
+            c.mark_canonical();
+            c
+        })
     }
 
-    fn canon_content(&mut self, disc: u8, content: u64, v: V<'t>) -> V<'t> {
-        if let Some(c) = self.tc_cache.content_hc.get(&(disc, content)) {
-            return c;
-        }
-        self.tc_cache.content_hc.insert((disc, content), v);
-        v
+    fn canon_content(&mut self, tag: KeyTag, content: u64, v: V<'t>) -> V<'t> {
+        memo!(self.tc_cache.content_hc, (tag, content), v)
     }
 
     fn canon_spine(&mut self, spine: S<'t>) -> S<'t> {
@@ -547,9 +520,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 binder_type, body, ..
             } => self.mk_lam_hc(*binder_type, *body),
             Value::Pi { domain, body, .. } => self.mk_pi_hc(domain, *body),
-            Value::Sort { level, .. } => self.canon_content(0, level.get_hash(), v),
-            Value::NatLit { ptr, .. } => self.canon_content(1, ptr.get_hash(), v),
-            Value::StrLit { ptr, .. } => self.canon_content(2, ptr.get_hash(), v),
+            Value::Sort { level, .. } => self.canon_content(KeyTag::Sort, level.get_hash(), v),
+            Value::NatLit { ptr, .. } => self.canon_content(KeyTag::NatLit, ptr.get_hash(), v),
+            Value::StrLit { ptr, .. } => self.canon_content(KeyTag::StrLit, ptr.get_hash(), v),
             Value::Rigid { head, spine, .. } => {
                 let cspine = self.canon_spine(spine);
                 self.mk_rigid_hc(*head, cspine)
@@ -571,10 +544,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     #[inline]
     fn mk_pi_hc(&mut self, domain: V<'t>, body: Closure<'t>) -> V<'t> {
         let key = (
-            domain as *const Value<'t> as usize,
-            body.env as *const value::Env<'t> as usize,
+            Id::of(domain),
+            Id::of(body.env),
             body.body,
-            body.ctx.map_or(0, |c| c as *const value::Ctx<'t> as usize),
+            body.ctx.map(Id::of),
         );
         let arena = self.arena;
         match self.tc_cache.pi_hc.entry(key) {

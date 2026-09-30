@@ -1,224 +1,191 @@
-use crate::checker::value::{E, S, V};
-use crate::term::hash::{
-    new_fx_hash_map, session_fx_hash_map, session_small_fx_hash_map, session_small_fx_hash_set,
-    small_fx_hash_map, small_fx_hash_set, FxHashMap, FxHashSet, SESSION_MAP_CAP,
-};
-use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::checker::infer::CachedType;
+use crate::checker::value::{self, Ctx, Env, KeyTag, LevelSub, Spine, Value, C, E, S, V};
+use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
+use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
+use bumpalo::Bump;
+use hashbrown::HashTable;
+use std::cell::OnceCell;
 
 pub(crate) const PRUNE_DM_LEN: usize = 1 << 10;
 pub(crate) const PRUNE_DM_SHIFT: u32 = 64 - 10;
 
-pub struct TcCache<'a, 't> {
-    pub(crate) unfold_const_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
-    pub(crate) rec_rule_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>), V<'a>>,
-    pub(crate) const_head_type_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
-    pub(crate) const_head_value_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
-    pub(crate) const_result_level_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
-    pub(crate) conv_cache_pos: FxHashSet<(usize, usize)>,
-    pub(crate) conv_cache_neg: FxHashSet<(usize, usize)>,
-    pub(crate) conv_cache_neg_probe: FxHashSet<(usize, usize)>,
-    pub(crate) probe_depth: u32,
-    pub(crate) probe_budget: u32,
-    pub(crate) probe_exhausted: bool,
-    pub(crate) closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
-    pub(crate) whnf_store: FxHashMap<u64, (u128, ExprPtr<'t>)>,
-    pub(crate) whnf_store_filter: Box<[u64; 1024]>,
-    pub(crate) whnf_head_filter: Box<[u64; 1024]>,
-    pub(crate) whnf_admit: Box<[u8; WHNF_ADMIT_LEN]>,
-    pub(crate) lam_domain_cache: FxHashMap<usize, V<'a>>,
-    pub(crate) global_value_cache: FxHashMap<(usize, u32), Result<(u128, bool), u8>>,
-    pub(crate) open_eval_cache: FxHashMap<(usize, ExprPtr<'t>), V<'a>>,
-    pub(crate) open_eval_seen: FxHashSet<ExprPtr<'t>>,
-    pub(crate) bvar_hc: FxHashMap<(u32, usize), V<'a>>,
-    pub(crate) spine_hc: FxHashMap<(usize, u64), S<'a>>,
-    pub(crate) app_hc: FxHashMap<(usize, usize), V<'a>>,
-    pub(crate) env_hc: FxHashMap<(usize, usize), E<'a>>,
-    pub(crate) lam_hc: FxHashMap<(ExprPtr<'t>, usize, ExprPtr<'t>), V<'a>>,
-    pub(crate) pi_hc: FxHashMap<(usize, usize, ExprPtr<'t>, usize), V<'a>>,
-    pub(crate) type_cache: FxHashMap<(usize, ExprPtr<'t>), crate::checker::infer::CachedType<'a>>,
-    pub(crate) thunk_hc: FxHashMap<(usize, ExprPtr<'t>), V<'a>>,
-    pub(crate) quote_cache: FxHashMap<(usize, u32), ExprPtr<'t>>,
-    pub(crate) frames: hashbrown::HashTable<E<'a>>,
-    pub(crate) lsub_bases: FxHashMap<usize, E<'a>>,
-    pub(crate) level_subs:
-        FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>), &'a crate::checker::value::LevelSub<'a>>,
-    pub(crate) prune_dm: Box<[(usize, u64, Option<E<'a>>); PRUNE_DM_LEN]>,
-    pub(crate) wide_fvars: FxHashMap<ExprPtr<'t>, &'a [u16]>,
-    pub(crate) wide_prune: FxHashMap<(usize, ExprPtr<'t>), E<'a>>,
-    pub(crate) rigid_hc: FxHashMap<(u8, u64, u64, usize), V<'a>>,
-    pub(crate) unfold_hc: FxHashMap<(usize, usize), V<'a>>,
-    pub(crate) iota_stuck: FxHashSet<usize>,
-    pub(crate) struct_eta_cache: FxHashMap<(usize, NamePtr<'t>), Option<V<'a>>>,
-    pub(crate) iota_cache: FxHashMap<usize, V<'a>>,
-    pub(crate) canon_cache: FxHashMap<usize, V<'a>>,
-    pub(crate) content_hc: FxHashMap<(u8, u64), V<'a>>,
-    pub(crate) fvar_cache: FxHashMap<usize, bool>,
-    pub(crate) ind_occ_cache: FxHashMap<usize, bool>,
-    pub(crate) empty_env: E<'a>,
-    pub(crate) empty_spine: S<'a>,
-    pub(crate) empty_ctx: crate::checker::value::C<'a>,
+pub(crate) const SMALL: usize = 14;
+pub(crate) const SESSION_SMALL: usize = 1 << 12;
+pub(crate) const SESSION: usize = 1 << 13;
+const KEEP_CAP: usize = 1 << 15;
+
+pub(crate) trait Reset {
+    fn with_cap(cap: usize) -> Self;
+    fn reset(&mut self);
+    fn reset_shrink(&mut self);
 }
 
-impl<'a, 't> TcCache<'a, 't> {
-    pub(crate) fn new(arena: &'a bumpalo::Bump) -> Self {
-        Self {
-            unfold_const_cache: session_small_fx_hash_map(),
-            rec_rule_cache: small_fx_hash_map(),
-            const_head_type_cache: session_small_fx_hash_map(),
-            const_head_value_cache: session_small_fx_hash_map(),
-            const_result_level_cache: small_fx_hash_map(),
-            conv_cache_pos: session_small_fx_hash_set(),
-            conv_cache_neg: session_small_fx_hash_set(),
-            conv_cache_neg_probe: small_fx_hash_set(),
-            probe_depth: 0,
-            probe_budget: 0,
-            probe_exhausted: false,
-            closed_eval_cache: session_small_fx_hash_map(),
-            whnf_store: new_fx_hash_map(),
-            whnf_store_filter: Box::new([0u64; 1024]),
-            whnf_head_filter: Box::new([0u64; 1024]),
-            whnf_admit: vec![0u8; WHNF_ADMIT_LEN]
-                .into_boxed_slice()
-                .try_into()
-                .expect("admit table size"),
-            lam_domain_cache: session_small_fx_hash_map(),
-            global_value_cache: session_fx_hash_map(),
-            open_eval_cache: session_fx_hash_map(),
-            open_eval_seen: small_fx_hash_set(),
-            bvar_hc: session_small_fx_hash_map(),
-            spine_hc: session_fx_hash_map(),
-            app_hc: session_fx_hash_map(),
-            env_hc: session_fx_hash_map(),
-            lam_hc: session_small_fx_hash_map(),
-            pi_hc: session_small_fx_hash_map(),
-            type_cache: session_fx_hash_map(),
-            thunk_hc: session_fx_hash_map(),
-            quote_cache: session_fx_hash_map(),
-            frames: hashbrown::HashTable::with_capacity(SESSION_MAP_CAP),
-            lsub_bases: small_fx_hash_map(),
-            level_subs: small_fx_hash_map(),
-            prune_dm: Box::new([(0, 0, None); PRUNE_DM_LEN]),
-            wide_fvars: small_fx_hash_map(),
-            wide_prune: small_fx_hash_map(),
-            rigid_hc: session_fx_hash_map(),
-            unfold_hc: session_fx_hash_map(),
-            iota_stuck: session_small_fx_hash_set(),
-            struct_eta_cache: small_fx_hash_map(),
-            iota_cache: session_fx_hash_map(),
-            canon_cache: session_fx_hash_map(),
-            content_hc: session_small_fx_hash_map(),
-            fvar_cache: small_fx_hash_map(),
-            ind_occ_cache: small_fx_hash_map(),
-            empty_env: crate::checker::value::env_empty(arena),
-            empty_spine: crate::checker::value::spine_empty(arena),
-            empty_ctx: crate::checker::value::ctx_empty(arena),
-        }
+impl<K, V> Reset for FxHashMap<K, V> {
+    fn with_cap(cap: usize) -> Self {
+        FxHashMap::with_capacity_and_hasher(cap, Default::default())
     }
-
-    pub(crate) fn clear(&mut self) {
-        self.unfold_const_cache.clear();
-        self.rec_rule_cache.clear();
-        self.const_head_type_cache.clear();
-        self.const_head_value_cache.clear();
-        self.const_result_level_cache.clear();
-        self.conv_cache_pos.clear();
-        self.conv_cache_neg.clear();
-        self.conv_cache_neg_probe.clear();
-        self.frames.clear();
-        self.lsub_bases.clear();
-        self.level_subs.clear();
-        self.prune_dm.fill((0, 0, None));
-        self.wide_fvars.clear();
-        self.wide_prune.clear();
-        self.type_cache.clear();
-        self.thunk_hc.clear();
-        self.quote_cache.clear();
-        self.open_eval_cache.clear();
-        self.open_eval_seen.clear();
-        self.bvar_hc.clear();
-        self.spine_hc.clear();
-        self.app_hc.clear();
-        self.env_hc.clear();
-        self.lam_hc.clear();
-        self.pi_hc.clear();
-        self.rigid_hc.clear();
-        self.unfold_hc.clear();
-        self.iota_stuck.clear();
-        self.struct_eta_cache.clear();
-        self.iota_cache.clear();
-        self.canon_cache.clear();
-        self.content_hc.clear();
-        self.fvar_cache.clear();
-        self.ind_occ_cache.clear();
-        self.closed_eval_cache.clear();
-        self.lam_domain_cache.clear();
-        self.global_value_cache.clear();
+    fn reset(&mut self) {
+        self.clear();
     }
-
-    pub(crate) fn clear_session(&mut self) {
-        self.probe_depth = 0;
-        self.probe_budget = 0;
-        self.probe_exhausted = false;
-        shrink_map(&mut self.unfold_const_cache);
-        shrink_map(&mut self.rec_rule_cache);
-        shrink_map(&mut self.const_head_type_cache);
-        shrink_map(&mut self.const_head_value_cache);
-        shrink_map(&mut self.const_result_level_cache);
-        shrink_set(&mut self.conv_cache_pos);
-        shrink_set(&mut self.conv_cache_neg);
-        shrink_set(&mut self.conv_cache_neg_probe);
-        if self.frames.capacity() > KEEP_CAP {
-            self.frames = hashbrown::HashTable::new();
+    fn reset_shrink(&mut self) {
+        if self.capacity() > KEEP_CAP {
+            *self = FxHashMap::default();
         } else {
-            self.frames.clear();
+            self.clear();
         }
-        shrink_map(&mut self.lsub_bases);
-        shrink_map(&mut self.level_subs);
-        self.prune_dm.fill((0, 0, None));
-        shrink_map(&mut self.wide_fvars);
-        shrink_map(&mut self.wide_prune);
-        shrink_map(&mut self.type_cache);
-        shrink_map(&mut self.thunk_hc);
-        shrink_map(&mut self.quote_cache);
-        shrink_map(&mut self.open_eval_cache);
-        shrink_set(&mut self.open_eval_seen);
-        shrink_map(&mut self.bvar_hc);
-        shrink_map(&mut self.spine_hc);
-        shrink_map(&mut self.app_hc);
-        shrink_map(&mut self.env_hc);
-        shrink_map(&mut self.lam_hc);
-        shrink_map(&mut self.pi_hc);
-        shrink_map(&mut self.rigid_hc);
-        shrink_map(&mut self.unfold_hc);
-        shrink_set(&mut self.iota_stuck);
-        shrink_map(&mut self.struct_eta_cache);
-        shrink_map(&mut self.iota_cache);
-        shrink_map(&mut self.canon_cache);
-        shrink_map(&mut self.content_hc);
-        shrink_map(&mut self.fvar_cache);
-        shrink_map(&mut self.ind_occ_cache);
-        shrink_map(&mut self.closed_eval_cache);
-        shrink_map(&mut self.lam_domain_cache);
-        shrink_map(&mut self.global_value_cache);
     }
 }
 
-pub(crate) const KEEP_CAP: usize = 1 << 15;
-
-pub(super) fn shrink_map<K, V>(m: &mut FxHashMap<K, V>) {
-    if m.capacity() > KEEP_CAP {
-        *m = FxHashMap::default();
-    } else {
-        m.clear();
+impl<K> Reset for FxHashSet<K> {
+    fn with_cap(cap: usize) -> Self {
+        FxHashSet::with_capacity_and_hasher(cap, Default::default())
+    }
+    fn reset(&mut self) {
+        self.clear();
+    }
+    fn reset_shrink(&mut self) {
+        if self.capacity() > KEEP_CAP {
+            *self = FxHashSet::default();
+        } else {
+            self.clear();
+        }
     }
 }
 
-fn shrink_set<K>(s: &mut FxHashSet<K>) {
-    if s.capacity() > KEEP_CAP {
-        *s = FxHashSet::default();
-    } else {
-        s.clear();
+impl<T> Reset for HashTable<T> {
+    fn with_cap(cap: usize) -> Self {
+        HashTable::with_capacity(cap)
     }
+    fn reset(&mut self) {
+        self.clear();
+    }
+    fn reset_shrink(&mut self) {
+        if self.capacity() > KEEP_CAP {
+            *self = HashTable::new();
+        } else {
+            self.clear();
+        }
+    }
+}
+
+impl<T: Copy + Default, const N: usize> Reset for Box<[T; N]> {
+    fn with_cap(_: usize) -> Self {
+        Box::new([T::default(); N])
+    }
+    fn reset(&mut self) {
+        self.fill(T::default());
+    }
+    fn reset_shrink(&mut self) {
+        self.reset();
+    }
+}
+
+macro_rules! caches {
+    (@init cap($cap:expr)) => { $crate::checker::cache::Reset::with_cap($cap) };
+    (@init keep($init:expr)) => { $init };
+    (@init session($init:expr)) => { $init };
+    (@clear $f:expr, cap($cap:expr)) => { $crate::checker::cache::Reset::reset(&mut $f) };
+    (@clear $f:expr, keep($init:expr)) => {};
+    (@clear $f:expr, session($init:expr)) => {};
+    (@clear_session $f:expr, cap($cap:expr)) => { $crate::checker::cache::Reset::reset_shrink(&mut $f) };
+    (@clear_session $f:expr, keep($init:expr)) => {};
+    (@clear_session $f:expr, session($init:expr)) => { $f = $init };
+    (
+        $vis:vis struct $name:ident<$($lt:lifetime),*> {
+            $(#[$kind:ident($arg:expr)] $f:ident: $t:ty,)*
+        }
+        fn new($($param:ident: $pty:ty),*);
+    ) => {
+        $vis struct $name<$($lt),*> {
+            $(pub(crate) $f: $t,)*
+        }
+
+        impl<$($lt),*> $name<$($lt),*> {
+            pub(crate) fn new($($param: $pty),*) -> Self {
+                Self {
+                    $($f: caches!(@init $kind($arg)),)*
+                }
+            }
+
+            #[allow(dead_code)]
+            pub(crate) fn clear(&mut self) {
+                $(caches!(@clear self.$f, $kind($arg));)*
+            }
+
+            pub(crate) fn clear_session(&mut self) {
+                $(caches!(@clear_session self.$f, $kind($arg));)*
+            }
+        }
+    };
+}
+pub(crate) use caches;
+
+macro_rules! memo {
+    ($map:expr, $key:expr, $compute:expr) => {{
+        let key = $key;
+        match $map.get(&key) {
+            Some(&v) => v,
+            None => {
+                let v = $compute;
+                $map.insert(key, v);
+                v
+            }
+        }
+    }};
+}
+pub(crate) use memo;
+
+caches! {
+    pub struct TcCache<'a, 't> {
+        #[cap(SESSION_SMALL)] unfold_const_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+        #[cap(SMALL)] rec_rule_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>), V<'a>>,
+        #[cap(SESSION_SMALL)] const_head_type_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+        #[cap(SESSION_SMALL)] const_head_value_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,
+        #[cap(SMALL)] const_result_level_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
+        #[cap(SESSION_SMALL)] conv_cache_pos: FxHashSet<(Id<'a, Value<'a>>, Id<'a, Value<'a>>)>,
+        #[cap(SESSION_SMALL)] conv_cache_neg: FxHashSet<(Id<'a, Value<'a>>, Id<'a, Value<'a>>)>,
+        #[cap(SMALL)] conv_cache_neg_probe: FxHashSet<(Id<'a, Value<'a>>, Id<'a, Value<'a>>)>,
+        #[session(0)] probe_depth: u32,
+        #[session(0)] probe_budget: u32,
+        #[session(false)] probe_exhausted: bool,
+        #[cap(SESSION_SMALL)] closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
+        #[keep(FxHashMap::default())] whnf_store: FxHashMap<u64, (u128, ExprPtr<'t>)>,
+        #[keep(Box::new([0; 1024]))] whnf_store_filter: Box<[u64; 1024]>,
+        #[keep(Box::new([0; 1024]))] whnf_head_filter: Box<[u64; 1024]>,
+        #[keep(vec![0; WHNF_ADMIT_LEN].into_boxed_slice().try_into().expect("admit table size"))]
+        whnf_admit: Box<[u8; WHNF_ADMIT_LEN]>,
+        #[cap(SESSION_SMALL)] lam_domain_cache: FxHashMap<Id<'a, Value<'a>>, V<'a>>,
+        #[cap(SESSION)] global_value_cache: FxHashMap<(Id<'a, Value<'a>>, u32), Result<(u128, bool), u8>>,
+        #[cap(SESSION)] open_eval_cache: FxHashMap<(Id<'a, Env<'a>>, ExprPtr<'t>), V<'a>>,
+        #[cap(SESSION_SMALL)] bvar_hc: FxHashMap<(u32, Id<'a, Value<'a>>), V<'a>>,
+        #[cap(SESSION)] spine_hc: FxHashMap<(Id<'a, Spine<'a>>, u64), S<'a>>,
+        #[cap(SESSION)] app_hc: FxHashMap<(Id<'a, Value<'a>>, Id<'a, Value<'a>>), V<'a>>,
+        #[cap(SESSION)] env_hc: FxHashMap<(Id<'a, Env<'a>>, Id<'a, Value<'a>>), E<'a>>,
+        #[cap(SESSION_SMALL)] lam_hc: FxHashMap<(ExprPtr<'t>, Id<'a, Env<'a>>, ExprPtr<'t>), V<'a>>,
+        #[cap(SESSION_SMALL)]
+        pi_hc: FxHashMap<(Id<'a, Value<'a>>, Id<'a, Env<'a>>, ExprPtr<'t>, Option<Id<'a, Ctx<'a>>>), V<'a>>,
+        #[cap(SESSION)] type_cache: FxHashMap<(Id<'a, Env<'a>>, ExprPtr<'t>), CachedType<'a>>,
+        #[cap(SESSION)] quote_cache: FxHashMap<(Id<'a, Value<'a>>, u32), ExprPtr<'t>>,
+        #[cap(SESSION)] frames: HashTable<E<'a>>,
+        #[cap(SMALL)] lsub_bases: FxHashMap<Id<'a, LevelSub<'a>>, E<'a>>,
+        #[cap(SMALL)] level_subs: FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>), &'a LevelSub<'a>>,
+        #[cap(0)] prune_dm: Box<[(Option<Id<'a, Env<'a>>>, u64, Option<E<'a>>); PRUNE_DM_LEN]>,
+        #[cap(SMALL)] wide_fvars: FxHashMap<ExprPtr<'t>, &'a [u16]>,
+        #[cap(SMALL)] wide_prune: FxHashMap<(Id<'a, Env<'a>>, ExprPtr<'t>), E<'a>>,
+        #[cap(SESSION)] rigid_hc: FxHashMap<(KeyTag, u64, u64, Id<'a, Spine<'a>>), V<'a>>,
+        #[cap(SESSION)] unfold_hc: FxHashMap<(Id<'a, OnceCell<V<'a>>>, Id<'a, Spine<'a>>), V<'a>>,
+        #[cap(SESSION_SMALL)] iota_stuck: FxHashSet<Id<'a, Value<'a>>>,
+        #[cap(SMALL)] struct_eta_cache: FxHashMap<(Id<'a, Value<'a>>, NamePtr<'t>), Option<V<'a>>>,
+        #[cap(SESSION)] iota_cache: FxHashMap<Id<'a, Value<'a>>, V<'a>>,
+        #[cap(SESSION)] canon_cache: FxHashMap<Id<'a, Value<'a>>, V<'a>>,
+        #[cap(SESSION_SMALL)] content_hc: FxHashMap<(KeyTag, u64), V<'a>>,
+        #[cap(SMALL)] fvar_cache: FxHashMap<Id<'a, Value<'a>>, bool>,
+        #[cap(SMALL)] ind_occ_cache: FxHashMap<Id<'a, Value<'a>>, bool>,
+        #[keep(value::env_empty(arena))] empty_env: E<'a>,
+        #[keep(value::spine_empty(arena))] empty_spine: S<'a>,
+        #[keep(value::ctx_empty(arena))] empty_ctx: C<'a>,
+    }
+    fn new(arena: &'a Bump);
 }
 
 pub(crate) struct SessionBump {
@@ -271,11 +238,11 @@ pub(crate) const WHNF_ADMIT_LEN: usize = 1 << 22;
 
 #[inline]
 pub(crate) fn admit_slot(k: u64) -> usize {
-    (k.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 42) as usize
+    (k.wrapping_mul(GOLDEN) >> 42) as usize
 }
 
 #[inline]
 pub(crate) fn tenure_slot(k: usize) -> (usize, u64) {
-    let h = (k as u64).wrapping_mul(0x9E3779B97F4A7C15) >> 16;
+    let h = (k as u64).wrapping_mul(GOLDEN) >> 16;
     (((h >> 6) as usize) & 1023, 1u64 << (h & 63))
 }

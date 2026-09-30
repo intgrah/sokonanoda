@@ -1,6 +1,8 @@
-use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use crate::term::hash::GOLDEN;
+use crate::term::ptr::{BigUintPtr, ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use bumpalo::Bump;
 use std::cell::{Cell, OnceCell};
+use std::ptr::NonNull;
 
 pub type V<'a> = &'a Value<'a>;
 pub type E<'a> = &'a Env<'a>;
@@ -24,6 +26,52 @@ pub enum RigidHead<'a> {
     Inductive(NamePtr<'a>, LevelsPtr<'a>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub(crate) enum KeyTag {
+    Sort = 1,
+    NatLit,
+    StrLit,
+    BVar,
+    Axiom,
+    Ctor,
+    Recursor,
+    QuotConst,
+    Inductive,
+    Unfold,
+    Lam,
+    Pi,
+    Thunk,
+    LevelSub,
+    EmptySpine,
+}
+
+impl KeyTag {
+    #[inline]
+    pub(crate) fn u64(self) -> u64 {
+        self as u64
+    }
+
+    #[inline]
+    pub(crate) fn u128(self) -> u128 {
+        self as u128
+    }
+}
+
+impl<'a> RigidHead<'a> {
+    #[inline]
+    pub(crate) fn tag(self) -> KeyTag {
+        match self {
+            RigidHead::BVar(..) => KeyTag::BVar,
+            RigidHead::Axiom(..) => KeyTag::Axiom,
+            RigidHead::Ctor(..) => KeyTag::Ctor,
+            RigidHead::Recursor(..) => KeyTag::Recursor,
+            RigidHead::QuotConst(..) => KeyTag::QuotConst,
+            RigidHead::Inductive(..) => KeyTag::Inductive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct UnfoldHead<'a> {
     pub name: NamePtr<'a>,
@@ -32,7 +80,7 @@ pub struct UnfoldHead<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Elim<'a> {
-    bits: u64,
+    ptr: NonNull<()>,
     _ph: std::marker::PhantomData<&'a ()>,
 }
 
@@ -46,48 +94,50 @@ impl<'a> Elim<'a> {
 
     #[inline]
     pub fn app(v: V<'a>) -> Self {
-        let addr = v as *const Value<'a> as usize as u64;
-        debug_assert!(addr & 1 == 0);
+        debug_assert!(Id::of(v).addr() & 1 == 0);
         Elim {
-            bits: addr,
+            ptr: NonNull::from(v).cast(),
             _ph: std::marker::PhantomData,
         }
     }
 
     #[inline]
     pub fn proj(ty_name: NamePtr<'a>, idx: u16) -> Self {
-        let addr = ty_name.get_hash();
+        let name = ty_name.into_raw();
         debug_assert!(
-            addr >> (Self::IDX_SHIFT - 1) == 0,
+            name.addr().get() >> (Self::IDX_SHIFT - 1) == 0,
             "name address does not fit alongside a projection index"
         );
+        let packed = name
+            .as_ptr()
+            .cast::<()>()
+            .map_addr(|a| (a << 1) | 1 | (usize::from(idx) << Self::IDX_SHIFT));
         Elim {
-            bits: (addr << 1) | 1 | (u64::from(idx) << Self::IDX_SHIFT),
+            ptr: unsafe { NonNull::new_unchecked(packed) },
             _ph: std::marker::PhantomData,
         }
     }
 
     #[inline]
     pub fn is_app(self) -> bool {
-        self.bits & 1 == 0
+        self.ptr.addr().get() & 1 == 0
     }
 
     #[inline]
     pub fn raw(self) -> u64 {
-        self.bits
+        self.ptr.addr().get() as u64
     }
 
     #[inline]
     pub fn view(self) -> ElimView<'a> {
         if self.is_app() {
-            let p = self.bits as usize as *const Value<'a>;
-            ElimView::App(unsafe { &*p })
+            ElimView::App(unsafe { self.ptr.cast::<Value<'a>>().as_ref() })
         } else {
-            let mask = (1u64 << Self::IDX_SHIFT) - 1;
-            let addr = (self.bits & mask) >> 1;
+            let mask = (1usize << Self::IDX_SHIFT) - 1;
+            let name = self.ptr.as_ptr().map_addr(|a| (a & mask) >> 1).cast();
             ElimView::Proj {
-                ty_name: unsafe { NamePtr::from_raw_hash(addr) },
-                idx: (self.bits >> Self::IDX_SHIFT) as u16,
+                ty_name: unsafe { NamePtr::from_raw(NonNull::new_unchecked(name)) },
+                idx: (self.raw() >> Self::IDX_SHIFT) as u16,
             }
         }
     }
@@ -108,7 +158,7 @@ pub enum Value<'a> {
         head: RigidHead<'a>,
         spine: S<'a>,
         canon: Cell<bool>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     Unfold {
         head: UnfoldHead<'a>,
@@ -116,55 +166,71 @@ pub enum Value<'a> {
         head_value: &'a OnceCell<V<'a>>,
         forced: OnceCell<V<'a>>,
         canon: Cell<bool>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     Lam {
         binder_type: ExprPtr<'a>,
         body: Closure<'a>,
         canon: Cell<bool>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     Pi {
         domain: V<'a>,
         body: Closure<'a>,
         canon: Cell<bool>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     Sort {
         level: LevelPtr<'a>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     NatLit {
         ptr: BigUintPtr<'a>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     StrLit {
         ptr: StringPtr<'a>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
     Thunk {
         env: E<'a>,
         expr: ExprPtr<'a>,
         forced: OnceCell<V<'a>>,
-        key: Cell<u64>,
+        key: LazyKey,
     },
 }
 
 #[inline]
 pub fn kmix(a: u64, b: u64) -> u64 {
-    (a ^ b).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29)
+    (a ^ b).wrapping_mul(GOLDEN).rotate_left(29)
 }
 
 const KEY_PRESENT: u64 = 1 << 63;
 
 #[inline]
-fn seal(d: u64, closed: bool) -> u64 {
+fn seal((d, closed): (u64, bool)) -> u64 {
     (d & !1) | u64::from(closed) | KEY_PRESENT
+}
+
+#[derive(Debug, Default)]
+pub struct LazyKey(Cell<u64>);
+
+impl LazyKey {
+    #[inline]
+    fn get_or_seal(&self, compute: impl FnOnce() -> (u64, bool)) -> u64 {
+        let k = self.0.get();
+        if k & KEY_PRESENT != 0 {
+            return k;
+        }
+        let k = seal(compute());
+        self.0.set(k);
+        k
+    }
 }
 
 impl<'a> Value<'a> {
     #[inline]
-    fn key_cell(&self) -> &Cell<u64> {
+    fn lazy_key(&self) -> &LazyKey {
         match self {
             Value::Rigid { key, .. }
             | Value::Unfold { key, .. }
@@ -179,14 +245,7 @@ impl<'a> Value<'a> {
 
     #[inline]
     pub fn digest(&self) -> u64 {
-        let cell = self.key_cell();
-        let k = cell.get();
-        if k & KEY_PRESENT != 0 {
-            return k;
-        }
-        let d = self.compute_key();
-        cell.set(d);
-        d
+        self.lazy_key().get_or_seal(|| self.compute_key())
     }
 
     #[inline]
@@ -211,46 +270,39 @@ impl<'a> Value<'a> {
         }
     }
 
-    fn compute_key(&self) -> u64 {
+    fn compute_key(&self) -> (u64, bool) {
         match self {
             Value::Rigid { head, spine, .. } => {
                 let (h, c) = head_key(*head);
-                seal(kmix(h, spine.key()), c && spine.is_closed())
+                (kmix(h, spine.key()), c && spine.is_closed())
             }
-            Value::Unfold { head, spine, .. } => {
-                let h = kmix(kmix(10, head.name.get_hash()), head.levels.get_hash());
-                seal(kmix(h, spine.key()), spine.is_closed())
-            }
+            Value::Unfold { head, spine, .. } => (
+                kmix(
+                    const_key(KeyTag::Unfold, head.name, head.levels),
+                    spine.key(),
+                ),
+                spine.is_closed(),
+            ),
             Value::Lam {
                 binder_type, body, ..
             } => {
                 let (b, c) = closure_key(body);
-                let h = kmix(
-                    11,
-                    binder_type.as_ref() as *const crate::term::expr::Expr<'a> as usize as u64,
-                );
-                seal(kmix(h, b), c)
+                let h = kmix(KeyTag::Lam.u64(), binder_type.addr() as u64);
+                (kmix(h, b), c)
             }
             Value::Pi { domain, body, .. } => {
                 let (b, c) = closure_key(body);
-                let h = 12;
-                seal(kmix(kmix(h, domain.digest()), b), c && domain.is_closed())
+                (
+                    kmix(kmix(KeyTag::Pi.u64(), domain.digest()), b),
+                    c && domain.is_closed(),
+                )
             }
-            Value::Sort { level, .. } => seal(kmix(1, level.get_hash()), true),
-            Value::NatLit { ptr, .. } => seal(kmix(2, ptr.get_hash()), true),
-            Value::StrLit { ptr, .. } => seal(kmix(3, ptr.get_hash()), true),
+            Value::Sort { level, .. } => (kmix(KeyTag::Sort.u64(), level.get_hash()), true),
+            Value::NatLit { ptr, .. } => (kmix(KeyTag::NatLit.u64(), ptr.get_hash()), true),
+            Value::StrLit { ptr, .. } => (kmix(KeyTag::StrLit.u64(), ptr.get_hash()), true),
             Value::Thunk { env, expr, .. } => {
                 let (e, c) = env_slots_key(env, expr.num_loose_bvars());
-                seal(
-                    kmix(
-                        kmix(
-                            13,
-                            expr.as_ref() as *const crate::term::expr::Expr<'a> as usize as u64,
-                        ),
-                        e,
-                    ),
-                    c,
-                )
+                (kmix(kmix(KeyTag::Thunk.u64(), expr.addr() as u64), e), c)
             }
         }
     }
@@ -261,14 +313,22 @@ impl<'a> Value<'a> {
     }
 }
 
+#[inline]
+fn const_key(tag: KeyTag, n: NamePtr<'_>, ls: LevelsPtr<'_>) -> u64 {
+    kmix(kmix(tag.u64(), n.get_hash()), ls.get_hash())
+}
+
 fn head_key(head: RigidHead<'_>) -> (u64, bool) {
     match head {
-        RigidHead::BVar(lvl, ty) => (kmix(kmix(4, u64::from(lvl)), ty.digest()), false),
-        RigidHead::Axiom(n, ls) => (kmix(kmix(5, n.get_hash()), ls.get_hash()), true),
-        RigidHead::Ctor(n, ls) => (kmix(kmix(6, n.get_hash()), ls.get_hash()), true),
-        RigidHead::Recursor(n, ls) => (kmix(kmix(7, n.get_hash()), ls.get_hash()), true),
-        RigidHead::QuotConst(n, ls) => (kmix(kmix(8, n.get_hash()), ls.get_hash()), true),
-        RigidHead::Inductive(n, ls) => (kmix(kmix(9, n.get_hash()), ls.get_hash()), true),
+        RigidHead::BVar(lvl, ty) => (
+            kmix(kmix(KeyTag::BVar.u64(), u64::from(lvl)), ty.digest()),
+            false,
+        ),
+        RigidHead::Axiom(n, ls)
+        | RigidHead::Ctor(n, ls)
+        | RigidHead::Recursor(n, ls)
+        | RigidHead::QuotConst(n, ls)
+        | RigidHead::Inductive(n, ls) => (const_key(head.tag(), n, ls), true),
     }
 }
 
@@ -286,11 +346,7 @@ fn env_slots_key(env: E<'_>, count: u16) -> (u64, bool) {
 
 fn closure_key(clo: &Closure<'_>) -> (u64, bool) {
     let (e, c) = env_slots_key(clo.env, clo.body.num_loose_bvars().saturating_sub(1));
-    let d = kmix(
-        clo.body.as_ref() as *const crate::term::expr::Expr<'_> as usize as u64,
-        e,
-    );
-    (d, c && clo.ctx.is_none())
+    (kmix(clo.body.addr() as u64, e), c && clo.ctx.is_none())
 }
 
 #[derive(Debug)]
@@ -347,7 +403,12 @@ impl<'a> WideFrame<'a> {
 pub fn lsub_key(lsub: Option<&LevelSub<'_>>) -> u64 {
     match lsub {
         None => 1,
-        Some(ls) => kmix(kmix(14, ls.ks.get_hash()), ls.vs.get_hash()) | 1,
+        Some(ls) => {
+            kmix(
+                kmix(KeyTag::LevelSub.u64(), ls.ks.get_hash()),
+                ls.vs.get_hash(),
+            ) | 1
+        }
     }
 }
 
@@ -396,7 +457,7 @@ pub enum Spine<'a> {
         len: u32,
         canon: Cell<bool>,
         has_proj: bool,
-        key: Cell<u64>,
+        key: LazyKey,
     },
 }
 
@@ -422,27 +483,21 @@ impl<'a> Spine<'a> {
             prev, elim, key, ..
         } = self
         else {
-            return seal(15, true);
+            return seal((KeyTag::EmptySpine.u64(), true));
         };
-        let k = key.get();
-        if k & KEY_PRESENT != 0 {
-            return k;
-        }
-        let k = match elim.view() {
-            ElimView::App(v) => seal(
+        key.get_or_seal(|| match elim.view() {
+            ElimView::App(v) => (
                 kmix(prev.key(), v.digest()),
                 prev.is_closed() && v.is_closed(),
             ),
-            ElimView::Proj { ty_name, idx } => seal(
+            ElimView::Proj { ty_name, idx } => (
                 kmix(
                     kmix(prev.key(), ty_name.get_hash()),
                     u64::from(idx) | (1 << 60),
                 ),
                 prev.is_closed(),
             ),
-        };
-        key.set(k);
-        k
+        })
     }
 
     #[inline]
@@ -563,11 +618,10 @@ pub fn env_empty<'a>(arena: &'a Bump) -> E<'a> {
     })
 }
 pub fn env_extend<'a>(arena: &'a Bump, parent: E<'a>, v: V<'a>) -> E<'a> {
-    let v_hash = v as *const Value<'a> as usize as u64;
-    let parent_hash = parent.get_hash();
-    let hash = parent_hash
-        .wrapping_mul(0x9E3779B97F4A7C15)
-        .wrapping_add(v_hash);
+    let hash = parent
+        .get_hash()
+        .wrapping_mul(GOLDEN)
+        .wrapping_add(Id::of(v).addr() as u64);
     arena.alloc(Env::Cons {
         v,
         parent,
@@ -593,7 +647,7 @@ pub fn spine_snoc<'a>(arena: &'a Bump, prev: S<'a>, elim: Elim<'a>) -> S<'a> {
         len: prev.len() + 1,
         canon: Cell::new(false),
         has_proj: prev.has_proj() || !elim.is_app(),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 
@@ -602,7 +656,7 @@ pub fn mk_rigid<'a>(arena: &'a Bump, head: RigidHead<'a>, spine: S<'a>) -> V<'a>
         head,
         spine,
         canon: Cell::new(false),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 
@@ -619,7 +673,7 @@ pub fn mk_unfold<'a>(
         head_value,
         forced: OnceCell::new(),
         canon: Cell::new(false),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_unfold_head_with_empty<'a>(
@@ -639,7 +693,7 @@ pub fn mk_unfold_head_with_empty<'a>(
         head_value,
         forced,
         canon: Cell::new(false),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_lam<'a>(arena: &'a Bump, binder_type: ExprPtr<'a>, body: Closure<'a>) -> V<'a> {
@@ -647,7 +701,7 @@ pub fn mk_lam<'a>(arena: &'a Bump, binder_type: ExprPtr<'a>, body: Closure<'a>) 
         binder_type,
         body,
         canon: Cell::new(false),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_pi<'a>(arena: &'a Bump, domain: V<'a>, body: Closure<'a>) -> V<'a> {
@@ -655,25 +709,25 @@ pub fn mk_pi<'a>(arena: &'a Bump, domain: V<'a>, body: Closure<'a>) -> V<'a> {
         domain,
         body,
         canon: Cell::new(false),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_sort<'a>(arena: &'a Bump, level: LevelPtr<'a>) -> V<'a> {
     arena.alloc(Value::Sort {
         level,
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_natlit<'a>(arena: &'a Bump, ptr: BigUintPtr<'a>) -> V<'a> {
     arena.alloc(Value::NatLit {
         ptr,
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_strlit<'a>(arena: &'a Bump, ptr: StringPtr<'a>) -> V<'a> {
     arena.alloc(Value::StrLit {
         ptr,
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 pub fn mk_bvar_with_empty<'a>(arena: &'a Bump, level: u32, ty: V<'a>, empty: S<'a>) -> V<'a> {
@@ -687,7 +741,7 @@ pub fn mk_thunk<'a>(arena: &'a Bump, env: E<'a>, expr: ExprPtr<'a>) -> V<'a> {
         env,
         expr,
         forced: OnceCell::new(),
-        key: Cell::new(0),
+        key: LazyKey::default(),
     })
 }
 

@@ -1,13 +1,20 @@
+use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{self, Closure, ElimView, RigidHead, Value, E, S, V};
-use crate::term::expr::Expr;
-use crate::term::ptr::{LevelsPtr, NamePtr};
+use crate::checker::value::{kmix, Closure, ElimView, KeyTag, RigidHead, Value, E, S, V};
+use crate::term::ptr::{Id, LevelsPtr, NamePtr};
 
 #[inline]
 fn mix(a: u128, b: u128) -> u128 {
     (a ^ b)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15_BF58_476D_1CE4_E5B9)
         .rotate_left(47)
+}
+
+fn head_key(tag: KeyTag, n: NamePtr<'_>, ls: LevelsPtr<'_>) -> u128 {
+    mix(
+        mix(tag.u128(), u128::from(n.get_hash())),
+        u128::from(ls.get_hash()),
+    )
 }
 
 const WHNF_ADMIT_THRESHOLD: u8 = 2;
@@ -56,39 +63,24 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline]
     fn shallow_head_key(v: V<'t>) -> Option<u64> {
+        let head = |tag: KeyTag, n: NamePtr<'t>, ls: LevelsPtr<'t>| {
+            kmix(tag.u64(), kmix(n.get_hash(), ls.get_hash()))
+        };
         let (h, spine) = match v {
-            Value::Unfold { head, spine, .. } => (
-                value::kmix(
-                    10,
-                    value::kmix(head.name.get_hash(), head.levels.get_hash()),
-                ),
-                *spine,
-            ),
+            Value::Unfold { head: u, spine, .. } => {
+                (head(KeyTag::Unfold, u.name, u.levels), *spine)
+            }
             Value::Rigid {
-                head: RigidHead::Recursor(n, ls),
+                head: h @ (RigidHead::Recursor(n, ls) | RigidHead::QuotConst(n, ls)),
                 spine,
                 ..
-            } => (
-                value::kmix(7, value::kmix(n.get_hash(), ls.get_hash())),
-                *spine,
-            ),
-            Value::Rigid {
-                head: RigidHead::QuotConst(n, ls),
-                spine,
-                ..
-            } => (
-                value::kmix(8, value::kmix(n.get_hash(), ls.get_hash())),
-                *spine,
-            ),
+            } => (head(h.tag(), *n, *ls), *spine),
             Value::Thunk { expr, .. } => {
-                return Some(value::kmix(
-                    13,
-                    expr.as_ref() as *const Expr<'t> as usize as u64,
-                ))
+                return Some(kmix(KeyTag::Thunk.u64(), expr.addr() as u64))
             }
             _ => return None,
         };
-        Some(value::kmix(h, u64::from(spine.len())))
+        Some(kmix(h, u64::from(spine.len())))
     }
 
     #[inline]
@@ -116,20 +108,24 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn global_key(&mut self, v: V<'t>, depth: u32) -> Result<(u128, bool), u8> {
-        let addr = v as *const Value<'t> as usize;
-        if let Some(&k) = self.tc_cache.global_value_cache.get(&(addr, depth)) {
-            return k;
-        }
-        let r = self.global_key_uncached(v, depth);
-        self.tc_cache.global_value_cache.insert((addr, depth), r);
-        r
+        memo!(
+            self.tc_cache.global_value_cache,
+            (Id::of(v), depth),
+            self.global_key_uncached(v, depth)
+        )
     }
 
     fn global_key_uncached(&mut self, v: V<'t>, depth: u32) -> Result<(u128, bool), u8> {
         match v {
-            Value::Sort { level, .. } => Ok((mix(1, u128::from(level.get_hash())), true)),
-            Value::NatLit { ptr, .. } => Ok((mix(2, u128::from(ptr.get_hash())), true)),
-            Value::StrLit { ptr, .. } => Ok((mix(3, u128::from(ptr.get_hash())), true)),
+            Value::Sort { level, .. } => {
+                Ok((mix(KeyTag::Sort.u128(), u128::from(level.get_hash())), true))
+            }
+            Value::NatLit { ptr, .. } => {
+                Ok((mix(KeyTag::NatLit.u128(), u128::from(ptr.get_hash())), true))
+            }
+            Value::StrLit { ptr, .. } => {
+                Ok((mix(KeyTag::StrLit.u128(), u128::from(ptr.get_hash())), true))
+            }
             Value::Rigid { head, spine, .. } => {
                 let (h, c) = match *head {
                     RigidHead::BVar(lvl, ty) => {
@@ -137,34 +133,36 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                             return Err(FAIL_DEPTH);
                         }
                         let (t, _) = self.global_key(ty, depth)?;
-                        (mix(mix(4, u128::from(depth - 1 - lvl)), t), false)
+                        (
+                            mix(mix(KeyTag::BVar.u128(), u128::from(depth - 1 - lvl)), t),
+                            false,
+                        )
                     }
-                    RigidHead::Axiom(n, ls) => (self.head_key(5, n, ls), true),
-                    RigidHead::Ctor(n, ls) => (self.head_key(6, n, ls), true),
-                    RigidHead::Recursor(n, ls) => (self.head_key(7, n, ls), true),
-                    RigidHead::QuotConst(n, ls) => (self.head_key(8, n, ls), true),
-                    RigidHead::Inductive(n, ls) => (self.head_key(9, n, ls), true),
+                    RigidHead::Axiom(n, ls)
+                    | RigidHead::Ctor(n, ls)
+                    | RigidHead::Recursor(n, ls)
+                    | RigidHead::QuotConst(n, ls)
+                    | RigidHead::Inductive(n, ls) => (head_key(head.tag(), n, ls), true),
                 };
                 self.spine_key(h, c, spine, depth)
             }
             Value::Unfold { head, spine, .. } => {
-                let h = self.head_key(10, head.name, head.levels);
+                let h = head_key(KeyTag::Unfold, head.name, head.levels);
                 self.spine_key(h, true, spine, depth)
             }
             Value::Lam {
                 binder_type, body, ..
             } => {
-                let h = mix(11, binder_type.as_ref() as *const Expr<'t> as usize as u128);
+                let h = mix(KeyTag::Lam.u128(), binder_type.addr() as u128);
                 self.closure_key(h, body, depth)
             }
             Value::Pi { domain, body, .. } => {
-                let h = 12;
                 let (d, dc) = self.global_key(domain, depth)?;
-                let (k, cc) = self.closure_key(mix(h, d), body, depth)?;
+                let (k, cc) = self.closure_key(mix(KeyTag::Pi.u128(), d), body, depth)?;
                 Ok((k, dc && cc))
             }
             Value::Thunk { env, expr, .. } => {
-                let acc = mix(13, expr.as_ref() as *const Expr<'t> as usize as u128);
+                let acc = mix(KeyTag::Thunk.u128(), expr.addr() as u128);
                 self.env_key(acc, true, env, depth, expr.num_loose_bvars())
             }
         }
@@ -179,7 +177,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if clo.ctx.is_some() {
             return Err(FAIL_CLOSURE);
         }
-        let acc = mix(tag, clo.body.as_ref() as *const Expr<'t> as usize as u128);
+        let acc = mix(tag, clo.body.addr() as u128);
         self.env_key(
             acc,
             true,
@@ -213,13 +211,6 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
         }
         Ok((acc, closed))
-    }
-
-    fn head_key(&mut self, tag: u128, n: NamePtr<'t>, ls: LevelsPtr<'t>) -> u128 {
-        mix(
-            mix(tag, u128::from(n.get_hash())),
-            u128::from(ls.get_hash()),
-        )
     }
 
     fn spine_key(

@@ -10,6 +10,10 @@ pub(crate) type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;
 
 pub(crate) type CowStr<'a> = Cow<'a, str>;
 
+/// https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing
+/// 2 ^ 64 / φ
+pub(crate) const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
+
 pub(crate) trait StructHash {
     fn struct_hash(&self) -> u64;
 }
@@ -39,30 +43,6 @@ pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> {
 
 pub(crate) fn new_fx_hash_map<K, V>() -> FxHashMap<K, V> {
     FxHashMap::with_hasher(Default::default())
-}
-
-pub(crate) fn small_fx_hash_map<K, V>() -> FxHashMap<K, V> {
-    FxHashMap::with_capacity_and_hasher(14, Default::default())
-}
-
-pub(crate) const SESSION_MAP_CAP: usize = 1 << 13;
-
-pub(crate) const SESSION_MAP_CAP_SMALL: usize = 1 << 12;
-
-pub(crate) fn session_small_fx_hash_map<K, V>() -> FxHashMap<K, V> {
-    FxHashMap::with_capacity_and_hasher(SESSION_MAP_CAP_SMALL, Default::default())
-}
-
-pub(crate) fn session_small_fx_hash_set<K>() -> FxHashSet<K> {
-    FxHashSet::with_capacity_and_hasher(SESSION_MAP_CAP_SMALL, Default::default())
-}
-
-pub(crate) fn session_fx_hash_map<K, V>() -> FxHashMap<K, V> {
-    FxHashMap::with_capacity_and_hasher(SESSION_MAP_CAP, Default::default())
-}
-
-pub(crate) fn small_fx_hash_set<K>() -> FxHashSet<K> {
-    FxHashSet::with_capacity_and_hasher(14, Default::default())
 }
 
 pub(crate) fn new_fx_hash_set<K>() -> FxHashSet<K> {

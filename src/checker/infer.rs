@@ -2,7 +2,7 @@ use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
 use crate::checker::value::{self, Closure, RigidHead, Value, C, E, V};
 use crate::term::expr::Expr;
-use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 
 use Expr::*;
 use InferFlag::*;
@@ -124,7 +124,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             App { .. } | Lambda { .. } | Pi { .. } | Let { .. } | Proj { .. } => {}
         }
 
-        let key = (self.key_env(env, e) as *const value::Env<'t> as usize, e);
+        let key = (Id::of(self.key_env(env, e)), e);
         let scope = self.uparam_scope();
         if let Some(cached) = self.tc_cache.type_cache.get(&key).copied() {
             if flag == InferOnly || cached.checked_under == scope {

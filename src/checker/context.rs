@@ -1,4 +1,4 @@
-use super::cache::{shrink_map, TcCache};
+use super::cache::{caches, Reset, TcCache, SESSION, SMALL};
 use crate::checker::env::{DeclarMap, Env, EnvLimit, NotationMap};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
@@ -7,9 +7,7 @@ use crate::term::expr::{
     Expr, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
     STRING_LIT_HASH, VAR_HASH,
 };
-use crate::term::hash::{
-    session_fx_hash_map, small_fx_hash_map, small_fx_hash_set, CowStr, FxHashMap, FxHashSet,
-};
+use crate::term::hash::{CowStr, FxHashMap, FxHashSet};
 use crate::term::intern::{Dag, NameCache};
 use crate::term::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
 use crate::term::name::{Name, NUM_HASH, STR_HASH};
@@ -17,31 +15,14 @@ use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, String
 use bumpalo::Bump;
 use num_bigint::BigUint;
 
-pub struct ExprCache<'t> {
-    pub(crate) inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
-    pub(crate) subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-    pub(crate) dsubst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-    pub(crate) simplify_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
-}
-
-impl<'t> ExprCache<'t> {
-    pub(crate) fn shrink(&mut self) {
-        shrink_map(&mut self.inst_cache);
-        shrink_map(&mut self.subst_cache);
-        shrink_map(&mut self.dsubst_cache);
-        shrink_map(&mut self.simplify_cache);
+caches! {
+    pub struct ExprCache<'t> {
+        #[cap(SMALL)] inst_cache: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
+        #[cap(SMALL)] subst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+        #[cap(SMALL)] dsubst_cache: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+        #[cap(SMALL)] simplify_cache: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
     }
-}
-
-impl<'t> ExprCache<'t> {
-    fn new() -> Self {
-        Self {
-            inst_cache: small_fx_hash_map(),
-            subst_cache: small_fx_hash_map(),
-            dsubst_cache: small_fx_hash_map(),
-            simplify_cache: small_fx_hash_map(),
-        }
-    }
+    fn new();
 }
 
 pub struct ExportFile<'p> {
@@ -99,8 +80,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             arena,
             dag,
             expr_cache: ExprCache::new(),
-            sig_cache: session_fx_hash_map(),
-            sig_computing: small_fx_hash_set(),
+            sig_cache: Reset::with_cap(SESSION),
+            sig_computing: Reset::with_cap(SMALL),
         }
     }
 
@@ -199,7 +180,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn alloc_string(&mut self, s: CowStr<'t>) -> StringPtr<'t> {
-        if let Some(r) = self.export_file.dag.strings.get(&s) {
+        if let Some(r) = self.export_file.dag.strings.get(&*s) {
             return StringPtr::global(r);
         }
         StringPtr::local(self.dag.strings.intern(self.arena, s))

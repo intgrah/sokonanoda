@@ -4,251 +4,318 @@ use crate::config::Config;
 use crate::hash64;
 use crate::term::expr::Expr;
 use crate::term::level::Level;
-use crate::term::name::{Name, NUM_HASH, STR_HASH};
+use crate::term::name::{Name, NameNode, NatRed, NUM_HASH, STR_HASH};
 use bumpalo::Bump;
 use hashbrown::HashTable;
 use num_bigint::BigUint;
 
-macro_rules! interner {
-    ($name:ident, $pointee:ident) => {
-        pub(crate) struct $name<'a> {
-            table: HashTable<&'a $pointee<'a>>,
+pub(crate) trait Internable<'a>: 'a {
+    type Query<'b>: ?Sized
+    where
+        'a: 'b;
+    type Owned<'x>
+    where
+        'a: 'x;
+    fn query_hash<'b>(q: &Self::Query<'b>) -> u64
+    where
+        'a: 'b;
+    fn stored_hash(&self) -> u64;
+    fn matches<'b>(&self, q: &Self::Query<'b>) -> bool
+    where
+        'a: 'b;
+    fn as_query<'s, 'x>(v: &'s Self::Owned<'x>) -> &'s Self::Query<'a>
+    where
+        'a: 'x;
+    fn alloc<'x>(arena: &'a Bump, v: Self::Owned<'x>) -> &'a Self
+    where
+        'a: 'x;
+}
+
+pub(crate) struct Interner<'a, T: ?Sized> {
+    table: HashTable<&'a T>,
+}
+
+impl<'a, T: ?Sized + Internable<'a>> Interner<'a, T> {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            table: HashTable::with_capacity(cap),
         }
-        impl<'a> $name<'a> {
-            fn new() -> Self {
-                Self {
-                    table: HashTable::new(),
-                }
-            }
-            #[allow(dead_code)]
-            fn with_capacity(cap: usize) -> Self {
-                Self {
-                    table: HashTable::with_capacity(cap),
-                }
-            }
-            #[allow(dead_code)]
-            pub(crate) fn len(&self) -> usize {
-                self.table.len()
-            }
+    }
 
-            #[allow(dead_code)]
-            pub(crate) fn clear(&mut self) {
-                self.table.clear()
-            }
+    pub(crate) fn get<'b>(&self, q: &T::Query<'b>) -> Option<&'a T>
+    where
+        'a: 'b,
+    {
+        self.table
+            .find(T::query_hash(q), |stored| stored.matches(q))
+            .copied()
+    }
 
-            pub(crate) fn get<'b>(&self, v: &$pointee<'b>) -> Option<&'a $pointee<'a>>
+    pub(crate) fn insert<'x>(&mut self, arena: &'a Bump, v: T::Owned<'x>) -> &'a T
+    where
+        'a: 'x,
+    {
+        let r = T::alloc(arena, v);
+        self.table
+            .insert_unique(r.stored_hash(), r, |s| s.stored_hash());
+        r
+    }
+
+    pub(crate) fn intern<'x>(&mut self, arena: &'a Bump, v: T::Owned<'x>) -> &'a T
+    where
+        'a: 'x,
+    {
+        if let Some(r) = self.get(T::as_query(&v)) {
+            return r;
+        }
+        self.insert(arena, v)
+    }
+}
+
+macro_rules! internable_by_value {
+    ($t:ident) => {
+        impl<'a> Internable<'a> for $t<'a> {
+            type Query<'b>
+                = $t<'b>
+            where
+                'a: 'b;
+            type Owned<'x>
+                = $t<'a>
+            where
+                'a: 'x;
+            fn query_hash<'b>(q: &$t<'b>) -> u64
             where
                 'a: 'b,
             {
-                let hash = v.raw_hash();
-                self.table
-                    .find(hash, |stored| {
-                        let s: &$pointee<'b> = stored;
-                        s == v
-                    })
-                    .copied()
+                q.raw_hash()
             }
-
-            pub(crate) fn insert(&mut self, arena: &'a Bump, v: $pointee<'a>) -> &'a $pointee<'a> {
-                let hash = v.raw_hash();
-                let r: &'a $pointee<'a> = arena.alloc(v);
-                self.table.insert_unique(hash, r, |s| s.raw_hash());
-                r
+            fn stored_hash(&self) -> u64 {
+                self.raw_hash()
             }
-
-            #[allow(dead_code)]
-            pub(crate) fn intern(&mut self, arena: &'a Bump, v: $pointee<'a>) -> &'a $pointee<'a> {
-                if let Some(r) = self.get(&v) {
-                    return r;
-                }
-                self.insert(arena, v)
+            fn matches<'b>(&self, q: &$t<'b>) -> bool
+            where
+                'a: 'b,
+            {
+                let s: &$t<'b> = self;
+                s == q
+            }
+            fn as_query<'s, 'x>(v: &'s $t<'a>) -> &'s $t<'a>
+            where
+                'a: 'x,
+            {
+                v
+            }
+            fn alloc<'x>(arena: &'a Bump, v: $t<'a>) -> &'a Self
+            where
+                'a: 'x,
+            {
+                arena.alloc(v)
             }
         }
     };
 }
 
-pub(crate) struct NameInterner<'a> {
-    table: HashTable<&'a crate::term::name::NameNode<'a>>,
-}
-impl<'a> NameInterner<'a> {
-    fn new() -> Self {
-        Self {
-            table: HashTable::new(),
-        }
-    }
+internable_by_value!(Level);
+internable_by_value!(Expr);
 
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            table: HashTable::with_capacity(cap),
-        }
-    }
-
-    pub(crate) fn get<'b>(&self, v: &Name<'b>) -> Option<&'a crate::term::name::NameNode<'a>>
+impl<'a> Internable<'a> for CowStr<'a> {
+    type Query<'b>
+        = str
+    where
+        'a: 'b;
+    type Owned<'x>
+        = CowStr<'a>
+    where
+        'a: 'x;
+    fn query_hash<'b>(q: &str) -> u64
     where
         'a: 'b,
     {
-        let hash = v.get_hash();
-        self.table
-            .find(hash, |stored| match (&stored.kind, v) {
-                (Name::Anon, Name::Anon) => true,
-                (Name::Str(a, x, h), Name::Str(b, y, k)) => {
-                    h == k && a.get_hash() == b.get_hash() && x.get_hash() == y.get_hash()
-                }
-                (Name::Num(a, x, h), Name::Num(b, y, k)) => {
-                    h == k && a.get_hash() == b.get_hash() && x == y
-                }
-                _ => false,
-            })
-            .copied()
+        q.struct_hash()
     }
-
-    pub(crate) fn insert(
-        &mut self,
-        arena: &'a Bump,
-        v: Name<'a>,
-    ) -> &'a crate::term::name::NameNode<'a> {
-        let hash = v.get_hash();
-        let r: &'a crate::term::name::NameNode<'a> =
-            arena.alloc(crate::term::name::NameNode::new(v));
-        self.table.insert_unique(hash, r, |s| s.kind.get_hash());
-        r
+    fn stored_hash(&self) -> u64 {
+        self.raw_hash()
     }
-
-    pub(crate) fn intern(
-        &mut self,
-        arena: &'a Bump,
-        v: Name<'a>,
-    ) -> &'a crate::term::name::NameNode<'a> {
-        if let Some(r) = self.get(&v) {
-            return r;
-        }
-        self.insert(arena, v)
-    }
-}
-
-interner!(LevelInterner, Level);
-interner!(ExprInterner, Expr);
-interner!(StringInterner, CowStr);
-
-impl<'a> ExprInterner<'a> {}
-
-pub(crate) struct BigUintInterner<'a> {
-    table: HashTable<&'a BigUint>,
-}
-impl<'a> BigUintInterner<'a> {
-    fn new() -> Self {
-        Self {
-            table: HashTable::new(),
-        }
-    }
-    pub(crate) fn get(&self, v: &BigUint) -> Option<&'a BigUint> {
-        let hash = v.struct_hash();
-        self.table.find(hash, |stored| **stored == *v).copied()
-    }
-    pub(crate) fn insert(&mut self, arena: &'a Bump, v: BigUint) -> &'a BigUint {
-        let hash = v.struct_hash();
-        let r: &'a BigUint = arena.alloc(v);
-        self.table.insert_unique(hash, r, |s| s.struct_hash());
-        r
-    }
-    pub(crate) fn intern(&mut self, arena: &'a Bump, v: BigUint) -> &'a BigUint {
-        if let Some(r) = self.get(&v) {
-            return r;
-        }
-        self.insert(arena, v)
-    }
-}
-
-pub(crate) struct LevelsInterner<'a> {
-    table: HashTable<&'a [LevelPtr<'a>]>,
-}
-impl<'a> LevelsInterner<'a> {
-    fn new() -> Self {
-        Self {
-            table: HashTable::new(),
-        }
-    }
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            table: HashTable::with_capacity(cap),
-        }
-    }
-    pub(crate) fn get<'b>(&self, v: &[LevelPtr<'b>]) -> Option<&'a [LevelPtr<'a>]>
+    fn matches<'b>(&self, q: &str) -> bool
     where
         'a: 'b,
     {
-        let hash = v.struct_hash();
-        self.table
-            .find(hash, |stored| {
-                let s: &[LevelPtr<'b>] = stored;
-                s == v
-            })
-            .copied()
+        self.as_ref() == q
     }
-    pub(crate) fn intern(&mut self, arena: &'a Bump, v: &[LevelPtr<'a>]) -> &'a [LevelPtr<'a>] {
-        if let Some(r) = self.get(v) {
-            return r;
+    fn as_query<'s, 'x>(v: &'s CowStr<'a>) -> &'s str
+    where
+        'a: 'x,
+    {
+        v.as_ref()
+    }
+    fn alloc<'x>(arena: &'a Bump, v: CowStr<'a>) -> &'a Self
+    where
+        'a: 'x,
+    {
+        arena.alloc(v)
+    }
+}
+
+impl<'a> Internable<'a> for NameNode<'a> {
+    type Query<'b>
+        = Name<'b>
+    where
+        'a: 'b;
+    type Owned<'x>
+        = Name<'a>
+    where
+        'a: 'x;
+    fn query_hash<'b>(q: &Name<'b>) -> u64
+    where
+        'a: 'b,
+    {
+        q.get_hash()
+    }
+    fn stored_hash(&self) -> u64 {
+        self.kind.get_hash()
+    }
+    fn matches<'b>(&self, q: &Name<'b>) -> bool
+    where
+        'a: 'b,
+    {
+        match (&self.kind, q) {
+            (Name::Anon, Name::Anon) => true,
+            (Name::Str(a, x, h), Name::Str(b, y, k)) => {
+                h == k && a.get_hash() == b.get_hash() && x.get_hash() == y.get_hash()
+            }
+            (Name::Num(a, x, h), Name::Num(b, y, k)) => {
+                h == k && a.get_hash() == b.get_hash() && x == y
+            }
+            _ => false,
         }
-        let hash = v.struct_hash();
-        let r: &'a [LevelPtr<'a>] = arena.alloc_slice_copy(v);
-        self.table.insert_unique(hash, r, |s| s.struct_hash());
-        r
+    }
+    fn as_query<'s, 'x>(v: &'s Name<'a>) -> &'s Name<'a>
+    where
+        'a: 'x,
+    {
+        v
+    }
+    fn alloc<'x>(arena: &'a Bump, v: Name<'a>) -> &'a Self
+    where
+        'a: 'x,
+    {
+        arena.alloc(NameNode::new(v))
+    }
+}
+
+impl<'a> Internable<'a> for BigUint {
+    type Query<'b>
+        = BigUint
+    where
+        'a: 'b;
+    type Owned<'x>
+        = BigUint
+    where
+        'a: 'x;
+    fn query_hash<'b>(q: &BigUint) -> u64
+    where
+        'a: 'b,
+    {
+        q.struct_hash()
+    }
+    fn stored_hash(&self) -> u64 {
+        self.struct_hash()
+    }
+    fn matches<'b>(&self, q: &BigUint) -> bool
+    where
+        'a: 'b,
+    {
+        self == q
+    }
+    fn as_query<'s, 'x>(v: &'s BigUint) -> &'s BigUint
+    where
+        'a: 'x,
+    {
+        v
+    }
+    fn alloc<'x>(arena: &'a Bump, v: BigUint) -> &'a Self
+    where
+        'a: 'x,
+    {
+        arena.alloc(v)
+    }
+}
+
+impl<'a> Internable<'a> for [LevelPtr<'a>] {
+    type Query<'b>
+        = [LevelPtr<'b>]
+    where
+        'a: 'b;
+    type Owned<'x>
+        = &'x [LevelPtr<'a>]
+    where
+        'a: 'x;
+    fn query_hash<'b>(q: &[LevelPtr<'b>]) -> u64
+    where
+        'a: 'b,
+    {
+        q.struct_hash()
+    }
+    fn stored_hash(&self) -> u64 {
+        self.struct_hash()
+    }
+    fn matches<'b>(&self, q: &[LevelPtr<'b>]) -> bool
+    where
+        'a: 'b,
+    {
+        let s: &[LevelPtr<'b>] = self;
+        s == q
+    }
+    fn as_query<'s, 'x>(v: &'s &'x [LevelPtr<'a>]) -> &'s [LevelPtr<'a>]
+    where
+        'a: 'x,
+    {
+        v
+    }
+    fn alloc<'x>(arena: &'a Bump, v: &'x [LevelPtr<'a>]) -> &'a Self
+    where
+        'a: 'x,
+    {
+        arena.alloc_slice_copy(v)
     }
 }
 
 pub struct Dag<'a> {
-    pub(crate) names: NameInterner<'a>,
-    pub(crate) levels: LevelInterner<'a>,
-    pub(crate) exprs: ExprInterner<'a>,
-    pub(crate) uparams: LevelsInterner<'a>,
-    pub(crate) strings: StringInterner<'a>,
-    pub(crate) bignums: Option<BigUintInterner<'a>>,
+    pub(crate) names: Interner<'a, NameNode<'a>>,
+    pub(crate) levels: Interner<'a, Level<'a>>,
+    pub(crate) exprs: Interner<'a, Expr<'a>>,
+    pub(crate) uparams: Interner<'a, [LevelPtr<'a>]>,
+    pub(crate) strings: Interner<'a, CowStr<'a>>,
+    pub(crate) bignums: Option<Interner<'a, BigUint>>,
 }
 
 impl<'a> Dag<'a> {
     pub(crate) fn new(config: &Config, input_len: usize) -> Self {
         Self {
-            names: NameInterner::with_capacity(input_len / 1024 + 16),
-            levels: LevelInterner::new(),
-            exprs: ExprInterner::new(),
-            uparams: LevelsInterner::new(),
-            strings: StringInterner::with_capacity(input_len / 16384 + 16),
-            bignums: if config.nat_extension {
-                Some(BigUintInterner::new())
-            } else {
-                None
-            },
+            names: Interner::with_capacity(input_len / 1024 + 16),
+            levels: Interner::with_capacity(0),
+            exprs: Interner::with_capacity(0),
+            uparams: Interner::with_capacity(0),
+            strings: Interner::with_capacity(input_len / 16384 + 16),
+            bignums: config.nat_extension.then(|| Interner::with_capacity(0)),
         }
     }
 
     pub(crate) fn new_local(config: &Config) -> Self {
         Self {
-            names: NameInterner::new(),
-            levels: LevelInterner::with_capacity(14),
-            exprs: ExprInterner::with_capacity(14),
-            uparams: LevelsInterner::with_capacity(14),
-            strings: StringInterner::new(),
-            bignums: if config.nat_extension {
-                Some(BigUintInterner::new())
-            } else {
-                None
-            },
+            names: Interner::with_capacity(0),
+            levels: Interner::with_capacity(14),
+            exprs: Interner::with_capacity(14),
+            uparams: Interner::with_capacity(14),
+            strings: Interner::with_capacity(0),
+            bignums: config.nat_extension.then(|| Interner::with_capacity(0)),
         }
-    }
-}
-
-impl<'a> StringInterner<'a> {
-    pub(crate) fn get_str(&self, s: &str) -> Option<&'a CowStr<'a>> {
-        let hash = s.struct_hash();
-        self.table
-            .find(hash, |stored| stored.as_ref() == s)
-            .copied()
     }
 }
 
 impl<'a> Dag<'a> {
     fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> {
-        self.strings.get_str(s).map(StringPtr::global)
+        self.strings.get(s).map(StringPtr::global)
     }
 
     fn find_name(&self, anon: NamePtr<'a>, dot_separated_name: &str) -> Option<NamePtr<'a>> {
@@ -271,108 +338,61 @@ impl<'a> Dag<'a> {
         }
         Some(pfx)
     }
-
-    pub(crate) fn mk_name_cache(&self, anon: NamePtr<'a>) -> NameCache<'a> {
-        let cache = self.mk_name_cache_aux(anon);
-        use crate::term::name::NatRed;
-        let kinds = [
-            (cache.nat_succ, NatRed::Succ),
-            (cache.nat_div_go, NatRed::DivGo),
-            (cache.nat_mod_core_go, NatRed::ModCoreGo),
-            (cache.nat_add, NatRed::Add),
-            (cache.nat_sub, NatRed::Sub),
-            (cache.nat_mul, NatRed::Mul),
-            (cache.nat_pow, NatRed::Pow),
-            (cache.nat_mod, NatRed::Mod),
-            (cache.nat_div, NatRed::Div),
-            (cache.nat_beq, NatRed::Beq),
-            (cache.nat_ble, NatRed::Ble),
-            (cache.nat_land, NatRed::LAnd),
-            (cache.nat_lor, NatRed::LOr),
-            (cache.nat_xor, NatRed::XOr),
-            (cache.nat_gcd, NatRed::Gcd),
-            (cache.nat_shl, NatRed::Shl),
-            (cache.nat_shr, NatRed::Shr),
-        ];
-        for (n, k) in kinds {
-            if let Some(n) = n {
-                n.as_ref().set_nat_red(k);
-            }
-        }
-        cache
-    }
-
-    fn mk_name_cache_aux(&self, anon: NamePtr<'a>) -> NameCache<'a> {
-        NameCache {
-            quot: self.find_name(anon, "Quot"),
-            quot_mk: self.find_name(anon, "Quot.mk"),
-            quot_lift: self.find_name(anon, "Quot.lift"),
-            quot_ind: self.find_name(anon, "Quot.ind"),
-            string: self.find_name(anon, "String"),
-            string_of_list: self.find_name(anon, "String.ofList"),
-            nat: self.find_name(anon, "Nat"),
-            nat_zero: self.find_name(anon, "Nat.zero"),
-            nat_succ: self.find_name(anon, "Nat.succ"),
-            nat_add: self.find_name(anon, "Nat.add"),
-            nat_sub: self.find_name(anon, "Nat.sub"),
-            nat_mul: self.find_name(anon, "Nat.mul"),
-            nat_pow: self.find_name(anon, "Nat.pow"),
-            nat_mod: self.find_name(anon, "Nat.mod"),
-            nat_div: self.find_name(anon, "Nat.div"),
-            nat_div_go: self.find_name(anon, "Nat.div.go"),
-            nat_mod_core_go: self.find_name(anon, "Nat.modCore.go"),
-            nat_beq: self.find_name(anon, "Nat.beq"),
-            nat_ble: self.find_name(anon, "Nat.ble"),
-            nat_gcd: self.find_name(anon, "Nat.gcd"),
-            nat_xor: self.find_name(anon, "Nat.xor"),
-            nat_land: self.find_name(anon, "Nat.land"),
-            nat_lor: self.find_name(anon, "Nat.lor"),
-            nat_shl: self.find_name(anon, "Nat.shiftLeft"),
-            nat_shr: self.find_name(anon, "Nat.shiftRight"),
-            bool_true: self.find_name(anon, "Bool.true"),
-            bool_false: self.find_name(anon, "Bool.false"),
-            char: self.find_name(anon, "Char"),
-            char_of_nat: self.find_name(anon, "Char.ofNat"),
-            list: self.find_name(anon, "List"),
-            list_nil: self.find_name(anon, "List.nil"),
-            list_cons: self.find_name(anon, "List.cons"),
-        }
-    }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct NameCache<'p> {
-    pub(crate) quot: Option<NamePtr<'p>>,
-    pub(crate) quot_mk: Option<NamePtr<'p>>,
-    pub(crate) quot_lift: Option<NamePtr<'p>>,
-    pub(crate) quot_ind: Option<NamePtr<'p>>,
-    pub(crate) nat: Option<NamePtr<'p>>,
-    pub(crate) nat_zero: Option<NamePtr<'p>>,
-    pub(crate) nat_succ: Option<NamePtr<'p>>,
-    pub(crate) nat_add: Option<NamePtr<'p>>,
-    pub(crate) nat_sub: Option<NamePtr<'p>>,
-    pub(crate) nat_mul: Option<NamePtr<'p>>,
-    pub(crate) nat_pow: Option<NamePtr<'p>>,
-    pub(crate) nat_mod: Option<NamePtr<'p>>,
-    pub(crate) nat_div: Option<NamePtr<'p>>,
-    pub(crate) nat_div_go: Option<NamePtr<'p>>,
-    pub(crate) nat_mod_core_go: Option<NamePtr<'p>>,
-    pub(crate) nat_beq: Option<NamePtr<'p>>,
-    pub(crate) nat_ble: Option<NamePtr<'p>>,
-    pub(crate) nat_gcd: Option<NamePtr<'p>>,
-    pub(crate) nat_xor: Option<NamePtr<'p>>,
-    pub(crate) nat_land: Option<NamePtr<'p>>,
-    pub(crate) nat_lor: Option<NamePtr<'p>>,
-    pub(crate) nat_shr: Option<NamePtr<'p>>,
-    pub(crate) nat_shl: Option<NamePtr<'p>>,
-    pub(crate) string: Option<NamePtr<'p>>,
-    pub(crate) string_of_list: Option<NamePtr<'p>>,
-    pub(crate) bool_false: Option<NamePtr<'p>>,
-    pub(crate) bool_true: Option<NamePtr<'p>>,
-    pub(crate) char: Option<NamePtr<'p>>,
-    pub(crate) char_of_nat: Option<NamePtr<'p>>,
-    #[allow(dead_code)]
-    pub(crate) list: Option<NamePtr<'p>>,
-    pub(crate) list_nil: Option<NamePtr<'p>>,
-    pub(crate) list_cons: Option<NamePtr<'p>>,
+macro_rules! name_cache {
+    ($($field:ident = $path:literal $(=> $red:ident)?,)*) => {
+        #[derive(Debug, Clone, Copy)]
+        pub struct NameCache<'p> {
+            $(pub(crate) $field: Option<NamePtr<'p>>,)*
+        }
+
+        impl<'a> Dag<'a> {
+            pub(crate) fn mk_name_cache(&self, anon: NamePtr<'a>) -> NameCache<'a> {
+                let cache = NameCache {
+                    $($field: self.find_name(anon, $path),)*
+                };
+                $($(
+                    if let Some(n) = cache.$field {
+                        n.as_ref().set_nat_red(NatRed::$red);
+                    }
+                )?)*
+                cache
+            }
+        }
+    };
+}
+
+name_cache! {
+    quot = "Quot",
+    quot_mk = "Quot.mk",
+    quot_lift = "Quot.lift",
+    quot_ind = "Quot.ind",
+    string = "String",
+    string_of_list = "String.ofList",
+    nat = "Nat",
+    nat_zero = "Nat.zero",
+    nat_succ = "Nat.succ" => Succ,
+    nat_add = "Nat.add" => Add,
+    nat_sub = "Nat.sub" => Sub,
+    nat_mul = "Nat.mul" => Mul,
+    nat_pow = "Nat.pow" => Pow,
+    nat_mod = "Nat.mod" => Mod,
+    nat_div = "Nat.div" => Div,
+    nat_div_go = "Nat.div.go" => DivGo,
+    nat_mod_core_go = "Nat.modCore.go" => ModCoreGo,
+    nat_beq = "Nat.beq" => Beq,
+    nat_ble = "Nat.ble" => Ble,
+    nat_gcd = "Nat.gcd" => Gcd,
+    nat_xor = "Nat.xor" => XOr,
+    nat_land = "Nat.land" => LAnd,
+    nat_lor = "Nat.lor" => LOr,
+    nat_shl = "Nat.shiftLeft" => Shl,
+    nat_shr = "Nat.shiftRight" => Shr,
+    bool_true = "Bool.true",
+    bool_false = "Bool.false",
+    char = "Char",
+    char_of_nat = "Char.ofNat",
+    list_nil = "List.nil",
+    list_cons = "List.cons",
 }

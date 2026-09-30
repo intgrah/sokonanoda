@@ -1,10 +1,11 @@
+use crate::checker::cache::memo;
 use crate::checker::env::{Declar, RecursorData};
 use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
 use crate::checker::value::{self, Elim, ElimView, RigidHead, Spine, Value, S, V};
-use crate::term::ptr::{BigUintPtr, LevelsPtr, NamePtr, StringPtr};
+use crate::term::ptr::{BigUintPtr, Id, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
 
@@ -196,7 +197,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 match waiting.pop() {
                     None => break 'done cur,
                     Some(rec_val) => {
-                        let key = rec_val as *const Value<'t> as usize;
+                        let key = Id::of(rec_val);
                         match self.fire_value(depth, rec_val, cur) {
                             Some(res) => {
                                 self.tc_cache.iota_cache.insert(key, res);
@@ -218,7 +219,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn iota_step(&mut self, depth: u32, v: V<'t>) -> ForceStep<'t> {
-        let key = v as *const Value<'t> as usize;
+        let key = Id::of(v);
         if self.tc_cache.iota_stuck.contains(&key) {
             return ForceStep::Done;
         }
@@ -433,7 +434,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn iota_value(&mut self, depth: u32, v: V<'t>) -> Option<V<'t>> {
-        let v_key = v as *const Value<'t> as usize;
+        let v_key = Id::of(v);
         if self.tc_cache.iota_stuck.contains(&v_key) {
             return None;
         }
@@ -637,13 +638,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if !self.can_be_struct_memo(rec_induct) {
             return None;
         }
-        let key = (major as *const Value<'t> as usize, rec_induct);
-        if let Some(cached) = self.tc_cache.struct_eta_cache.get(&key) {
-            return *cached;
-        }
-        let result = self.try_struct_eta_reduce_uncached(depth, major, rec, rec_induct);
-        self.tc_cache.struct_eta_cache.insert(key, result);
-        result
+        memo!(
+            self.tc_cache.struct_eta_cache,
+            (Id::of(major), rec_induct),
+            self.try_struct_eta_reduce_uncached(depth, major, rec, rec_induct)
+        )
     }
 
     fn try_struct_eta_reduce_uncached(
@@ -951,40 +950,38 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     pub(crate) fn value_has_free_bvar(&mut self, depth: u32, v: V<'t>) -> bool {
         let v = self.force_thunk(depth, v);
-        let key = v as *const Value<'t> as usize;
-        if let Some(&b) = self.tc_cache.fvar_cache.get(&key) {
-            return b;
-        }
-        let r = match v {
-            Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => false,
-            Value::Rigid {
-                head: RigidHead::BVar(..),
-                ..
-            } => true,
-            Value::Rigid { spine, .. } | Value::Unfold { spine, .. } => {
-                let mut found = false;
-                let mut s = *spine;
-                loop {
-                    match s {
-                        Spine::Empty => break,
-                        Spine::Snoc { prev, elim, .. } => {
-                            if let ElimView::App(a) = elim.view() {
-                                if self.value_has_free_bvar(depth, a) {
-                                    found = true;
-                                    break;
+        memo!(
+            self.tc_cache.fvar_cache,
+            Id::of(v),
+            match v {
+                Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => false,
+                Value::Rigid {
+                    head: RigidHead::BVar(..),
+                    ..
+                } => true,
+                Value::Rigid { spine, .. } | Value::Unfold { spine, .. } => {
+                    let mut found = false;
+                    let mut s = *spine;
+                    loop {
+                        match s {
+                            Spine::Empty => break,
+                            Spine::Snoc { prev, elim, .. } => {
+                                if let ElimView::App(a) = elim.view() {
+                                    if self.value_has_free_bvar(depth, a) {
+                                        found = true;
+                                        break;
+                                    }
                                 }
+                                s = *prev;
                             }
-                            s = *prev;
                         }
                     }
+                    found
                 }
-                found
+                Value::Lam { .. } | Value::Pi { .. } => false,
+                Value::Thunk { .. } => unreachable!("force_thunk left a Thunk"),
             }
-            Value::Lam { .. } | Value::Pi { .. } => false,
-            Value::Thunk { .. } => unreachable!("force_thunk left a Thunk"),
-        };
-        self.tc_cache.fvar_cache.insert(key, r);
-        r
+        )
     }
 
     pub(crate) fn value_to_bignum(&mut self, depth: u32, v: V<'t>) -> Option<BigUint> {

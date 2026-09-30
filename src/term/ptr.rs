@@ -21,16 +21,11 @@ use std::ptr::NonNull;
 macro_rules! tagged_ptr {
     ($(#[$m:meta])* $name:ident, $pointee:ty) => {
         $(#[$m])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         pub struct $name<'a> {
             ptr: NonNull<$pointee>,
             _ph: PhantomData<&'a $pointee>,
         }
-
-        impl<'a> Clone for $name<'a> {
-            #[inline]
-            fn clone(&self) -> Self { *self }
-        }
-        impl<'a> Copy for $name<'a> {}
 
         unsafe impl<'a> Send for $name<'a> {}
         unsafe impl<'a> Sync for $name<'a> {}
@@ -65,9 +60,12 @@ macro_rules! tagged_ptr {
 
             #[inline]
             #[allow(dead_code)]
-            pub(crate) unsafe fn from_raw_hash(a: u64) -> Self {
-                let p = std::ptr::without_provenance_mut::<$pointee>(a as usize);
-                Self { ptr: unsafe { NonNull::new_unchecked(p) }, _ph: PhantomData }
+            pub(crate) fn into_raw(self) -> NonNull<$pointee> { self.ptr }
+
+            #[inline]
+            #[allow(dead_code)]
+            pub(crate) unsafe fn from_raw(ptr: NonNull<$pointee>) -> Self {
+                Self { ptr, _ph: PhantomData }
             }
         }
 
@@ -75,19 +73,6 @@ macro_rules! tagged_ptr {
             type Target = $pointee;
             #[inline]
             fn deref(&self) -> &$pointee { self.as_ref() }
-        }
-
-        impl<'a> PartialEq for $name<'a> {
-            #[inline]
-            fn eq(&self, o: &Self) -> bool { self.ptr.as_ptr().addr() == o.ptr.as_ptr().addr() }
-        }
-        impl<'a> Eq for $name<'a> {}
-
-        impl<'a> std::hash::Hash for $name<'a> {
-            #[inline]
-            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                state.write_u64(self.ptr.as_ptr().addr() as u64)
-            }
         }
 
         impl<'a> std::fmt::Debug for $name<'a> {
@@ -107,18 +92,12 @@ const EXPR_ADDR_MASK: u64 = 0x0000_ffff_ffff_fff8;
 const EXPR_LOCAL_BIT: u64 = 1;
 const EXPR_BVAR_SHIFT: u32 = 48;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExprPtr<'a> {
     bits: std::num::NonZeroU64,
     _ph: PhantomData<&'a Expr<'a>>,
 }
 
-impl<'a> Clone for ExprPtr<'a> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'a> Copy for ExprPtr<'a> {}
 unsafe impl<'a> Send for ExprPtr<'a> {}
 unsafe impl<'a> Sync for ExprPtr<'a> {}
 
@@ -162,8 +141,13 @@ impl<'a> ExprPtr<'a> {
     }
 
     #[inline]
+    pub(crate) fn addr(self) -> usize {
+        (self.bits.get() & EXPR_ADDR_MASK) as usize
+    }
+
+    #[inline]
     pub(crate) fn as_ref(self) -> &'a Expr<'a> {
-        unsafe { &*((self.bits.get() & EXPR_ADDR_MASK) as usize as *const Expr<'a>) }
+        unsafe { &*(self.addr() as *const Expr<'a>) }
     }
 }
 
@@ -172,21 +156,6 @@ impl<'a> std::ops::Deref for ExprPtr<'a> {
     #[inline]
     fn deref(&self) -> &Expr<'a> {
         self.as_ref()
-    }
-}
-
-impl<'a> PartialEq for ExprPtr<'a> {
-    #[inline]
-    fn eq(&self, o: &Self) -> bool {
-        self.bits == o.bits
-    }
-}
-impl<'a> Eq for ExprPtr<'a> {}
-
-impl<'a> std::hash::Hash for ExprPtr<'a> {
-    #[inline]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.bits.get())
     }
 }
 
@@ -219,6 +188,7 @@ const LEVELS_TAG: u64 = 1 << 63;
 const LEVELS_LEN_SHIFT: u32 = 48;
 const LEVELS_LEN_MAX: usize = (1 << 15) - 1;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LevelsPtr<'a> {
     bits: std::num::NonZeroU64,
     _ph: PhantomData<&'a [LevelPtr<'a>]>,
@@ -277,13 +247,6 @@ impl<'a> LevelsPtr<'a> {
     }
 }
 
-impl<'a> Clone for LevelsPtr<'a> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'a> Copy for LevelsPtr<'a> {}
 unsafe impl<'a> Send for LevelsPtr<'a> {}
 unsafe impl<'a> Sync for LevelsPtr<'a> {}
 
@@ -294,21 +257,64 @@ impl<'a> std::ops::Deref for LevelsPtr<'a> {
         self.as_ref()
     }
 }
-impl<'a> PartialEq for LevelsPtr<'a> {
-    #[inline]
-    fn eq(&self, o: &Self) -> bool {
-        self.bits == o.bits
-    }
-}
-impl<'a> Eq for LevelsPtr<'a> {}
-impl<'a> std::hash::Hash for LevelsPtr<'a> {
-    #[inline]
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.bits.get())
-    }
-}
 impl<'a> std::fmt::Debug for LevelsPtr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "LevelsPtr({:?})", self.as_ref())
+    }
+}
+
+pub struct Id<'a, T>(&'a T);
+
+impl<'a, T> Id<'a, T> {
+    #[inline]
+    pub(crate) fn of(r: &'a T) -> Self {
+        Self(r)
+    }
+
+    #[inline]
+    pub(crate) fn addr(self) -> usize {
+        std::ptr::from_ref(self.0).addr()
+    }
+}
+
+impl<T> Clone for Id<'_, T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Id<'_, T> {}
+
+impl<T> PartialEq for Id<'_, T> {
+    #[inline]
+    fn eq(&self, o: &Self) -> bool {
+        std::ptr::eq(self.0, o.0)
+    }
+}
+impl<T> Eq for Id<'_, T> {}
+
+impl<T> PartialOrd for Id<'_, T> {
+    #[inline]
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+impl<T> Ord for Id<'_, T> {
+    #[inline]
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        self.addr().cmp(&o.addr())
+    }
+}
+
+impl<T> std::hash::Hash for Id<'_, T> {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_usize(self.addr())
+    }
+}
+
+impl<T> std::fmt::Debug for Id<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Id({:p})", self.0)
     }
 }

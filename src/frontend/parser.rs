@@ -1133,7 +1133,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     #[inline]
     fn intern_str(&mut self, s: &str) -> StringPtr<'a> {
-        if let Some(r) = self.dag.strings.get_str(s) {
+        if let Some(r) = self.dag.strings.get(s) {
             return StringPtr::global(r);
         }
         let owned = Cow::Borrowed(&*self.arena.alloc_str(s));

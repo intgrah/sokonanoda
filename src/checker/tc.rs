@@ -178,7 +178,7 @@ impl<'p> ExportFile<'p> {
                 })
             };
             sbump.reset();
-            tctx.expr_cache.shrink();
+            tctx.expr_cache.clear_session();
             if finished {
                 return;
             }

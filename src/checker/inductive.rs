@@ -1,3 +1,4 @@
+use crate::checker::cache::memo;
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData, RecRule, RecursorData,
@@ -6,7 +7,7 @@ use crate::checker::tc::TypeChecker;
 use crate::checker::value::{Closure, RigidHead, Value, S, V};
 use crate::term::expr::Expr::*;
 use crate::term::hash::{FxHashSet, FxIndexMap};
-use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::sync::Arc;
 
 impl<'t, 'p: 't> ExportFile<'p> {
@@ -1189,42 +1190,40 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn value_has_ind_occ(&mut self, depth: u32, v: V<'t>, haystack: &[ExprPtr<'t>]) -> bool {
         let v = self.force_thunk(depth, v);
-        let key = v as *const Value<'t> as usize;
-        if let Some(&b) = self.tc_cache.ind_occ_cache.get(&key) {
-            return b;
-        }
-        let r = match v {
-            Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => false,
-            Value::Rigid { head, spine, .. } => {
-                let head_hit = match *head {
-                    RigidHead::BVar(_, ty) => self.value_has_ind_occ(depth, ty, haystack),
-                    RigidHead::Axiom(n, _)
-                    | RigidHead::Ctor(n, _)
-                    | RigidHead::Recursor(n, _)
-                    | RigidHead::QuotConst(n, _)
-                    | RigidHead::Inductive(n, _) => self.name_is_ind_occ(n, haystack),
-                };
-                head_hit || self.spine_has_ind_occ(depth, spine, haystack)
+        memo!(
+            self.tc_cache.ind_occ_cache,
+            Id::of(v),
+            match v {
+                Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => false,
+                Value::Rigid { head, spine, .. } => {
+                    let head_hit = match *head {
+                        RigidHead::BVar(_, ty) => self.value_has_ind_occ(depth, ty, haystack),
+                        RigidHead::Axiom(n, _)
+                        | RigidHead::Ctor(n, _)
+                        | RigidHead::Recursor(n, _)
+                        | RigidHead::QuotConst(n, _)
+                        | RigidHead::Inductive(n, _) => self.name_is_ind_occ(n, haystack),
+                    };
+                    head_hit || self.spine_has_ind_occ(depth, spine, haystack)
+                }
+                Value::Unfold { head, spine, .. } => {
+                    self.name_is_ind_occ(head.name, haystack)
+                        || self.spine_has_ind_occ(depth, spine, haystack)
+                }
+                Value::Lam { body, .. } => {
+                    let dom = self.lam_domain(depth, v);
+                    let body = *body;
+                    self.value_has_ind_occ(depth, dom, haystack)
+                        || self.closure_has_ind_occ(depth, &body, haystack)
+                }
+                Value::Pi { domain, body, .. } => {
+                    let (domain, body) = (*domain, *body);
+                    self.value_has_ind_occ(depth, domain, haystack)
+                        || self.closure_has_ind_occ(depth, &body, haystack)
+                }
+                Value::Thunk { .. } => unreachable!("ind occurs: thunk after force"),
             }
-            Value::Unfold { head, spine, .. } => {
-                self.name_is_ind_occ(head.name, haystack)
-                    || self.spine_has_ind_occ(depth, spine, haystack)
-            }
-            Value::Lam { body, .. } => {
-                let dom = self.lam_domain(depth, v);
-                let body = *body;
-                self.value_has_ind_occ(depth, dom, haystack)
-                    || self.closure_has_ind_occ(depth, &body, haystack)
-            }
-            Value::Pi { domain, body, .. } => {
-                let (domain, body) = (*domain, *body);
-                self.value_has_ind_occ(depth, domain, haystack)
-                    || self.closure_has_ind_occ(depth, &body, haystack)
-            }
-            Value::Thunk { .. } => unreachable!("ind occurs: thunk after force"),
-        };
-        self.tc_cache.ind_occ_cache.insert(key, r);
-        r
+        )
     }
 
     fn name_is_ind_occ(&self, n: NamePtr<'t>, haystack: &[ExprPtr<'t>]) -> bool {
