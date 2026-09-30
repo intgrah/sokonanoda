@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{S, Value};
 use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};

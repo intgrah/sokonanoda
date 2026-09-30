@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
 use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};

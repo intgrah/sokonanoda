@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 //! Implementation of the `Level` type representing universes
 use crate::checker::context::TcCtx;
 use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};

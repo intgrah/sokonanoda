@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use super::hash::CowStr;
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!("packed term pointers require a 64-bit target");

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use indexmap::IndexMap;
 use rustc_hash::{FxBuildHasher, FxHasher};
 use std::borrow::Cow;

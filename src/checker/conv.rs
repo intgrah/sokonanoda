@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::env::{Declar, ReducibilityHint};
 use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use super::cache::{Reset, SESSION, SMALL, TcCache, caches};
 use crate::checker::env::{DeclarMap, Env, EnvLimit};
 use crate::checker::tc::TypeChecker;

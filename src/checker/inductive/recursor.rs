@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{CtorHeader, InductiveCheckState};
 use crate::checker::env::{Declar, DeclarInfo, RecRule, RecursorData};
 use crate::checker::tc::TypeChecker;

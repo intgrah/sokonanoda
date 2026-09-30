@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 //! Implementaiton of the `Name` type (hierarchical names)
 use crate::checker::context::TcCtx;
 use crate::term::hash::CowStr;

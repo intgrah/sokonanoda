@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::infer::CachedType;
 use crate::checker::value::{self, C, Ctx, E, Env, KeyTag, LevelSub, S, Spine, V, Value};
 use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
 use sokonanoda::{AxiomPolicy, CheckError, Config, Decline, DisallowedAxiom, Rejection};

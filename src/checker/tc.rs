@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::cache::TcCache;
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};

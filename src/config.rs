@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::context::ExportFile;
 use crate::frontend::parser::{parse_export_file, parse_export_mapped};
 use crate::outcome::CheckError;

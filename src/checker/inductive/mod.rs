@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Jeremy Chen
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData};
 use crate::checker::tc::TypeChecker;
