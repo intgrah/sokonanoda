@@ -75,9 +75,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => (head(h.tag(), *n, *ls), *spine),
-            Value::Thunk { expr, .. } => {
-                return Some(kmix(KeyTag::Thunk.u64(), expr.addr() as u64));
-            }
             _ => return None,
         };
         Some(kmix(h, u64::from(spine.len())))
@@ -160,10 +157,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let (d, dc) = self.global_key(domain, depth)?;
                 let (k, cc) = self.closure_key(mix(KeyTag::Pi.u128(), d), body, depth)?;
                 Ok((k, dc && cc))
-            }
-            Value::Thunk { env, expr, .. } => {
-                let acc = mix(KeyTag::Thunk.u128(), expr.addr() as u128);
-                self.env_key(acc, true, env, depth, expr.num_loose_bvars())
             }
         }
     }

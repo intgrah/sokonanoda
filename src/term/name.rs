@@ -153,7 +153,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn get_pfx(&self, mut n: NamePtr<'t>) -> NamePtr<'t> {
         let anonymous = self.anonymous();
         loop {
-            match self.read_name(n) {
+            match n.as_ref().kind {
                 Anon => return n,
                 Str(pfx, ..) | Num(pfx, ..) => {
                     if pfx == anonymous {
@@ -166,7 +166,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn concat_name(&mut self, n1: NamePtr<'t>, n2: NamePtr<'t>) -> NamePtr<'t> {
-        match self.read_name(n2) {
+        match n2.as_ref().kind {
             Anon => n1,
             Str(pfx, sfx, ..) => {
                 let pfx = self.concat_name(n1, pfx);
@@ -180,8 +180,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn append_index_after(&mut self, n: NamePtr<'t>, idx: u64) -> NamePtr<'t> {
-        if let Str(pfx, sfx, ..) = self.read_name(n) {
-            let s = self.read_string(sfx);
+        if let Str(pfx, sfx, ..) = n.as_ref().kind {
+            let s = sfx.as_ref();
             let s = self.alloc_string(CowStr::Owned(format!("{s}_{idx}")));
             self.str(pfx, s)
         } else {
@@ -196,8 +196,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         outgoing: NamePtr<'t>,
         incoming: NamePtr<'t>,
     ) -> NamePtr<'t> {
-        match self.read_name(n) {
-            Anon => match self.read_name(outgoing) {
+        match n.as_ref().kind {
+            Anon => match outgoing.as_ref().kind {
                 Anon => incoming,
                 _ => self.anonymous(),
             },

@@ -69,7 +69,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                     for mut ctor_ty in physical_ctor_types.iter().copied() {
                         while let Pi {
                             binder_type, body, ..
-                        } = ctx.read_expr(ctor_ty)
+                        } = *ctor_ty
                         {
                             if ctx
                                 .find_const(binder_type, |name| physical_ind_names.contains(&name))
@@ -181,20 +181,20 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     ) {
         let mut head = e;
         let mut args_rev = Vec::new();
-        while let App { fun, arg, .. } = self.read_expr(head) {
+        while let App { fun, arg, .. } = *head {
             args_rev.push(arg);
             head = fun;
         }
-        if let Const { name, levels, .. } = self.read_expr(head)
+        if let Const { name, levels, .. } = *head
             && ind_names.contains(&name)
             && args_rev.len() <= usize::from(num_params)
         {
-            let levels_match = self.read_levels(levels) == self.read_levels(expected_levels);
+            let levels_match = levels.as_ref() == expected_levels.as_ref();
             let params_match = args_rev.len() == usize::from(num_params)
                 && offset >= num_params
                 && args_rev.iter().rev().enumerate().all(|(i, arg)| {
                     matches!(
-                        self.read_expr(*arg),
+                        **arg,
                         Var { dbj_idx, .. } if usize::from(dbj_idx) == usize::from(offset) - 1 - i
                     )
                 });
@@ -205,7 +205,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             return;
         }
 
-        match self.read_expr(e) {
+        match *e {
             Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => {}
             App { fun, arg, .. } => {
                 self.check_uniform_inductive_occurrences_at(
@@ -826,7 +826,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         e: ExprPtr<'t>,
         offset: u16,
     ) -> Option<InductiveData<'t>> {
-        if !matches!(self.ctx.read_expr(e), App { .. }) {
+        if !matches!(*e, App { .. }) {
             return None;
         }
         let (_f, name, _levels, args) = self.ctx.unfold_const_apps(self.arena, e)?;
@@ -1043,7 +1043,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if let Some(eprime) = self.replace_if_nested(e, st, offset) {
             eprime
         } else {
-            match self.ctx.read_expr(e) {
+            match *e {
                 Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => e,
                 Pi {
                     binder_type, body, ..
@@ -1143,13 +1143,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     // has only valid applications.
     fn has_ind_occ(&mut self, e: ExprPtr<'t>, haystack: &[ExprPtr<'t>]) -> bool {
         let f = |nptr| {
-            haystack
-                .iter()
-                .copied()
-                .any(|c| match self.ctx.read_expr(c) {
-                    Const { name, .. } => name == nptr,
-                    _ => panic!(),
-                })
+            haystack.iter().copied().any(|c| match *c {
+                Const { name, .. } => name == nptr,
+                _ => panic!(),
+            })
         };
 
         self.ctx.find_const(e, f)
@@ -1178,7 +1175,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     fn value_has_ind_occ(&mut self, depth: u32, v: V<'t>, haystack: &[ExprPtr<'t>]) -> bool {
-        let v = self.force_thunk(depth, v);
         memo!(
             self.tc_cache.ind_occ_cache,
             Id::of(v),
@@ -1210,19 +1206,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.value_has_ind_occ(depth, domain, haystack)
                         || self.closure_has_ind_occ(depth, &body, haystack)
                 }
-                Value::Thunk { .. } => unreachable!("ind occurs: thunk after force"),
             }
         )
     }
 
     fn name_is_ind_occ(&self, n: NamePtr<'t>, haystack: &[ExprPtr<'t>]) -> bool {
-        haystack
-            .iter()
-            .copied()
-            .any(|c| match self.ctx.read_expr(c) {
-                Const { name, .. } => name == n,
-                _ => panic!(),
-            })
+        haystack.iter().copied().any(|c| match *c {
+            Const { name, .. } => name == n,
+            _ => panic!(),
+        })
     }
 
     fn spine_has_ind_occ(&mut self, depth: u32, spine: S<'t>, haystack: &[ExprPtr<'t>]) -> bool {
@@ -1274,18 +1266,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             } => (*n, *ls, *spine),
             _ => return None,
         };
-        let pos = st
-            .ind_consts
-            .iter()
-            .copied()
-            .position(|x| match self.ctx.read_expr(x) {
-                Const { name: n, .. } => n == name,
-                _ => panic!(),
-            })?;
+        let pos = st.ind_consts.iter().copied().position(|x| match *x {
+            Const { name: n, .. } => n == name,
+            _ => panic!(),
+        })?;
         let Const {
             levels: expected_levels,
             ..
-        } = self.ctx.read_expr(st.ind_consts[pos])
+        } = *st.ind_consts[pos]
         else {
             return None;
         };
@@ -1296,7 +1284,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if spine.len() as usize != num_params + st.local_indices[pos].len() {
             return None;
         }
-        let args = self.spine_apps(depth, spine)?;
+        let args = self.spine_apps(spine)?;
         for i in 0..num_params {
             if !Self::is_bvar_at(
                 args[i],
@@ -1342,7 +1330,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut env = self.empty_env();
         let mut cur = self.value_of(ctor_type_cursor);
         for i in 0..st.local_params.len() {
-            let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) else {
+            let Value::Pi { domain, body, .. } = cur else {
                 reject!("constructor type has fewer binders than the block parameters")
             };
             let domain = *domain;
@@ -1354,7 +1342,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             depth += 1;
         }
         // Non-param constructor args.
-        while let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) {
+        while let Value::Pi { domain, body, .. } = cur {
             let domain = *domain;
             let s = self
                 .level_of_type(depth, domain)
@@ -1406,7 +1394,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut depth = 0u32;
         let mut cur = self.value_of(ctor_type_cursor);
         let mut non_prop_levels: Vec<u32> = Vec::new();
-        while let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) {
+        while let Value::Pi { domain, body, .. } = cur {
             let domain = *domain;
             let fresh = self.mk_bvar_hc(depth, domain);
             let level = depth;
@@ -1489,7 +1477,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             // Extra work since you want the new thing at the front of the vector (in position 0)
             let rec_levels = {
                 let mut base = vec![elim_level];
-                for l in self.ctx.read_levels(st.uparams).iter().copied() {
+                for l in st.uparams.as_ref().iter().copied() {
                     base.push(l);
                 }
                 self.ctx.alloc_levels(&base)
@@ -1605,7 +1593,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut depth = depth0;
         let mut cur = self.value_of(ctor_type_cursor);
         for i in 0..st.local_params.len() {
-            let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) else {
+            let Value::Pi { domain, body, .. } = cur else {
                 reject!("constructor type has fewer binders than the block parameters")
             };
             let domain = *domain;
@@ -1615,7 +1603,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             );
             cur = self.apply_closure(depth, body, lv, Some(domain));
         }
-        while let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) {
+        while let Value::Pi { domain, body, .. } = cur {
             let domain = *domain;
             let binder_type = self.quote(depth, domain);
             let is_rec = self.is_rec_argument_v(st, domain, depth).is_some();
@@ -2217,7 +2205,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             specialized_rec_names_to_unspecialized_rec_names,
         ) {
             Some(out) => out,
-            None => match self.ctx.read_expr(e) {
+            None => match *e {
                 Var { .. } | Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => e,
                 Lambda {
                     binder_type, body, ..
@@ -2347,7 +2335,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         // e.g.
         // replacing(1) const _nested.Lean.PersistentArrayNode_2.rec with Lean.Elab.InfoTree.rec_2
         // replacing(1) const _nested.List_6.rec with Lean.Elab.InfoTree.rec_6
-        if let Const { name, levels, .. } = self.ctx.read_expr(e) {
+        if let Const { name, levels, .. } = *e {
             // If e was `Const(_nested.Array_1.rec)`, return `Const(Lean.Syntax.rec_1)`
             if let Some(rec_name) = specialized_rec_names_to_unspecialized_rec_names.get(&name) {
                 return Some(self.ctx.mk_const(*rec_name, levels));
@@ -2381,7 +2369,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         //
         // replacing(3) c := _nested.Array_3.mk, auxI_name := _nested.Array_3, I_c := Array, c' := Array.mk.{0}
         // replacing(3) c := _nested.List_4.nil, auxI_name := _nested.List_4, I_c := List, c' := List.nil.{0}
-        match self.ctx.read_expr(nested_f) {
+        match *nested_f {
             Const {
                 name: i_name,
                 levels,
@@ -2406,13 +2394,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         e: ExprPtr<'t>,
         nested_rec_name_to_rec_name: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
     ) -> ExprPtr<'t> {
-        let is_pi = matches!(self.ctx.read_expr(e), Pi { .. });
+        let is_pi = matches!(*e, Pi { .. });
         let num_params = st.local_params.len();
         let mut cur = self.value_of(e);
         let mut binders: Vec<ExprPtr<'t>> = Vec::with_capacity(num_params);
         for level in 0..num_params {
             let depth = u32::try_from(level).expect("parameter count exceeds u32");
-            let f = self.force_thunk(depth, cur);
+            let f = cur;
             let dom = match f {
                 Value::Pi { domain, .. } => *domain,
                 // Also match on Lambda for restoring recursor rules.

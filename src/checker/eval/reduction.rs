@@ -50,7 +50,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     if let Some(ElimView::App(field)) =
                         spine.get(np + usize::from(idx)).map(Elim::view)
                     {
-                        return self.force_thunk(depth, field);
+                        return field;
                     }
                 }
                 self.proj_extend_spine(ty_name, idx, v)
@@ -68,7 +68,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 self.do_proj(depth, ty_name, idx, ctor)
             }
             Value::Rigid { .. } | Value::Unfold { .. } => self.proj_extend_spine(ty_name, idx, v),
-            Value::Thunk { .. } => unreachable!("do_proj: Thunk after force_all"),
             _ => reject!("do_proj: not a neutral"),
         }
     }
@@ -109,7 +108,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let aa = self.spine_apps(depth, spine)?;
+                let aa = self.spine_apps(spine)?;
                 (*n, *ls, aa)
             }
             _ => return None,
@@ -160,19 +159,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let mut steps = 0u32;
         let mut waiting: Vec<V<'t>> = Vec::new();
         let result = 'done: loop {
-            loop {
-                match cur {
-                    Value::Thunk { .. } => cur = self.force_thunk(depth, cur),
-                    Value::Unfold { .. } => {
-                        let next = self.unfold_value(depth, cur);
-                        if std::ptr::eq(next, cur) {
-                            break;
-                        }
-                        steps += 1;
-                        cur = next;
-                    }
-                    _ => break,
+            while let Value::Unfold { .. } = cur {
+                let next = self.unfold_value(depth, cur);
+                if std::ptr::eq(next, cur) {
+                    break;
                 }
+                steps += 1;
+                cur = next;
             }
             let step = match cur {
                 Value::Rigid {
@@ -233,7 +226,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let Some(rec) = env.get_recursor(name) else {
                     return ForceStep::Done;
                 };
-                let Some(args) = self.spine_apps(depth, spine) else {
+                let Some(args) = self.spine_apps(spine) else {
                     return ForceStep::Done;
                 };
                 if args.len() <= rec.major_idx() {
@@ -269,7 +262,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return ForceStep::Done;
                 };
                 let name = *name;
-                let Some(args) = self.spine_apps(depth, spine) else {
+                let Some(args) = self.spine_apps(spine) else {
                     return ForceStep::Done;
                 };
                 let Some(&major) = args.get(qmk_pos) else {
@@ -295,7 +288,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let mut cur = v;
         loop {
             match cur {
-                Value::Thunk { .. } => cur = self.force_thunk(depth, cur),
                 Value::Unfold { .. } => {
                     let next = self.unfold_value(depth, cur);
                     if std::ptr::eq(next, cur) {
@@ -334,7 +326,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             } => {
                 let env = self.env;
                 let rec = env.get_recursor(name)?;
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 if args.len() <= rec.major_idx() {
                     return None;
                 }
@@ -345,7 +337,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 self.fire_quot(depth, *name, &args, major)
             }
             _ => None,
@@ -374,13 +366,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             if self.nat_extension
                 && head.name.as_ref().is_nat_red()
-                && let Some(args) = self.spine_apps(depth, spine)
+                && let Some(args) = self.spine_apps(spine)
             {
                 if let Some(r) = self.do_nat_red(depth, head.name, &args) {
                     let _ = forced.set(r);
                     return r;
                 }
-                if !force && self.nat_red_defer(depth, head.name, &args) {
+                if !force && self.nat_red_defer(head.name, &args) {
                     return v;
                 }
             }
@@ -432,7 +424,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 self.do_recursor_iota(depth, *name, *levels, &args)
             }
             Value::Rigid {
@@ -440,7 +432,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 self.do_quot_iota(depth, *name, &args)
             }
             _ => None,
@@ -465,7 +457,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return Some(*cached);
         }
         let (def_uparams, def_value) = self.declar_val(name)?;
-        if self.ctx.read_levels(levels).len() != self.ctx.read_levels(def_uparams).len() {
+        if levels.as_ref().len() != def_uparams.as_ref().len() {
             return None;
         }
         let v = self.eval_inst(def_value, def_uparams, levels);
@@ -473,13 +465,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
         Some(v)
     }
 
-    pub(crate) fn spine_apps(&mut self, depth: u32, spine: S<'t>) -> Option<SpineArgs<'t>> {
+    pub(crate) fn spine_apps(&mut self, spine: S<'t>) -> Option<SpineArgs<'t>> {
         let mut out = SpineArgs::with_capacity(spine.len() as usize);
         for elim in spine.elims_rev() {
             let ElimView::App(a) = elim.view() else {
                 return None;
             };
-            out.push(self.force_thunk(depth, a));
+            out.push(a);
         }
         out.reverse();
         Some(out)
@@ -514,7 +506,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if !rec.is_k {
             return None;
         }
-        let raw = self.force_thunk(depth, args[rec.major_idx()]);
+        let raw = args[rec.major_idx()];
         let kctor = self.try_k_reduce(depth, raw, rec)?;
         self.fire_recursor(depth, rec, levels, args, kctor)
     }
@@ -538,7 +530,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             .or_else(|| self.try_k_reduce(depth, major, rec))
             .or_else(|| self.try_struct_eta_reduce(depth, major, rec))
             .unwrap_or(major);
-        let (ctor_name, ctor_args) = self.unwrap_ctor_app(depth, major)?;
+        let (ctor_name, ctor_args) = self.unwrap_ctor_app(major)?;
         let rec_rule = rec
             .rec_rules
             .iter()
@@ -568,16 +560,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
         levels: LevelsPtr<'t>,
     ) -> V<'t> {
         use num_traits::Zero;
-        let n = self
-            .ctx
-            .read_bignum(n_ptr)
-            .expect("nat_rec_natlit: NatLit ptr")
-            .clone();
+        let n = n_ptr.as_ref().clone();
         let nparams = usize::from(rec.num_params);
         let nmotives = usize::from(rec.num_motives);
         let major_idx = rec.major_idx();
         let zero_case = args[nparams + nmotives];
-        let succ_case = self.force_thunk(depth, args[nparams + nmotives + 1]);
+        let succ_case = args[nparams + nmotives + 1];
         let result = if n.is_zero() {
             zero_case
         } else {
@@ -632,7 +620,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     ) -> Option<V<'t>> {
         let major_ty = self.value_type(depth, major);
         let major_ty_f = self.force_all(depth, major_ty);
-        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(depth, major_ty_f)?;
+        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(major_ty_f)?;
         if ty_name != rec_induct {
             return None;
         }
@@ -665,7 +653,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let major_ty = self.value_type(depth, major);
         let major_ty_f = self.force_all(depth, major_ty);
-        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(depth, major_ty_f)?;
+        let (ty_name, ty_levels, ty_args) = self.unwrap_inductive_app(major_ty_f)?;
         let rec_induct = self.ctx.get_major_induct(rec)?;
         if ty_name != rec_induct {
             return None;
@@ -696,7 +684,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     fn unwrap_inductive_app(
         &mut self,
-        depth: u32,
         v: V<'t>,
     ) -> Option<(NamePtr<'t>, LevelsPtr<'t>, SpineArgs<'t>)> {
         match v {
@@ -705,7 +692,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 Some((*n, *ls, args))
             }
             _ => None,
@@ -732,7 +719,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if !self.nat_extension {
             return None;
         }
-        let nv = self.ctx.read_bignum(n)?.clone();
+        let nv = n.as_ref().clone();
         let levels = self.ctx.alloc_levels_slice(&[]);
         let empty = self.empty_spine();
         if nv.is_zero() {
@@ -755,14 +742,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn unwrap_ctor_app(&mut self, depth: u32, v: V<'t>) -> Option<(NamePtr<'t>, SpineArgs<'t>)> {
+    fn unwrap_ctor_app(&mut self, v: V<'t>) -> Option<(NamePtr<'t>, SpineArgs<'t>)> {
         match v {
             Value::Rigid {
                 head: RigidHead::Ctor(name, _),
                 spine,
                 ..
             } => {
-                let args = self.spine_apps(depth, spine)?;
+                let args = self.spine_apps(spine)?;
                 Some((*name, args))
             }
             _ => None,
@@ -808,7 +795,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if Some(qmk_head) != cache.quot_mk {
             return None;
         }
-        let qmk_args = self.spine_apps(depth, qmk_spine)?;
+        let qmk_args = self.spine_apps(qmk_spine)?;
         if qmk_args.len() != 3 {
             return None;
         }
@@ -925,8 +912,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         ))
     }
 
-    pub(crate) fn value_has_free_bvar(&mut self, depth: u32, v: V<'t>) -> bool {
-        let v = self.force_thunk(depth, v);
+    pub(crate) fn value_has_free_bvar(&mut self, v: V<'t>) -> bool {
         memo!(
             self.tc_cache.fvar_cache,
             Id::of(v),
@@ -942,10 +928,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 } => true,
                 Value::Rigid { spine, .. } | Value::Unfold { spine, .. } => {
                     spine.elims_rev().any(|elim| {
-                        matches!(elim.view(), ElimView::App(a) if self.value_has_free_bvar(depth, a))
+                        matches!(elim.view(), ElimView::App(a) if self.value_has_free_bvar(a))
                     })
                 }
-                Value::Thunk { .. } => unreachable!("force_thunk left a Thunk"),
             }
         )
     }
@@ -961,11 +946,11 @@ impl<'t> TypeChecker<'_, 't, '_> {
         deep: bool,
     ) -> Option<BigUint> {
         let mut succs: u64 = 0;
-        let mut cur = self.force_thunk(depth, v);
+        let mut cur = v;
         loop {
             match cur {
                 Value::NatLit { ptr, .. } => {
-                    return self.ctx.read_bignum(*ptr).cloned().map(|n| n + succs);
+                    return Some(ptr.as_ref().clone() + succs);
                 }
                 Value::Rigid {
                     head: RigidHead::Ctor(name, _),
@@ -984,14 +969,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         && let ElimView::App(a) = elim.view()
                     {
                         succs += 1;
-                        cur = self.force_thunk(depth, a);
+                        cur = a;
                         continue;
                     }
                     return None;
                 }
                 Value::Unfold { head_value, .. } => {
                     if let Some(Value::NatLit { ptr, .. }) = head_value.get() {
-                        return self.ctx.read_bignum(*ptr).cloned().map(|n| n + succs);
+                        return Some(ptr.as_ref().clone() + succs);
                     }
                     if !deep {
                         return None;
@@ -1013,12 +998,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn bignum_via_force(&mut self, depth: u32, v: V<'t>) -> Option<BigUint> {
-        if self.value_has_free_bvar(depth, v) {
+        if self.value_has_free_bvar(v) {
             return None;
         }
         let f = self.force_all(depth, v);
         match f {
-            Value::NatLit { ptr, .. } => self.ctx.read_bignum(*ptr).cloned(),
+            Value::NatLit { ptr, .. } => Some(ptr.as_ref().clone()),
             Value::Rigid {
                 head: RigidHead::Ctor(name, _),
                 ..

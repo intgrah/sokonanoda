@@ -126,7 +126,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         all_args: &[ExprPtr<'t>],
     ) -> ExprPtr<'t> {
         for _ in 0..n {
-            if let Pi { body, .. } = self.read_expr(e) {
+            if let Pi { body, .. } = *e {
                 e = body;
             } else {
                 reject!("type has fewer binders than arguments")
@@ -139,7 +139,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if amount == 0 || e.num_loose_bvars() <= cutoff {
             return e;
         }
-        match self.read_expr(e) {
+        match *e {
             Var { dbj_idx, .. } => {
                 if dbj_idx >= cutoff {
                     self.mk_var(dbj_idx + amount)
@@ -195,7 +195,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if amount == 0 || e.num_loose_bvars() <= cutoff {
             return e;
         }
-        match self.read_expr(e) {
+        match *e {
             Var { dbj_idx, .. } => {
                 if dbj_idx >= cutoff {
                     assert!(
@@ -263,7 +263,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         } else if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             *cached
         } else {
-            let calcd = match self.read_expr(e) {
+            let calcd = match *e {
                 // These expressions should be unreachable since they return `n_loose_bvars() == 0`
                 Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
                 Var { dbj_idx, .. } => {
@@ -341,7 +341,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             return *cached;
         }
-        let calcd = match self.read_expr(e) {
+        let calcd = match *e {
             Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
             Var { dbj_idx, .. } => match substs
                 .iter()
@@ -401,7 +401,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if let Some(cached) = self.expr_cache.subst.get(&(e, ks, vs)) {
             *cached
         } else {
-            let r = match self.read_expr(e) {
+            let r = match *e {
                 Var { .. } | NatLit { .. } | StringLit { .. } => e,
                 Sort { level, .. } => {
                     let level = self.subst_level(level, ks, vs);
@@ -463,15 +463,15 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> ExprPtr<'t> {
-        if ks == vs || self.read_levels(ks).is_empty() {
-            ensure_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+        if ks == vs || ks.as_ref().is_empty() {
+            ensure_eq!(ks.as_ref().len(), vs.as_ref().len());
             return e;
         }
         if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)).copied() {
             return cached;
         }
         self.expr_cache.subst.clear();
-        ensure_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+        ensure_eq!(ks.as_ref().len(), vs.as_ref().len());
         let out = self.subst_aux(e, ks, vs);
         self.expr_cache.dsubst.insert((e, ks, vs), out);
         out
@@ -479,7 +479,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     /// From `f a_0 .. a_N`, return `f`
     pub fn unfold_apps_fun(&self, mut e: ExprPtr<'t>) -> ExprPtr<'t> {
-        while let App { fun, .. } = self.read_expr(e) {
+        while let App { fun, .. } = *e {
             e = fun;
         }
         e
@@ -492,7 +492,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         mut e: ExprPtr<'t>,
     ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
         let mut args = bumpalo::collections::Vec::new_in(arena);
-        while let App { fun, arg, .. } = self.read_expr(e) {
+        while let App { fun, arg, .. } = *e {
             e = fun;
             args.push(arg);
         }
@@ -512,14 +512,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         bumpalo::collections::Vec<'b, ExprPtr<'t>>,
     )> {
         let (f, args) = self.unfold_apps(arena, e);
-        match self.read_expr(f) {
+        match *f {
             Const { name, levels, .. } => Some((f, name, levels, args)),
             _ => None,
         }
     }
     /// If this is an application of `Const(name, levels)`, return `(name, levels)`
     pub fn try_const_info(&self, e: ExprPtr<'t>) -> Option<(NamePtr<'t>, LevelsPtr<'t>)> {
-        match self.read_expr(e) {
+        match *e {
             Const { name, levels, .. } => Some((name, levels)),
             _ => None,
         }
@@ -531,7 +531,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         mut e: ExprPtr<'t>,
     ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
         let mut args = bumpalo::collections::Vec::new_in(arena);
-        while let App { fun, arg, .. } = self.read_expr(e) {
+        while let App { fun, arg, .. } = *e {
             args.push(arg);
             e = fun;
         }
@@ -572,7 +572,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             self.mk_app(f, c_char)
         };
         let mut out = c_list_nil_char;
-        for c in self.read_string(s).clone().chars().rev() {
+        for c in s.as_ref().clone().chars().rev() {
             let bignum = self.alloc_bignum(BigUint::from(c as u32)).unwrap();
             let bignum = self.mk_nat_lit(bignum).unwrap();
             // Char.ofNat (c as u32)
@@ -609,7 +609,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if let Some(cached) = cache.get(&e) {
             return *cached;
         }
-        let result = match self.read_expr(e) {
+        let result = match *e {
             Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
             Const { name, .. } => self.get_pfx(name) == nested,
             App { fun, arg, .. } => {
@@ -662,7 +662,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if let Some(cached) = cache.get(&e) {
             *cached
         } else {
-            let r = match self.read_expr(e) {
+            let r = match *e {
                 Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
                 Const { name, .. } => pred(name),
                 App { fun, arg, .. } => {
@@ -701,7 +701,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// Return the number of leading `Pi` binders on this expression.
     pub(crate) fn pi_telescope_size(&self, mut e: ExprPtr<'t>) -> u16 {
         let mut size = 0u16;
-        while let Pi { body, .. } = self.read_expr(e) {
+        while let Pi { body, .. } = *e {
             size += 1;
             e = body;
         }
@@ -715,14 +715,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     pub fn get_nth_pi_binder(&self, mut e: ExprPtr<'t>, n: usize) -> Option<ExprPtr<'t>> {
         for _ in 0..n {
-            match self.read_expr(e) {
+            match *e {
                 Pi { body, .. } => {
                     e = body;
                 }
                 _ => return None,
             }
         }
-        match self.read_expr(e) {
+        match *e {
             Pi { binder_type, .. } => Some(binder_type),
             _ => None,
         }
@@ -736,7 +736,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     ) -> Option<NamePtr<'t>> {
         match self
             .get_nth_pi_binder(rec.info.ty, rec.major_idx())
-            .map(|x| self.read_expr(self.unfold_apps_fun(x)))
+            .map(|x| *self.unfold_apps_fun(x))
         {
             Some(Const { name, .. }) => Some(name),
             _ => None,
@@ -747,7 +747,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if e.num_loose_bvars() <= idx {
             return false;
         }
-        match self.read_expr(e) {
+        match *e {
             Var { dbj_idx, .. } => dbj_idx == idx,
             App { fun, arg, .. } => self.has_loose_bvar(fun, idx) || self.has_loose_bvar(arg, idx),
             Pi {
@@ -779,7 +779,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if cutoff == 0 || e.num_loose_bvars() == 0 {
             return false;
         }
-        match self.read_expr(e) {
+        match *e {
             Var { dbj_idx, .. } => dbj_idx < cutoff,
             App { fun, arg, .. } => {
                 self.has_loose_bvar_below(fun, cutoff) || self.has_loose_bvar_below(arg, cutoff)

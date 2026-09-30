@@ -43,7 +43,7 @@ impl crate::term::hash::RawHash for Level<'_> {
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub(crate) fn level_succs(&self, mut l: LevelPtr<'t>) -> (LevelPtr<'t>, usize) {
         let mut num_succs = 0usize;
-        while let Succ(pred, ..) = self.read_level(l) {
+        while let Succ(pred, ..) = *l {
             l = pred;
             num_succs += 1;
         }
@@ -51,7 +51,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     fn combining(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        match self.read_level_pair(l, r) {
+        match (*l, *r) {
             (Zero, _) => r,
             (_, Zero) => l,
             (Succ(l, ..), Succ(r, ..)) => {
@@ -63,14 +63,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
-        match self.read_level(ptr) {
+        match *ptr {
             Zero | Param(..) => return ptr,
             _ => {}
         }
         if let Some(cached) = self.expr_cache.simplify.get(&ptr).copied() {
             return cached;
         }
-        let result = match self.read_level(ptr) {
+        let result = match *ptr {
             Zero | Param(..) => ptr,
             Succ(val, ..) => {
                 let val = self.simplify(val);
@@ -87,7 +87,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 if self.is_zero(l_simp) || self.is_one(l_simp) {
                     r_simp
                 } else {
-                    match self.read_level(r_simp) {
+                    match *r_simp {
                         Zero => r_simp,
                         Succ(..) => self.combining(l_simp, r_simp),
                         _ => self.imax(l_simp, r_simp),
@@ -102,8 +102,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
     pub(crate) fn no_dupes_all_params(&mut self, ls: LevelsPtr<'t>) -> bool {
         let mut set = crate::term::hash::new_fx_hash_set();
-        for l in self.read_levels(ls).iter().copied() {
-            match self.read_level(l) {
+        for l in ls.as_ref().iter().copied() {
+            match *l {
                 Param(..) => {
                     if set.contains(&l) {
                         return false;
@@ -123,8 +123,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> LevelsPtr<'t> {
-        let out = self
-            .read_levels(uparams)
+        let out = uparams
+            .as_ref()
             .iter()
             .copied()
             .map(|l| self.subst_level(l, ks, vs))
@@ -139,7 +139,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> LevelPtr<'t> {
-        match self.read_level(level) {
+        match *level {
             Zero => self.zero(),
             Succ(val, ..) => {
                 let val = self.subst_level(val, ks, vs);
@@ -156,7 +156,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 self.imax(l_prime, r_prime)
             }
             Param(..) => {
-                let (ks, vs) = (self.read_levels(ks), self.read_levels(vs));
+                let (ks, vs) = (ks.as_ref(), vs.as_ref());
                 for (k, v) in ks.iter().copied().zip(vs.iter().copied()) {
                     if level == k {
                         return v;
@@ -170,22 +170,22 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// for some level `l` and list of params `ps`, assert that:\
     /// `forall Param(n) e. l, n e. params`
     pub(crate) fn all_uparams_defined(&self, level: LevelPtr<'t>, params: LevelsPtr<'t>) -> bool {
-        match self.read_level(level) {
+        match *level {
             Zero => true,
             Succ(val, ..) => self.all_uparams_defined(val, params),
             Max(l, r, ..) | IMax(l, r, ..) => {
                 self.all_uparams_defined(l, params) && self.all_uparams_defined(r, params)
             }
-            Param(..) => self.read_levels(params).iter().copied().any(|x| x == level),
+            Param(..) => params.as_ref().iter().copied().any(|x| x == level),
         }
     }
 
     fn is_any_max(&self, level: LevelPtr<'t>) -> bool {
-        matches!(self.read_level(level), Max(..) | IMax(..))
+        matches!(*level, Max(..) | IMax(..))
     }
 
     fn is_param(&self, level: LevelPtr<'t>) -> bool {
-        matches!(self.read_level(level), Param(..))
+        matches!(*level, Param(..))
     }
 
     fn subst_simp(
@@ -223,7 +223,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     // The more positive it is, the more have been applied to the right side compared to the left side.
     fn leq_core(&mut self, l_in: LevelPtr<'t>, r_in: LevelPtr<'t>, diff: isize) -> bool {
-        match self.read_level_pair(l_in, r_in) {
+        match (*l_in, *r_in) {
             (Zero, _) if diff >= 0 => true,
             (_, Zero) if diff < 0 => false,
             (Param(a, ..), Param(x, ..)) => a == x && diff >= 0,
@@ -241,7 +241,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
             (_, IMax(_, y, _)) if self.is_param(y) => self.leq_imax_by_cases(y, l_in, r_in, diff),
 
-            (IMax(a, b, ..), _) if self.is_any_max(b) => match self.read_level(b) {
+            (IMax(a, b, ..), _) if self.is_any_max(b) => match *b {
                 IMax(x, y, ..) => {
                     let new_lhs = self.imax(a, y);
                     let new_rhs = self.imax(x, y);
@@ -257,7 +257,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 }
                 _ => panic!(),
             },
-            (_, IMax(x, y, ..)) if self.is_any_max(y) => match self.read_level(y) {
+            (_, IMax(x, y, ..)) if self.is_any_max(y) => match *y {
                 IMax(j, k, ..) => {
                     let new_lhs = self.imax(x, k);
                     let new_rhs = self.imax(j, k);
@@ -294,8 +294,8 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if xs == ys {
             return true;
         }
-        let xs = self.read_levels(xs);
-        let ys = self.read_levels(ys);
+        let xs = xs.as_ref();
+        let ys = ys.as_ref();
         if xs.len() != ys.len() {
             return false;
         }
@@ -309,17 +309,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     ///
     /// Used for generating a unique elim universe in the inductive module
     pub(crate) fn contains_param(&self, uparams: LevelsPtr<'t>, candidate: NamePtr<'t>) -> bool {
-        self.read_levels(uparams)
-            .iter()
-            .copied()
-            .any(|lptr| match self.read_level(lptr) {
-                Param(n, ..) => n == candidate,
-                _ => false,
-            })
+        uparams.as_ref().iter().copied().any(|lptr| match *lptr {
+            Param(n, ..) => n == candidate,
+            _ => false,
+        })
     }
 
     fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
-        match self.read_level(l) {
+        match *l {
             Level::Succ(pred, _) => self.is_zero(pred),
             _ => false,
         }

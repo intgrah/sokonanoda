@@ -41,7 +41,6 @@ pub(crate) enum KeyTag {
     Unfold,
     Lam,
     Pi,
-    Thunk,
     LevelSub,
     EmptySpine,
 }
@@ -192,12 +191,6 @@ pub enum Value<'a> {
         ptr: StringPtr<'a>,
         key: LazyKey,
     },
-    Thunk {
-        env: E<'a>,
-        expr: ExprPtr<'a>,
-        forced: OnceCell<V<'a>>,
-        key: LazyKey,
-    },
 }
 
 #[inline]
@@ -238,8 +231,7 @@ impl Value<'_> {
             | Value::Pi { key, .. }
             | Value::Sort { key, .. }
             | Value::NatLit { key, .. }
-            | Value::StrLit { key, .. }
-            | Value::Thunk { key, .. } => key,
+            | Value::StrLit { key, .. } => key,
         }
     }
 
@@ -300,10 +292,6 @@ impl Value<'_> {
             Value::Sort { level, .. } => (kmix(KeyTag::Sort.u64(), level.get_hash()), true),
             Value::NatLit { ptr, .. } => (kmix(KeyTag::NatLit.u64(), ptr.get_hash()), true),
             Value::StrLit { ptr, .. } => (kmix(KeyTag::StrLit.u64(), ptr.get_hash()), true),
-            Value::Thunk { env, expr, .. } => {
-                let (e, c) = env_slots_key(env, expr.num_loose_bvars());
-                (kmix(kmix(KeyTag::Thunk.u64(), expr.addr() as u64), e), c)
-            }
         }
     }
 
@@ -743,21 +731,6 @@ pub fn mk_bvar_with_empty<'a>(arena: &'a Bump, level: u32, ty: V<'a>, empty: S<'
 pub fn mk_rigid_head_with_empty<'a>(arena: &'a Bump, head: RigidHead<'a>, empty: S<'a>) -> V<'a> {
     mk_rigid(arena, head, empty)
 }
-pub fn mk_thunk<'a>(arena: &'a Bump, env: E<'a>, expr: ExprPtr<'a>) -> V<'a> {
-    arena.alloc(Value::Thunk {
-        env,
-        expr,
-        forced: OnceCell::new(),
-        key: LazyKey::default(),
-    })
-}
 
 const _: () = assert!(std::mem::size_of::<Value<'static>>() == 56);
 const _: () = assert!(std::mem::size_of::<Spine<'static>>() == 32);
-
-pub fn forced_of(v: V<'_>) -> Option<V<'_>> {
-    match v {
-        Value::Thunk { forced, .. } | Value::Unfold { forced, .. } => forced.get().copied(),
-        _ => None,
-    }
-}

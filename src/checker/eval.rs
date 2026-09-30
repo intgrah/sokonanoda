@@ -31,7 +31,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             );
         }
         if matches!(
-            self.ctx.read_expr_ref(e),
+            e.as_ref(),
             Expr::App { .. }
                 | Expr::Proj { .. }
                 | Expr::Let { .. }
@@ -49,18 +49,18 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn eval_no_cache(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
-        let first = *self.ctx.read_expr_ref(e);
+        let first = *e.as_ref();
         if let Expr::App { fun, arg, .. } = first {
             if let &Expr::App {
                 fun: f2, arg: a2, ..
-            } = self.ctx.read_expr_ref(arg)
+            } = arg.as_ref()
             {
                 let first_fun = fun;
                 let mut all_same = fun == f2;
                 let mut count = 2u32;
                 let mut cur = a2;
                 let leaf_expr = loop {
-                    match self.ctx.read_expr_ref(cur) {
+                    match cur.as_ref() {
                         &Expr::App {
                             fun: fn3, arg: an3, ..
                         } => {
@@ -77,10 +77,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let nat_ext = self.nat_extension;
 
                 if all_same {
-                    let f_val = match self.ctx.read_expr_ref(first_fun) {
+                    let f_val = match first_fun.as_ref() {
                         &Expr::Var { dbj_idx, .. } => {
-                            let v = env.lookup(dbj_idx).expect("eval: loose bvar");
-                            self.force_thunk(depth, v)
+                            env.lookup(dbj_idx).expect("eval: loose bvar")
                         }
                         _ => self.eval(depth, env, first_fun),
                     };
@@ -106,7 +105,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let mut cur2 = a2;
                 while let &Expr::App {
                     fun: fn3, arg: an3, ..
-                } = self.ctx.read_expr_ref(cur2)
+                } = cur2.as_ref()
                 {
                     funs.push(fn3);
                     cur2 = an3;
@@ -117,10 +116,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     let f_val = if Some(f_expr) == last_f_expr {
                         last_f_val.unwrap()
                     } else {
-                        let v = match self.ctx.read_expr_ref(f_expr) {
+                        let v = match f_expr.as_ref() {
                             &Expr::Var { dbj_idx, .. } => {
-                                let v = env.lookup(dbj_idx).expect("eval: loose bvar");
-                                self.force_thunk(depth, v)
+                                env.lookup(dbj_idx).expect("eval: loose bvar")
                             }
                             _ => self.eval(depth, env, f_expr),
                         };
@@ -143,7 +141,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             let mut arg_exprs = smallvec::SmallVec::<[ExprPtr<'t>; 16]>::new();
             arg_exprs.push(arg);
             let mut head = fun;
-            while let &Expr::App { fun, arg, .. } = self.ctx.read_expr_ref(head) {
+            while let &Expr::App { fun, arg, .. } = head.as_ref() {
                 arg_exprs.push(arg);
                 head = fun;
             }
@@ -158,10 +156,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return self.apply_many(depth, f, &args);
         }
         match first {
-            Expr::Var { dbj_idx, .. } => {
-                let v = env.lookup(dbj_idx).expect("eval: loose bvar");
-                self.force_thunk(depth, v)
-            }
+            Expr::Var { dbj_idx, .. } => env.lookup(dbj_idx).expect("eval: loose bvar"),
             Expr::Sort { level, .. } => {
                 let level = match env.lsub() {
                     Some(ls) => self.ctx.subst_level(level, ls.ks, ls.vs),
@@ -198,7 +193,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 while let Expr::Let {
                     data: &crate::term::expr::LetData { val, body, .. },
                     ..
-                } = self.ctx.read_expr(cursor)
+                } = *cursor
                 {
                     let vv = self.eval(depth, env, val);
                     env = self.env_extend(env, vv);
@@ -233,7 +228,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             RigidHead::Recursor(name, levels) => {
                 let env = self.env;
                 let rec = env.get_recursor(&name)?;
-                let major = self.force_thunk(depth, *args.get(rec.major_idx())?);
+                let major = *args.get(rec.major_idx())?;
                 match major {
                     Value::Rigid {
                         head: RigidHead::Ctor(..),
@@ -253,7 +248,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 } else {
                     return None;
                 };
-                let major = self.force_thunk(depth, *args.get(major_idx)?);
+                let major = *args.get(major_idx)?;
                 match major {
                     Value::Rigid {
                         head: RigidHead::QuotConst(..),
@@ -371,22 +366,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         v
     }
 
-    #[inline]
-    pub(crate) fn force_thunk(&mut self, depth: u32, v: V<'t>) -> V<'t> {
-        if let Value::Thunk {
-            env, expr, forced, ..
-        } = v
-        {
-            if let Some(r) = forced.get() {
-                return r;
-            }
-            let r = self.eval(depth, env, *expr);
-            let _ = forced.set(r);
-            return r;
-        }
-        v
-    }
-
     pub(crate) fn lam_domain(&mut self, depth: u32, v: V<'t>) -> V<'t> {
         match v {
             Value::Lam {
@@ -466,7 +445,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let spine = *spine;
                 if self.nat_extension && head.name.as_ref().is_nat_red() {
                     let new_spine = self.spine_snoc_hc(spine, Elim::app(a));
-                    if let Some(args) = self.spine_apps(depth, new_spine)
+                    if let Some(args) = self.spine_apps(new_spine)
                         && let Some(r) = self.do_nat_red_shallow(depth, head.name, &args)
                     {
                         return r;
@@ -492,7 +471,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             let mut body = clo.body;
             i += 1;
             while i < args.len() {
-                let Expr::Lambda { body: inner, .. } = self.ctx.read_expr(body) else {
+                let Expr::Lambda { body: inner, .. } = *body else {
                     break;
                 };
                 env = self.env_extend(env, args[i]);
@@ -548,21 +527,20 @@ impl<'t> TypeChecker<'_, 't, '_> {
         self.mk_rigid_hc(head, spine)
     }
 
-    fn nat_red_defer(&mut self, depth: u32, name: NamePtr<'t>, args: &[V<'t>]) -> bool {
+    fn nat_red_defer(&mut self, name: NamePtr<'t>, args: &[V<'t>]) -> bool {
         use crate::term::name::NatRed::{Add, Mul, Pow, Sub};
         let structural_on_second = matches!(name.as_ref().nat_red(), Some(Add | Sub | Mul | Pow));
         if !structural_on_second || args.len() != 2 {
             return false;
         }
-        if let Value::NatLit { ptr, .. } = self.force_thunk(depth, args[1]) {
-            self.ctx.read_bignum(*ptr).is_some_and(|n| n.bits() > 8)
+        if let Value::NatLit { ptr, .. } = args[1] {
+            ptr.as_ref().bits() > 8
         } else {
             false
         }
     }
 
     pub(crate) fn value_type(&mut self, depth: u32, v: V<'t>) -> V<'t> {
-        let v = self.force_thunk(depth, v);
         match v {
             Value::Sort { level, .. } => {
                 let s = self.ctx.succ(*level);
@@ -615,7 +593,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 self.spine_type_with_value(depth, head_ty, prev, spine)
             }
             Value::Pi { .. } | Value::Lam { .. } => panic!("value_type: Pi/Lam not supported"),
-            Value::Thunk { .. } => unreachable!("value_type: Thunk after force"),
         }
     }
 
@@ -668,7 +645,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let mut cur = v;
         let mut steps = 0u32;
         let result = loop {
-            cur = self.force_thunk(depth, cur);
             match cur {
                 Value::Unfold { .. } => {
                     let next = self.unfold_value(depth, cur);

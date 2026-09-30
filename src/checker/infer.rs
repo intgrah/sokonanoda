@@ -93,7 +93,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         ctx: C<'t>,
         e: ExprPtr<'t>,
     ) -> V<'t> {
-        match self.ctx.read_expr(e) {
+        match *e {
             Var { dbj_idx, .. } => return ctx.lookup(dbj_idx).expect("loose bvar in infer"),
             Sort { level, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
@@ -108,7 +108,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             Const { name, levels, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
-                    for l in self.ctx.read_levels(levels).iter().copied() {
+                    for l in levels.as_ref().iter().copied() {
                         ensure!(self.ctx.all_uparams_defined(l, info.uparams));
                     }
                 }
@@ -133,7 +133,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return cached.result;
         }
 
-        let r = match self.ctx.read_expr(e) {
+        let r = match *e {
             App { .. } => self.infer_app_v(flag, depth, env, ctx, e),
             Lambda {
                 binder_type, body, ..
@@ -278,7 +278,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             "projection type name does not match the structure's inductive"
         );
         let params = self
-            .spine_apps(depth, spine)
+            .spine_apps(spine)
             .expect("projection structure type has a non-applicative spine");
         let (num_params, num_indices, ctor_name) = {
             let ind = self

@@ -21,16 +21,16 @@ impl<'x, 't: 'x, 'p: 't> TcCtx<'t, 'p> {
 impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, NamePtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use Name::{Anon, Num, Str};
-        match self.ctx.read_name(self.elem_to_print) {
+        match self.elem_to_print.as_ref().kind {
             Anon => Ok(()),
             Str(pfx, sfx, _) => {
-                let sfx = self.ctx.read_string(sfx);
-                match self.ctx.read_name(pfx) {
+                let sfx = sfx.as_ref();
+                match pfx.as_ref().kind {
                     Anon => write!(f, "{sfx}"),
                     _ => write!(f, "{:?}.{}", self.ctx.debug_print(pfx), sfx),
                 }
             }
-            Num(pfx, sfx, _) => match self.ctx.read_name(pfx) {
+            Num(pfx, sfx, _) => match pfx.as_ref().kind {
                 Anon => write!(f, "{sfx}"),
                 _ => write!(f, "{:?}.{}", self.ctx.debug_print(pfx), sfx),
             },
@@ -117,11 +117,11 @@ where
 impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, LevelPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use Level::{IMax, Max, Param, Succ, Zero};
-        match self.ctx.read_level(self.elem_to_print) {
+        match *self.elem_to_print {
             Zero => write!(f, "0"),
             Succ(..) => {
                 let (val, n) = self.ctx.level_succs(self.elem_to_print);
-                if self.ctx.read_level(val) == Zero {
+                if *val == Zero {
                     write!(f, "{n}")
                 } else {
                     write!(f, "{:?} + {}", self.ctx.debug_print(val), n)
@@ -142,11 +142,11 @@ impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, LevelPtr<'t>> {
 
 impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, ExprPtr<'t>> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.ctx.read_expr(self.elem_to_print) {
+        match *self.elem_to_print {
             Var { dbj_idx, .. } => write!(f, "${dbj_idx}"),
             Sort { level, .. } => write!(f, "Sort({:?})", self.ctx.debug_print(level)),
             Const { name, levels, .. } => {
-                let levels = self.ctx.read_levels(levels);
+                let levels = levels.as_ref();
                 write!(
                     f,
                     "{:?}.{:?}",
@@ -201,8 +201,8 @@ impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, ExprPtr<'t>> {
             Proj { idx, structure, .. } => {
                 write!(f, "%({:?}).{}", self.ctx.debug_print(structure), idx)
             }
-            NatLit { ptr, .. } => write!(f, "NLit({})", self.ctx.read_bignum(ptr).unwrap()),
-            StringLit { ptr, .. } => write!(f, "SLit({})", self.ctx.read_string(ptr)),
+            NatLit { ptr, .. } => write!(f, "NLit({})", ptr.as_ref()),
+            StringLit { ptr, .. } => write!(f, "SLit({})", ptr.as_ref()),
         }
     }
 }
@@ -212,19 +212,18 @@ impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::LevelsPt
         write!(
             f,
             "{:?}",
-            self.ctx
-                .debug_print(self.ctx.read_levels(self.elem_to_print).as_ref())
+            self.ctx.debug_print(self.elem_to_print.as_ref().as_ref())
         )
     }
 }
 impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::StringPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.ctx.read_string(self.elem_to_print))
+        write!(f, "{:?}", self.elem_to_print.as_ref())
     }
 }
 impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, crate::term::ptr::BigUintPtr<'t>> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.ctx.read_bignum(self.elem_to_print).unwrap())
+        write!(f, "{:?}", self.elem_to_print.as_ref())
     }
 }
 
@@ -237,7 +236,7 @@ impl<'t> std::fmt::Debug for DebugPrinter<'_, 't, '_, &crate::checker::env::Decl
                 "uparams",
                 &self
                     .ctx
-                    .debug_print(self.ctx.read_levels(self.elem_to_print.uparams).as_ref()),
+                    .debug_print(self.elem_to_print.uparams.as_ref().as_ref()),
             )
             .finish()
     }

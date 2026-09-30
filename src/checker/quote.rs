@@ -1,11 +1,10 @@
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{E, ElimView, RigidHead, S, Spine, V, Value};
+use crate::checker::value::{ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::ptr::{ExprPtr, Id};
 
 impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn quote(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
-        let v = self.force_thunk(depth, v);
         memo!(
             self.tc_cache.quote_cache,
             (Id::of(v), depth),
@@ -43,7 +42,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     let body_e = self.quote(depth + 1, body);
                     self.ctx.mk_pi(dom_e, body_e)
                 }
-                Value::Thunk { .. } => unreachable!("quote: thunk after force"),
             }
         )
     }
@@ -81,17 +79,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     pub(crate) fn quote_weak(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
         match v {
-            Value::Thunk {
-                env, expr, forced, ..
-            } => {
-                if forced.get().is_none() {
-                    let env = *env;
-                    let expr = *expr;
-                    return self.reinstantiate(depth, env, expr);
-                }
-                let f = self.force_thunk(depth, v);
-                self.quote_weak(depth, f)
-            }
             Value::Rigid { head, spine, .. } => {
                 let head = self.quote_rigid_head(depth, *head);
                 self.quote_spine_weak(depth, head, spine)
@@ -120,35 +107,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn reinstantiate(&mut self, depth: u32, env: E<'t>, expr: ExprPtr<'t>) -> ExprPtr<'t> {
-        let n = expr.num_loose_bvars();
-        if n == 0 {
-            return expr;
-        }
-        let mut substs: Vec<ExprPtr<'t>> = Vec::with_capacity(usize::from(n));
-        for idx in (0..n).rev() {
-            let Some(slot) = env.lookup(idx) else {
-                let v = self.eval_here(env, expr);
-                return self.quote(depth, v);
-            };
-            let e = self.quote_weak(depth, slot);
-            substs.push(e);
-        }
-        self.ctx.inst(expr, substs.as_slice())
-    }
-
-    fn eval_here(&mut self, env: E<'t>, expr: ExprPtr<'t>) -> V<'t> {
-        let depth = 0u32;
-        self.eval(depth, env, expr)
-    }
-
     pub(crate) fn force_pi(&mut self, depth: u32, cur: V<'t>) -> Option<V<'t>> {
         let f = self.force_all(depth, cur);
-        matches!(f, Value::Pi { .. }).then_some(f)
-    }
-
-    pub(crate) fn weak_pi(&mut self, depth: u32, cur: V<'t>) -> Option<V<'t>> {
-        let f = self.force_thunk(depth, cur);
         matches!(f, Value::Pi { .. }).then_some(f)
     }
 

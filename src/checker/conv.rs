@@ -96,8 +96,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     #[inline]
     fn unify<const RIGID: bool>(&mut self, depth: u32, x: V<'t>, y: V<'t>) -> bool {
-        let x = self.force_thunk(depth, x);
-        let y = self.force_thunk(depth, y);
         if std::ptr::eq(x, y) {
             return true;
         }
@@ -154,7 +152,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             self.tc_cache.probe_budget -= 1;
         }
-        let (t, t2) = (self.force_thunk(depth, x), self.force_thunk(depth, y));
+        let (t, t2) = (x, y);
         if let Some(r) = self.conv_nat::<RIGID>(depth, t, t2) {
             return r;
         }
@@ -837,7 +835,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if inductive_name != ind_name {
             return false;
         }
-        let yargs = match self.spine_apps(depth, yspine) {
+        let yargs = match self.spine_apps(yspine) {
             Some(v) if v.len() == usize::from(num_params) + usize::from(num_fields) => v,
             _ => return false,
         };
@@ -902,10 +900,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty(),
-            Value::NatLit { ptr, .. } => self
-                .ctx
-                .read_bignum(*ptr)
-                .is_some_and(num_traits::Zero::is_zero),
+            Value::NatLit { ptr, .. } => num_traits::Zero::is_zero(ptr.as_ref()),
             _ => false,
         }
     }
@@ -931,7 +926,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             Value::NatLit { ptr, .. } => {
                 use num_traits::Zero;
-                let n = self.ctx.read_bignum(*ptr)?.clone();
+                let n = ptr.as_ref().clone();
                 if n.is_zero() {
                     return None;
                 }
@@ -943,7 +938,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     pub(crate) fn level_of_type(&mut self, depth: u32, ty: V<'t>) -> Option<LevelPtr<'t>> {
-        let ty = self.force_thunk(depth, ty);
         match ty {
             Value::Sort { level, .. } => {
                 let s = self.ctx.succ(*level);

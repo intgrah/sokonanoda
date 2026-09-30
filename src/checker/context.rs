@@ -108,39 +108,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         f(&mut tc)
     }
 
-    pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> {
-        p.as_ref().kind
-    }
-
-    pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> {
-        *p.as_ref()
-    }
-
-    pub fn read_level_pair(&self, a: LevelPtr<'t>, x: LevelPtr<'t>) -> (Level<'t>, Level<'t>) {
-        (self.read_level(a), self.read_level(x))
-    }
-
-    pub fn read_expr(&self, p: ExprPtr<'t>) -> Expr<'t> {
-        *p.as_ref()
-    }
-
-    #[inline]
-    pub fn read_expr_ref(&self, p: ExprPtr<'t>) -> &Expr<'t> {
-        p.as_ref()
-    }
-
-    pub fn read_string(&self, p: StringPtr<'t>) -> &CowStr<'t> {
-        p.as_ref()
-    }
-
-    pub fn read_bignum(&self, p: BigUintPtr<'t>) -> Option<&BigUint> {
-        Some(p.as_ref())
-    }
-
-    pub fn read_levels(&self, p: LevelsPtr<'t>) -> &'t [LevelPtr<'t>] {
-        p.as_ref()
-    }
-
     pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
         if let Some(r) = self.export_file.dag.names.get(&n) {
             return NamePtr::global(r);

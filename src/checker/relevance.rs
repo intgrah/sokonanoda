@@ -149,7 +149,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let ty = decl.info().ty;
         let mut body = val;
         let mut arity = 0u32;
-        while let crate::term::expr::Expr::Lambda { body: inner, .. } = self.ctx.read_expr(body) {
+        while let crate::term::expr::Expr::Lambda { body: inner, .. } = *body {
             if arity == MAX_TRACKED {
                 break;
             }
@@ -163,7 +163,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let mut absent = 0u64;
         let mut rest_ty = ty;
         for i in 0..arity {
-            let crate::term::expr::Expr::Pi { body: rest, .. } = self.ctx.read_expr(rest_ty) else {
+            let crate::term::expr::Expr::Pi { body: rest, .. } = *rest_ty else {
                 break;
             };
             let unused_in_value = (used >> (arity - 1 - i)) & 1 == 0;

@@ -69,12 +69,12 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
         )
     };
     let eq_const = ctx.mk_const(name, info.uparams);
-    ensure_eq!(ctx.read_levels(info.uparams).len(), 1);
+    ensure_eq!(info.uparams.as_ref().len(), 1);
     ensure_eq!(num_params, 2);
-    let &[u] = ctx.read_levels(info.uparams) else {
+    let &[u] = info.uparams.as_ref() else {
         reject!(
             "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
-            ctx.read_levels(info.uparams).len()
+            info.uparams.as_ref().len()
         )
     };
     let uparam = ctx.mk_sort(u);
@@ -98,7 +98,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
             "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
         )
     };
-    let &[uparam] = ctx.read_levels(info.uparams) else {
+    let &[uparam] = info.uparams.as_ref() else {
         reject!("`Eq.refl` must have exactly one universe parameter")
     };
     let uparam_sort = ctx.mk_sort(uparam);

@@ -137,11 +137,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> V<'t> {
-        debug_assert_eq!(
-            self.ctx.read_levels(ks).len(),
-            self.ctx.read_levels(vs).len()
-        );
-        if ks == vs || self.ctx.read_levels(ks).is_empty() {
+        debug_assert_eq!(ks.as_ref().len(), vs.as_ref().len());
+        if ks == vs || ks.as_ref().is_empty() {
             let empty = self.empty_env();
             return self.eval(0, empty, ex);
         }
@@ -473,9 +470,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if v.is_canonical() {
             return v;
         }
-        if matches!(v, Value::Thunk { .. }) {
-            return v;
-        }
         memo!(self.tc_cache.canon_cache, Id::of(v), {
             let c = self.canon_compute(v);
             c.mark_canonical();
@@ -527,7 +521,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let cspine = self.canon_spine(sp);
                 self.mk_unfold_hc(hn, hl, cspine, hv)
             }
-            Value::Thunk { .. } => v,
         }
     }
 
