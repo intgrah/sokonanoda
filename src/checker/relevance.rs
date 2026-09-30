@@ -1,5 +1,5 @@
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{Spine, Value, S};
+use crate::checker::value::{S, Value};
 use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
 
 pub(crate) const MAX_TRACKED: u32 = 64;
@@ -49,15 +49,13 @@ pub(crate) fn app_prefix_len(spine: S<'_>) -> u32 {
     if !spine.has_proj() {
         return spine.len();
     }
-    let mut limit = spine.len();
-    let mut cur = spine;
-    while let Spine::Snoc { prev, elim, .. } = cur {
-        if !elim.is_app() {
-            limit = prev.len();
-        }
-        cur = prev;
-    }
-    limit
+    let len = spine.len();
+    spine
+        .elims_rev()
+        .zip((0..len).rev())
+        .filter(|(elim, _)| !elim.is_app())
+        .last()
+        .map_or(len, |(_, i)| i)
 }
 
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
@@ -99,8 +97,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         let n = dom.len();
         let mut prop_arg = 0u64;
         let mut arg_known = 0u64;
-        for i in 0..n {
-            if let Some(l) = dom[i] {
+        for (i, l) in dom.iter().enumerate() {
+            if let Some(l) = *l {
                 arg_known |= 1u64 << i;
                 if self.ctx.is_zero(l) {
                     prop_arg |= 1u64 << i;
@@ -110,23 +108,23 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
         let mut prop_result = 0u64;
         let mut result_known = 0u64;
-        if let Some(term) = terminal {
-            if let Some(sb) = self.level_of_type(depth, term) {
-                let mut r = sb;
-                if n < MAX_TRACKED as usize {
-                    result_known |= 1u64 << n;
-                    if self.ctx.is_zero(r) {
-                        prop_result |= 1u64 << n;
-                    }
+        if let Some(term) = terminal
+            && let Some(sb) = self.level_of_type(depth, term)
+        {
+            let mut r = sb;
+            if n < MAX_TRACKED as usize {
+                result_known |= 1u64 << n;
+                if self.ctx.is_zero(r) {
+                    prop_result |= 1u64 << n;
                 }
-                for k in (0..n).rev() {
-                    let Some(s) = dom[k] else { break };
-                    let im = self.ctx.imax(s, r);
-                    r = self.ctx.simplify(im);
-                    result_known |= 1u64 << k;
-                    if self.ctx.is_zero(r) {
-                        prop_result |= 1u64 << k;
-                    }
+            }
+            for k in (0..n).rev() {
+                let Some(s) = dom[k] else { break };
+                let im = self.ctx.imax(s, r);
+                r = self.ctx.simplify(im);
+                result_known |= 1u64 << k;
+                if self.ctx.is_zero(r) {
+                    prop_result |= 1u64 << k;
                 }
             }
         }

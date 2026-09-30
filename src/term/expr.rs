@@ -2,8 +2,8 @@
 use crate::checker::context::TcCtx;
 use crate::term::hash::FxHashMap;
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
-use num_bigint::BigUint;
 use Expr::*;
+use num_bigint::BigUint;
 
 pub(crate) const VAR_HASH: u64 = 281;
 pub(crate) const SORT_HASH: u64 = 563;
@@ -500,14 +500,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         mut e: ExprPtr<'t>,
     ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
         let mut args = bumpalo::collections::Vec::new_in(arena);
-        loop {
-            match self.read_expr(e) {
-                App { fun, arg, .. } => {
-                    e = fun;
-                    args.push(arg);
-                }
-                _ => break,
-            }
+        while let App { fun, arg, .. } = self.read_expr(e) {
+            e = fun;
+            args.push(arg);
         }
         args.reverse();
         (e, args)

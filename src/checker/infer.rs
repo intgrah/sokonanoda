@@ -1,6 +1,6 @@
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
-use crate::checker::value::{self, Closure, RigidHead, Value, C, E, V};
+use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 
@@ -126,10 +126,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
         let key = (Id::of(self.key_env(env, e)), e);
         let scope = self.uparam_scope();
-        if let Some(cached) = self.tc_cache.type_cache.get(&key).copied() {
-            if flag == InferOnly || cached.checked_under == scope {
-                return cached.result;
-            }
+        if let Some(cached) = self.tc_cache.type_cache.get(&key).copied()
+            && (flag == InferOnly || cached.checked_under == scope)
+        {
+            return cached.result;
         }
 
         let r = match self.ctx.read_expr(e) {

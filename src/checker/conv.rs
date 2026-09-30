@@ -1,7 +1,7 @@
 use crate::checker::env::{Declar, ReducibilityHint};
-use crate::checker::relevance::{app_prefix_len, Sig, MAX_TRACKED};
+use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{self, ElimView, Env, RigidHead, Spine, UnfoldHead, Value, E, S, V};
+use crate::checker::value::{self, E, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
@@ -439,10 +439,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                         head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
                         ..
                     }
-                ) {
-                    if let Some(v2) = self.iota_value(depth, t2) {
-                        return self.unify::<true>(depth, t, v2);
-                    }
+                ) && let Some(v2) = self.iota_value(depth, t2)
+                {
+                    return self.unify::<true>(depth, t, v2);
                 }
                 if matches!(t2, Value::Unfold { .. }) {
                     let v2 = self.unfold_value_demand(depth, t2);
@@ -842,9 +841,8 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             } => (*name, *spine),
             _ => return false,
         };
-        let (num_params, num_fields, inductive_name) = match self.ctor_shape(yname) {
-            Some(t) => t,
-            None => return false,
+        let Some((num_params, num_fields, inductive_name)) = self.ctor_shape(yname) else {
+            return false;
         };
         if inductive_name != ind_name {
             return false;
@@ -864,13 +862,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn is_unit_inductive(&self, ind_name: NamePtr<'t>) -> bool {
-        let ind = match self.env.get_structure(&ind_name, false) {
-            Some(i) => i,
-            None => return false,
+        let Some(ind) = self.env.get_structure(&ind_name, false) else {
+            return false;
         };
-        let ctor = match self.env.get_constructor(&ind.all_ctor_names[0]) {
-            Some(c) => c,
-            None => return false,
+        let Some(ctor) = self.env.get_constructor(&ind.all_ctor_names[0]) else {
+            return false;
         };
         ctor.num_fields == 0
     }
@@ -934,17 +930,15 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 spine,
                 ..
             } => {
-                if Some(*name) == self.ctx.export_file.name_cache.nat_succ {
-                    if let Spine::Snoc {
+                if Some(*name) == self.ctx.export_file.name_cache.nat_succ
+                    && let Spine::Snoc {
                         prev: Spine::Empty,
                         elim,
                         ..
                     } = **spine
-                    {
-                        if let ElimView::App(a) = elim.view() {
-                            return Some(a);
-                        }
-                    }
+                    && let ElimView::App(a) = elim.view()
+                {
+                    return Some(a);
                 }
                 None
             }

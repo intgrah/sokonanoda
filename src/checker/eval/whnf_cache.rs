@@ -1,6 +1,6 @@
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{kmix, Closure, ElimView, KeyTag, RigidHead, Value, E, S, V};
+use crate::checker::value::{Closure, E, ElimView, KeyTag, RigidHead, S, V, Value, kmix};
 use crate::term::ptr::{Id, LevelsPtr, NamePtr};
 
 #[inline]
@@ -76,7 +76,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 ..
             } => (head(h.tag(), *n, *ls), *spine),
             Value::Thunk { expr, .. } => {
-                return Some(kmix(KeyTag::Thunk.u64(), expr.addr() as u64))
+                return Some(kmix(KeyTag::Thunk.u64(), expr.addr() as u64));
             }
             _ => return None,
         };

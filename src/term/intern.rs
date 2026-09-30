@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::hash64;
 use crate::term::expr::Expr;
 use crate::term::level::Level;
-use crate::term::name::{Name, NameNode, NatRed, NUM_HASH, STR_HASH};
+use crate::term::name::{NUM_HASH, Name, NameNode, NatRed, STR_HASH};
 use bumpalo::Bump;
 use hashbrown::HashTable;
 use num_bigint::BigUint;

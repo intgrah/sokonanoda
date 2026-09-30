@@ -4,6 +4,7 @@
 //! ```
 #![allow(clippy::too_many_arguments)]
 #![deny(clippy::cast_possible_truncation)]
+#![warn(clippy::manual_let_else)]
 
 pub mod checker;
 pub mod config;

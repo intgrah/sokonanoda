@@ -1,7 +1,7 @@
 use crate::checker::cache::{hashcons, memo};
 use crate::checker::env::Declar;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::checker::value::{self, Closure, E, Elim, ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
@@ -58,8 +58,7 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let mut all_same = fun == f2;
                 let mut count = 2u32;
                 let mut cur = a2;
-                let leaf_expr;
-                loop {
+                let leaf_expr = loop {
                     match self.ctx.read_expr_ref(cur) {
                         &Expr::App {
                             fun: fn3, arg: an3, ..
@@ -70,12 +69,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                             }
                             cur = an3;
                         }
-                        _ => {
-                            leaf_expr = cur;
-                            break;
-                        }
+                        _ => break cur,
                     }
-                }
+                };
                 let mut result = self.eval(depth, env, leaf_expr);
                 let nat_ext = self.nat_extension;
 
@@ -363,10 +359,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
         if let Some(cached) = self.tc_cache.const_head_type_cache.get(&(name, levels)) {
             return cached;
         }
-        let info = match self.env.get_declar(&name) {
-            Some(d) => *d.info(),
-            None => panic!("const_head_type: unknown const {:?}", name),
+        let Some(d) = self.env.get_declar(&name) else {
+            panic!("const_head_type: unknown const {:?}", name)
         };
+        let info = *d.info();
         let v = self.eval_inst(info.ty, info.uparams, levels);
         self.tc_cache
             .const_head_type_cache
@@ -449,13 +445,12 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             }
             Value::Rigid { head, spine, .. } => {
                 let head_copy = *head;
-                if self.nat_extension {
-                    if let RigidHead::Ctor(name, _) = head_copy {
-                        if Some(name) == self.ctx.export_file.name_cache.nat_succ {
-                            let new_spine = value::spine_snoc(self.arena, spine, Elim::app(a));
-                            return self.try_fire_rigid(depth, head_copy, new_spine);
-                        }
-                    }
+                if self.nat_extension
+                    && let RigidHead::Ctor(name, _) = head_copy
+                    && Some(name) == self.ctx.export_file.name_cache.nat_succ
+                {
+                    let new_spine = value::spine_snoc(self.arena, spine, Elim::app(a));
+                    return self.try_fire_rigid(depth, head_copy, new_spine);
                 }
                 self.neutral_app(f, a)
             }
@@ -470,10 +465,10 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 let spine = *spine;
                 if self.nat_extension && head.name.as_ref().is_nat_red() {
                     let new_spine = self.spine_snoc_hc(spine, Elim::app(a));
-                    if let Some(args) = self.spine_apps(depth, new_spine) {
-                        if let Some(r) = self.do_nat_red_shallow(depth, head.name, &args) {
-                            return r;
-                        }
+                    if let Some(args) = self.spine_apps(depth, new_spine)
+                        && let Some(r) = self.do_nat_red_shallow(depth, head.name, &args)
+                    {
+                        return r;
                     }
                     return self.mk_unfold_hc(head.name, head.levels, new_spine, head_value);
                 }
@@ -533,25 +528,20 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     fn try_fire_rigid(&mut self, depth: u32, head: RigidHead<'t>, spine: S<'t>) -> V<'t> {
-        if self.ctx.export_file.config.nat_extension {
-            if let RigidHead::Ctor(name, _) = head {
-                if Some(name) == self.ctx.export_file.name_cache.nat_succ {
-                    if let Spine::Snoc {
-                        prev: Spine::Empty,
-                        elim,
-                        ..
-                    } = spine
-                    {
-                        if let ElimView::App(arg) = elim.view() {
-                            if let Some(n) = self.value_to_bignum_at(depth, arg, false) {
-                                let succ_lit = n + 1u8;
-                                if let Some(p) = self.ctx.alloc_bignum(succ_lit) {
-                                    return value::mk_natlit(self.arena, p);
-                                }
-                            }
-                        }
-                    }
-                }
+        if self.ctx.export_file.config.nat_extension
+            && let RigidHead::Ctor(name, _) = head
+            && Some(name) == self.ctx.export_file.name_cache.nat_succ
+            && let Spine::Snoc {
+                prev: Spine::Empty,
+                elim,
+                ..
+            } = spine
+            && let ElimView::App(arg) = elim.view()
+            && let Some(n) = self.value_to_bignum_at(depth, arg, false)
+        {
+            let succ_lit = n + 1u8;
+            if let Some(p) = self.ctx.alloc_bignum(succ_lit) {
+                return value::mk_natlit(self.arena, p);
             }
         }
         self.mk_rigid_hc(head, spine)

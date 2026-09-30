@@ -3,27 +3,15 @@ use num_integer::Integer;
 use num_traits::Zero;
 
 pub(crate) fn nat_sub(x: BigUint, y: BigUint) -> BigUint {
-    if y > x {
-        BigUint::zero()
-    } else {
-        x - y
-    }
+    if y > x { BigUint::zero() } else { x - y }
 }
 
 pub(crate) fn nat_div(x: BigUint, y: BigUint) -> BigUint {
-    if y.is_zero() {
-        BigUint::zero()
-    } else {
-        x / y
-    }
+    if y.is_zero() { BigUint::zero() } else { x / y }
 }
 
 pub(crate) fn nat_mod(x: BigUint, y: BigUint) -> BigUint {
-    if y.is_zero() {
-        x
-    } else {
-        x % y
-    }
+    if y.is_zero() { x } else { x % y }
 }
 
 pub(crate) fn nat_gcd(x: &BigUint, y: &BigUint) -> BigUint {
@@ -60,8 +48,8 @@ pub(crate) fn nat_lor(x: BigUint, y: BigUint) -> BigUint {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use num_bigint::BigRng010;
     use num_bigint::BigUint;
-    use num_bigint::RandBigInt;
     use num_traits::{One, Zero};
 
     fn pred(x: BigUint) -> BigUint {
@@ -79,10 +67,10 @@ mod tests {
      */
     #[test]
     fn nat_div_le_self() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..1024 {
             for _ in 0..10 {
-                let (n, k) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (n, k) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert!(nat_div(n.clone(), k) <= n);
             }
         }
@@ -103,10 +91,10 @@ mod tests {
                 BigUint::zero()
             }
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert_eq!(nat_div_eq_f(x.clone(), y.clone()), nat_div(x, y))
             }
         }
@@ -141,10 +129,10 @@ mod tests {
                 nat_shr_eq_f(x, y - BigUint::one()) / BigUint::from(2u8)
             }
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size % 6));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size % 6));
                 assert_eq!(nat_shr_eq_f(x.clone(), y.clone()), nat_shr(x, y))
             }
         }
@@ -180,10 +168,10 @@ mod tests {
             }
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size % 6));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size % 6));
                 assert_eq!(nat_shl_eq_f(x.clone(), y.clone()), nat_shl(x, y))
             }
         }
@@ -220,10 +208,10 @@ mod tests {
             }
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 let gcd = nat_gcd(&x, &y);
                 assert_eq!(nat_gcd_eq_f(x, y), gcd)
             }
@@ -232,17 +220,9 @@ mod tests {
 
     fn bitwise(f: fn(bool, bool) -> bool, n: BigUint, m: BigUint) -> BigUint {
         if n.is_zero() {
-            if f(false, true) {
-                m
-            } else {
-                BigUint::zero()
-            }
+            if f(false, true) { m } else { BigUint::zero() }
         } else if m.is_zero() {
-            if f(true, false) {
-                n
-            } else {
-                BigUint::zero()
-            }
+            if f(true, false) { n } else { BigUint::zero() }
         } else {
             let nprime = n.clone() / BigUint::from(2u8);
             let mprime = m.clone() / BigUint::from(2u8);
@@ -266,10 +246,10 @@ mod tests {
             bitwise(bool_xor, x, y)
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..5 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 let rhs = nat_xor(&x, &y);
                 eprintln!("{:?} ^ {:?} := {:?}", x, y, rhs);
                 assert_eq!(spec_xor(x, y), rhs)
@@ -286,10 +266,10 @@ mod tests {
             bitwise(bool_or, x, y)
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..5 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert_eq!(spec_lor(x.clone(), y.clone()), nat_lor(x, y))
             }
         }
@@ -304,10 +284,10 @@ mod tests {
             bitwise(bool_and, x, y)
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..5 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert_eq!(spec_land(x.clone(), y.clone()), nat_land(x, y))
             }
         }
@@ -322,10 +302,10 @@ mod tests {
                 pred(nat_sub_eq_f(x, y - BigUint::one()))
             }
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert_eq!(nat_sub_eq_f(x.clone(), y.clone()), nat_sub(x, y))
             }
         }
@@ -346,10 +326,10 @@ mod tests {
                 x
             }
         }
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..8 {
             for _ in 0..32 {
-                let (x, y) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (x, y) = (rng.random_biguint(size), rng.random_biguint(size));
                 assert_eq!(nat_mod_eq_f(x.clone(), y.clone()), nat_mod(x, y))
             }
         }
@@ -359,10 +339,10 @@ mod tests {
     //n * (m / n) + m % n = m
     #[test]
     fn nat_div_add_mod() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..128 {
             for _ in 0..32 {
-                let (n, m) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (n, m) = (rng.random_biguint(size), rng.random_biguint(size));
                 let m_div_n = nat_div(m.clone(), n.clone());
                 let m_mod_n = nat_mod(m.clone(), n.clone());
                 let nat_mul_div = n.clone() * m_div_n;
@@ -376,11 +356,11 @@ mod tests {
      */
     #[test]
     fn nat_mod_eq_sub_mod() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for size in 0..128 {
             let mut iterations = 0;
             while iterations < 32 {
-                let (a, b) = (rng.gen_biguint(size), rng.gen_biguint(size));
+                let (a, b) = (rng.random_biguint(size), rng.random_biguint(size));
                 if a >= b {
                     iterations += 1;
                     assert_eq!(

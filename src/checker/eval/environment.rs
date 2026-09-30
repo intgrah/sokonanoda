@@ -1,7 +1,7 @@
 use crate::checker::cache::{hashcons, memo};
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{
-    self, Closure, Elim, ElimView, KeyTag, RigidHead, Spine, Value, E, S, V,
+    self, Closure, E, Elim, ElimView, KeyTag, RigidHead, S, Spine, V, Value,
 };
 use crate::term::expr::Expr;
 use crate::term::hash::GOLDEN;
@@ -162,18 +162,18 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     return e;
                 }
                 let (m, r) = prune.get();
-                if m == mask {
-                    if let Some(r) = r {
-                        return r;
-                    }
+                if m == mask
+                    && let Some(r) = r
+                {
+                    return r;
                 }
             }
             value::Env::Cons { prune, .. } | value::Env::WideFramed { prune, .. } => {
                 let (m, r) = prune.get();
-                if m == mask {
-                    if let Some(r) = r {
-                        return r;
-                    }
+                if m == mask
+                    && let Some(r) = r
+                {
+                    return r;
                 }
             }
         }
@@ -181,16 +181,17 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             ^ mask.wrapping_mul(0xD6E8FEB86659FD93))
             >> crate::checker::cache::PRUNE_DM_SHIFT) as usize;
         let ent = self.tc_cache.prune_dm[slot];
-        if ent.0 == Some(Id::of(e)) && ent.1 == mask {
-            if let Some(hit) = ent.2 {
-                match e {
-                    value::Env::Cons { prune, .. }
-                    | value::Env::Framed { prune, .. }
-                    | value::Env::WideFramed { prune, .. } => prune.set((mask, Some(hit))),
-                    value::Env::Nil { .. } => {}
-                }
-                return hit;
+        if ent.0 == Some(Id::of(e))
+            && ent.1 == mask
+            && let Some(hit) = ent.2
+        {
+            match e {
+                value::Env::Cons { prune, .. }
+                | value::Env::Framed { prune, .. }
+                | value::Env::WideFramed { prune, .. } => prune.set((mask, Some(hit))),
+                value::Env::Nil { .. } => {}
             }
+            return hit;
         }
         self.prune_env_cold(e, mask, slot)
     }

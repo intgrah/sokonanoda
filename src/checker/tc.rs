@@ -159,20 +159,22 @@ impl<'p> ExportFile<'p> {
         let mut pending = Some(first);
         loop {
             let finished = unsafe {
-                session_cache.enter(|cache| loop {
-                    let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
-                        return true;
-                    };
-                    while i < end {
-                        let (_, d) = self
-                            .declars
-                            .get_index(i)
-                            .expect("declaration index out of range");
-                        i += 1;
-                        self.check_declar_with(tctx, cache, sbump.get(), d);
-                        if sbump.allocated_bytes() > SESSION_BUDGET {
-                            pending = Some((i, end));
-                            return false;
+                session_cache.enter(|cache| {
+                    loop {
+                        let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
+                            return true;
+                        };
+                        while i < end {
+                            let (_, d) = self
+                                .declars
+                                .get_index(i)
+                                .expect("declaration index out of range");
+                            i += 1;
+                            self.check_declar_with(tctx, cache, sbump.get(), d);
+                            if sbump.allocated_bytes() > SESSION_BUDGET {
+                                pending = Some((i, end));
+                                return false;
+                            }
                         }
                     }
                 })

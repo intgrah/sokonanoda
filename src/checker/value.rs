@@ -585,29 +585,36 @@ impl<'a> Spine<'a> {
             Spine::Snoc { len, .. } => *len,
         }
     }
-    pub fn to_vec<'b>(&'b self) -> Vec<&'b Elim<'a>> {
-        let len = self.len() as usize;
-        let mut out = Vec::with_capacity(len);
-        let mut cur: &Spine<'a> = self;
-        while let Spine::Snoc { prev, elim, .. } = cur {
-            out.push(elim);
-            cur = prev;
-        }
+    #[inline]
+    pub fn elims_rev(&'a self) -> ElimsRev<'a> {
+        ElimsRev(self)
+    }
+
+    pub fn to_vec(&'a self) -> Vec<Elim<'a>> {
+        let mut out = Vec::with_capacity(self.len() as usize);
+        out.extend(self.elims_rev());
         out.reverse();
         out
     }
-    pub fn get(&self, i: usize) -> Option<&Elim<'a>> {
-        let len = self.len() as usize;
-        let mut steps = len.checked_sub(i + 1)?;
-        let mut cur = self;
-        while let Spine::Snoc { prev, elim, .. } = cur {
-            if steps == 0 {
-                return Some(elim);
-            }
-            steps -= 1;
-            cur = prev;
-        }
-        None
+
+    pub fn get(&'a self, i: usize) -> Option<Elim<'a>> {
+        let steps = (self.len() as usize).checked_sub(i + 1)?;
+        self.elims_rev().nth(steps)
+    }
+}
+
+pub struct ElimsRev<'a>(S<'a>);
+
+impl<'a> Iterator for ElimsRev<'a> {
+    type Item = Elim<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Elim<'a>> {
+        let Spine::Snoc { prev, elim, .. } = self.0 else {
+            return None;
+        };
+        self.0 = prev;
+        Some(*elim)
     }
 }
 

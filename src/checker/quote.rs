@@ -1,6 +1,6 @@
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{ElimView, RigidHead, Spine, Value, E, S, V};
+use crate::checker::value::{E, ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::ptr::{ExprPtr, Id};
 
 impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {

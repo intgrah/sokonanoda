@@ -68,21 +68,21 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::frontend::parser::parse_export_file;
-    use num_bigint::RandBigInt;
-    use rand::distributions::Alphanumeric;
-    use rand::Rng;
+    use num_bigint::BigRng010;
+    use rand::RngExt;
+    use rand::distr::Alphanumeric;
     use std::error::Error;
 
     #[test]
     fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
         let arena = bumpalo::Bump::new();
         let (export, _) = parse_export_file(&arena, std::io::empty(), Config::default())?;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         export.with_ctx(|ctx, _cache, _arena| {
             for size in 0..100 {
                 for _ in 0..100 {
                     let text: String = (&mut rng)
-                        .sample_iter(&Alphanumeric)
+                        .sample_iter(Alphanumeric)
                         .take(size)
                         .map(char::from)
                         .collect();
@@ -94,7 +94,7 @@ mod tests {
                     assert_eq!(hash64!(left), hash64!(right));
                     assert_eq!(left, right);
 
-                    let nat = rng.gen_biguint(size as u64);
+                    let nat = rng.random_biguint(size as u64);
                     let (left, right) =
                         (ctx.mk_nat_lit_quick(nat.clone()), ctx.mk_nat_lit_quick(nat));
                     assert_eq!(hash64!(left), hash64!(right));

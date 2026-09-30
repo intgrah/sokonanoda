@@ -4,7 +4,7 @@ use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData, RecRule, RecursorData,
 };
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{Closure, RigidHead, Value, S, V};
+use crate::checker::value::{Closure, ElimView, RigidHead, S, V, Value};
 use crate::term::expr::Expr::*;
 use crate::term::hash::{FxHashSet, FxIndexMap};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
@@ -64,9 +64,8 @@ impl<'t, 'p: 't> ExportFile<'p> {
                         "reserved _nested name in inductive block"
                     );
                 }
-                let is_recursive = {
-                    let mut found = false;
-                    'outer: for mut ctor_ty in physical_ctor_types.iter().copied() {
+                let is_recursive = 'found: {
+                    for mut ctor_ty in physical_ctor_types.iter().copied() {
                         while let Pi {
                             binder_type, body, ..
                         } = ctx.read_expr(ctor_ty)
@@ -74,13 +73,12 @@ impl<'t, 'p: 't> ExportFile<'p> {
                             if ctx
                                 .find_const(binder_type, |name| physical_ind_names.contains(&name))
                             {
-                                found = true;
-                                break 'outer;
+                                break 'found true;
                             }
                             ctor_ty = body;
                         }
                     }
-                    found
+                    false
                 };
                 assert_eq!(ind.is_recursive, is_recursive);
                 (ind, crate::checker::env::EnvLimit::ByIndex(start + size))
@@ -186,23 +184,24 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             args_rev.push(arg);
             head = fun;
         }
-        if let Const { name, levels, .. } = self.read_expr(head) {
-            if ind_names.contains(&name) && args_rev.len() <= usize::from(num_params) {
-                let levels_match = self.read_levels(levels) == self.read_levels(expected_levels);
-                let params_match = args_rev.len() == usize::from(num_params)
-                    && offset >= num_params
-                    && args_rev.iter().rev().enumerate().all(|(i, arg)| {
-                        matches!(
-                            self.read_expr(*arg),
-                            Var { dbj_idx, .. } if usize::from(dbj_idx) == usize::from(offset) - 1 - i
-                        )
-                    });
-                assert!(
-                    levels_match && params_match,
-                    "inductive occurrence is not applied uniformly to the block parameters and universe levels"
-                );
-                return;
-            }
+        if let Const { name, levels, .. } = self.read_expr(head)
+            && ind_names.contains(&name)
+            && args_rev.len() <= usize::from(num_params)
+        {
+            let levels_match = self.read_levels(levels) == self.read_levels(expected_levels);
+            let params_match = args_rev.len() == usize::from(num_params)
+                && offset >= num_params
+                && args_rev.iter().rev().enumerate().all(|(i, arg)| {
+                    matches!(
+                        self.read_expr(*arg),
+                        Var { dbj_idx, .. } if usize::from(dbj_idx) == usize::from(offset) - 1 - i
+                    )
+                });
+            assert!(
+                levels_match && params_match,
+                "inductive occurrence is not applied uniformly to the block parameters and universe levels"
+            );
+            return;
         }
 
         match self.read_expr(e) {
@@ -546,13 +545,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 });
             }
             // update the constructors for the inductive `i` with the replaced constructors.
-            match st.all_inductives_incl_specialized.get_mut(i) {
-                // e.g. replace the base `Syntax.node` with the updated one that replaces `Array`.
-                Some(old) => {
-                    let _ = std::mem::replace(&mut old.ctors, new_ctors_for_i);
-                }
-                None => panic!("inductive type {} is missing", i),
-            }
+            let Some(old) = st.all_inductives_incl_specialized.get_mut(i) else {
+                panic!("inductive type {} is missing", i)
+            };
+            // e.g. replace the base `Syntax.node` with the updated one that replaces `Array`.
+            old.ctors = new_ctors_for_i;
             i += 1;
         }
     }
@@ -827,7 +824,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         e: ExprPtr<'t>,
         offset: u16,
     ) -> Option<InductiveData<'t>> {
-        if !(matches!(self.ctx.read_expr(e), App { .. })) {
+        if !matches!(self.ctx.read_expr(e), App { .. }) {
             return None;
         }
         let (_f, name, _levels, args) = self.ctx.unfold_const_apps(self.arena, e)?;
@@ -836,27 +833,23 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if (*num_params as usize) > args.len() {
             return None;
         }
-        let mut inner_bvars = false;
-        let mut is_nested = false;
-        for i in 0..(*num_params as usize) {
-            let this_param = args[i];
-            if self.ctx.has_loose_bvar_below(this_param, offset) {
-                inner_bvars = true;
-            }
-            if self.ctx.find_const(this_param, |n| {
+        let params = &args[..usize::from(*num_params)];
+        let is_nested = params.iter().any(|&p| {
+            self.ctx.find_const(p, |n| {
                 st.all_inductives_incl_specialized
                     .iter()
                     .any(|new_ty| new_ty.name == n)
-            }) {
-                is_nested = true;
-            }
-        }
+            })
+        });
         if !is_nested {
             return None;
         }
-        if inner_bvars {
-            panic!("a nested type may only be applied to the block's parameters")
-        }
+        assert!(
+            !params
+                .iter()
+                .any(|&p| self.ctx.has_loose_bvar_below(p, offset)),
+            "a nested type may only be applied to the block's parameters"
+        );
         Some(ind_ty_declar.clone())
     }
 
@@ -867,13 +860,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 ty: t.info.ty,
             }
         }
-        let ctors = {
-            let mut out = Vec::new();
-            for ctor_name in t.all_ctor_names.as_ref() {
-                out.push(header_of_ctor(self.env.get_constructor(ctor_name).unwrap()));
-            }
-            out
-        };
+        let ctors = t
+            .all_ctor_names
+            .iter()
+            .map(|ctor_name| header_of_ctor(self.env.get_constructor(ctor_name).unwrap()))
+            .collect();
         IndTyHeader {
             name: t.info.name,
             ty: t.info.ty,
@@ -885,19 +876,18 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// `[T, U, .., Z]`, return the `IndTyHeader` elements for `[T, U, .., Z]`, without
     /// any specializations/modifications.
     fn collect_unmodified_mutuals(&self, t_from_file: &InductiveData<'t>) -> Vec<IndTyHeader<'t>> {
-        let mut all_inductives = Vec::new();
         // Get all of the mutual inductives, but don't re-insert the base type.
-        for n in t_from_file.all_ind_names.iter() {
-            let t = self.env.get_inductive(n).unwrap();
-            all_inductives.push(self.header_of_ty(t));
-        }
-        all_inductives
+        t_from_file
+            .all_ind_names
+            .iter()
+            .map(|n| self.header_of_ty(self.env.get_inductive(n).unwrap()))
+            .collect()
     }
 
     fn mk_unique_name(&mut self, n: NamePtr<'t>, st: &mut InductiveCheckState<'t>) -> NamePtr<'t> {
         for idx in st.next_ngen_idx..u64::MAX {
             let tester = self.ctx.append_index_after(n, idx);
-            if !self.env.get_old_declar(&tester).is_some() {
+            if self.env.get_old_declar(&tester).is_none() {
                 st.next_ngen_idx = idx + 1;
                 return tester;
             }
@@ -1174,12 +1164,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         depth: u32,
     ) -> (usize, Vec<ExprPtr<'t>>) {
         let valid_app_idx = self.which_valid_ind_app_v(st, depth, v).unwrap();
-        let (_, mut ctor_args_wo_params) = self.ctx.unfold_apps_stack(self.arena, ind_ty_app);
+        let (_, ctor_args_wo_params) = self.ctx.unfold_apps_stack(self.arena, ind_ty_app);
         // Compensate for stack-like unfold
-        for _ in 0..st.local_params.len() {
-            ctor_args_wo_params.pop();
-        }
-        (valid_app_idx, ctor_args_wo_params.iter().copied().collect())
+        let keep = ctor_args_wo_params
+            .len()
+            .saturating_sub(st.local_params.len());
+        (valid_app_idx, ctor_args_wo_params[..keep].to_vec())
     }
 
     fn inst_params_at(&mut self, e: ExprPtr<'t>, num_params: usize, depth: u16) -> ExprPtr<'t> {
@@ -1237,16 +1227,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     fn spine_has_ind_occ(&mut self, depth: u32, spine: S<'t>, haystack: &[ExprPtr<'t>]) -> bool {
-        let mut cur = spine;
-        while let crate::checker::value::Spine::Snoc { prev, elim, .. } = cur {
-            if let crate::checker::value::ElimView::App(a) = elim.view() {
-                if self.value_has_ind_occ(depth, a, haystack) {
-                    return true;
-                }
-            }
-            cur = prev;
-        }
-        false
+        spine.elims_rev().any(|elim| {
+            matches!(elim.view(), ElimView::App(a) if self.value_has_ind_occ(depth, a, haystack))
+        })
     }
 
     fn closure_has_ind_occ(
@@ -1264,10 +1247,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             if idx < 64 && (mask >> idx) & 1 == 0 {
                 continue;
             }
-            if let Some(slot) = clo.env.lookup(idx) {
-                if self.value_has_ind_occ(depth, slot, haystack) {
-                    return true;
-                }
+            if let Some(slot) = clo.env.lookup(idx)
+                && self.value_has_ind_occ(depth, slot, haystack)
+            {
+                return true;
             }
         }
         false
@@ -1300,9 +1283,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 Const { name: n, .. } => n == name,
                 _ => panic!(),
             })?;
-        let expected_levels = match self.ctx.read_expr(st.ind_consts[pos]) {
-            Const { levels, .. } => levels,
-            _ => return None,
+        let Const {
+            levels: expected_levels,
+            ..
+        } = self.ctx.read_expr(st.ind_consts[pos])
+        else {
+            return None;
         };
         if !self.ctx.eq_antisymm_many(levels, expected_levels) {
             return None;
@@ -1420,21 +1406,16 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut depth = 0u32;
         let mut cur = self.value_of(ctor_type_cursor);
         let mut non_prop_levels: Vec<u32> = Vec::new();
-        loop {
-            match self.weak_pi(depth, cur) {
-                Some(Value::Pi { domain, body, .. }) => {
-                    let domain = *domain;
-                    let fresh = self.mk_bvar_hc(depth, domain);
-                    let level = depth;
-                    cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
-                    depth += 1;
-                    if rem_params != 0 {
-                        rem_params -= 1;
-                    } else if !self.is_prop_type(depth, domain) {
-                        non_prop_levels.push(level);
-                    }
-                }
-                _ => break,
+        while let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) {
+            let domain = *domain;
+            let fresh = self.mk_bvar_hc(depth, domain);
+            let level = depth;
+            cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
+            depth += 1;
+            if rem_params != 0 {
+                rem_params -= 1;
+            } else if !self.is_prop_type(depth, domain) {
+                non_prop_levels.push(level);
             }
         }
 
@@ -1926,19 +1907,23 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     fn mk_rec_rules(&mut self, st: &InductiveCheckState<'t>) -> Vec<Vec<RecRule<'t>>> {
-        let mut rec_rules = Vec::new();
         let minors = st.flat_minors();
         let mut overall_ctor_idx = 0u16;
-        for ind_ty in st.all_inductives_incl_specialized.iter() {
-            let mut grp = Vec::new();
-            for ctor in ind_ty.ctors.iter().copied() {
-                let rec_rule = self.mk_rec_rule1(st, ctor, minors.as_slice(), overall_ctor_idx);
-                overall_ctor_idx += 1;
-                grp.push(rec_rule);
-            }
-            rec_rules.push(grp);
-        }
-        rec_rules
+        st.all_inductives_incl_specialized
+            .iter()
+            .map(|ind_ty| {
+                ind_ty
+                    .ctors
+                    .iter()
+                    .map(|&ctor| {
+                        let rec_rule =
+                            self.mk_rec_rule1(st, ctor, minors.as_slice(), overall_ctor_idx);
+                        overall_ctor_idx += 1;
+                        rec_rule
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     // Assert that the inductive types being added to the extension which
@@ -2481,24 +2466,27 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             new_env_rec.info.ty,
             specialized_rec_names_to_unspecialized_rec_names,
         );
-        let mut rules = Vec::new();
-        for rule in new_env_rec.rec_rules.iter().copied() {
-            let val = self.restore_e(
-                st,
-                rule.val,
-                specialized_rec_names_to_unspecialized_rec_names,
-            );
-            let ctor_name = if rec_name == resolved_rec_name {
-                rule.ctor_name
-            } else {
-                self.restore_ctor_name(st, rule.ctor_name)
-            };
-            rules.push(RecRule {
-                ctor_name,
-                val,
-                ..rule
+        let rules: Arc<[RecRule<'t>]> = new_env_rec
+            .rec_rules
+            .iter()
+            .map(|&rule| {
+                let val = self.restore_e(
+                    st,
+                    rule.val,
+                    specialized_rec_names_to_unspecialized_rec_names,
+                );
+                let ctor_name = if rec_name == resolved_rec_name {
+                    rule.ctor_name
+                } else {
+                    self.restore_ctor_name(st, rule.ctor_name)
+                };
+                RecRule {
+                    ctor_name,
+                    val,
+                    ..rule
+                }
             })
-        }
+            .collect();
         RecursorData {
             info: DeclarInfo {
                 name: resolved_rec_name,
@@ -2506,7 +2494,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 ..new_env_rec.info
             },
             all_inductives: all_ind_names_no_specialized.clone(),
-            rec_rules: Arc::from(rules),
+            rec_rules: rules,
             ..new_env_rec
         }
     }
@@ -2537,9 +2525,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.assert_def_eq(original.info.ty, restored.info.ty);
                 // have to do the rec rules as well.
                 assert_eq!(original.rec_rules.len(), restored.rec_rules.len());
-                for i in 0..original.rec_rules.len() {
-                    let old = original.rec_rules[i];
-                    let new = restored.rec_rules[i];
+                for (&old, &new) in original.rec_rules.iter().zip(restored.rec_rules.iter()) {
                     assert_eq!(old.ctor_name, new.ctor_name);
                     self.assert_imported_expr_matches(old.val, new.val);
                 }

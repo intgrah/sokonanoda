@@ -346,7 +346,7 @@ mod tests {
     use crate::config::Config;
     use crate::frontend::parser::parse_export_file;
     use bumpalo::Bump;
-    use rand::prelude::*;
+    use rand::random;
     use std::error::Error;
 
     fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
@@ -424,9 +424,8 @@ mod tests {
     fn succ_le_succ() -> Result<(), Box<dyn Error>> {
         test_ctx(|ctx| {
             for _ in 0..100 {
-                let mut rng = thread_rng();
                 let (small, large) = {
-                    let (x, y): (u8, u8) = rng.gen();
+                    let (x, y): (u8, u8) = random();
                     (x.min(y), x.max(y))
                 };
 
@@ -441,10 +440,9 @@ mod tests {
     fn max_le_max() -> Result<(), Box<dyn Error>> {
         test_ctx(|ctx| {
             let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-            let mut rng = thread_rng();
             for _ in 0..100 {
                 let (small, large) = {
-                    let (x, y): (u8, u8) = rng.gen();
+                    let (x, y): (u8, u8) = random();
                     (x.min(y) as u64, x.max(y) as u64)
                 };
                 let lhs = {
@@ -467,10 +465,9 @@ mod tests {
     fn imax_le_imax() -> Result<(), Box<dyn Error>> {
         test_ctx(|ctx| {
             let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-            let mut rng = thread_rng();
             for _ in 0..100 {
                 let (small, large) = {
-                    let (x, y): (u8, u8) = rng.gen();
+                    let (x, y): (u8, u8) = random();
                     (x.min(y) as u64, x.max(y) as u64)
                 };
                 let lhs = {
@@ -493,10 +490,9 @@ mod tests {
     fn imax_eq_max_of_pos() -> Result<(), Box<dyn Error>> {
         test_ctx(|ctx| {
             let (p, q) = (ctx.param_quick("p"), ctx.param_quick("q"));
-            let mut rng = thread_rng();
             for _ in 0..100 {
                 let (u, v, w) = {
-                    let (u, v, w): (u8, u8, u8) = rng.gen();
+                    let (u, v, w): (u8, u8, u8) = random();
                     (u as u64, v as u64, w as u64)
                 };
                 let lhs = {

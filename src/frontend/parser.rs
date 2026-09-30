@@ -4,7 +4,7 @@ use crate::checker::env::{
 use crate::config::{AxiomDecision, Config};
 use crate::hash64;
 use crate::term::expr::Expr;
-use crate::term::hash::{new_fx_hash_map, new_fx_index_map, FxHashMap, FxIndexMap};
+use crate::term::hash::{FxHashMap, FxIndexMap, new_fx_hash_map, new_fx_index_map};
 use crate::term::intern::Dag;
 use crate::term::level::Level;
 use crate::term::name::Name;
@@ -712,17 +712,19 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn push_name(&mut self, expected: BackRef, n: Name<'a>) {
-        if self.dag.names.get(&n).is_some() {
-            panic!("Attempted to insert duplicate Name");
-        }
+        assert!(
+            self.dag.names.get(&n).is_none(),
+            "Attempted to insert duplicate Name"
+        );
         let ptr = NamePtr::global(self.dag.names.insert(self.arena, n));
         put_at(&mut self.names_by_idx, expected.index() as usize, ptr);
     }
 
     fn push_level(&mut self, expected: BackRef, l: Level<'a>) {
-        if self.dag.levels.get(&l).is_some() {
-            panic!("Attempted to insert duplicate Level");
-        }
+        assert!(
+            self.dag.levels.get(&l).is_none(),
+            "Attempted to insert duplicate Level"
+        );
         let ptr = LevelPtr::global(self.dag.levels.insert(self.arena, l));
         put_at(&mut self.levels_by_idx, expected.index() as usize, ptr);
     }

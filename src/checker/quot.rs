@@ -54,66 +54,61 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let env = ctx
         .export_file
         .new_env(EnvLimit::ByName(declar.info().name));
-    match env.get_inductive(&name).cloned() {
-        // The `Eq` declaration offered up by the export file;
-        Some(InductiveData {
-            info,
-            num_params,
-            all_ctor_names,
-            ..
-        }) => {
-            let eq_const = ctx.mk_const(name, info.uparams);
-            assert_eq!(ctx.read_levels(info.uparams).len(), 1);
-            assert_eq!(num_params, 2);
-            let uparam = match ctx.read_levels(info.uparams).as_ref() {
-                &[u] => ctx.mk_sort(u),
-                owise => panic!(
-                    "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
-                    owise.len()
-                ),
-            };
-
-            let a1 = ctx.mk_var(1);
-            let inner = ctx.mk_pi(a1, prop);
-            let a0 = ctx.mk_var(0);
-            let inner = ctx.mk_pi(a0, inner);
-            let expected = ctx.mk_pi(uparam, inner);
-            let mut tc = TypeChecker::new(ctx, &env, arena, Some(info), cache);
-            tc.assert_def_eq(info.ty, expected);
-            match all_ctor_names.as_ref() {
-                &[ctor_name] => {
-                    assert_eq!(cname, ctor_name);
-                    match env.get_constructor(&ctor_name) {
-                        Some(ConstructorData { info, .. }) => {
-                            let uparam_sort = match ctx.read_levels(info.uparams).as_ref() {
-                                &[uparam] => ctx.mk_sort(uparam),
-                                _ => panic!(),
-                            };
-                            let a_alpha = ctx.mk_var(1);
-                            let a_a = ctx.mk_var(0);
-                            let app = app!(in ctx; eq_const, a_alpha, a_a, a_a);
-                            let dom_a = ctx.mk_var(0);
-                            let inner = ctx.mk_pi(dom_a, app);
-                            let expected = ctx.mk_pi(uparam_sort, inner);
-                            let mut tc = TypeChecker::new(ctx, &env, arena, Some(*info), cache);
-                            tc.assert_def_eq(info.ty, expected);
-                        }
-                        None => panic!(
-                            "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
-                        ),
-                    }
-                }
-                owise => panic!(
-                    "cannot add Quot; `Eq` type improperly formed; expected one constructor, found {}",
-                    owise.len()
-                ),
-            }
-        }
-        None => panic!(
+    // The `Eq` declaration offered up by the export file;
+    let Some(InductiveData {
+        info,
+        num_params,
+        all_ctor_names,
+        ..
+    }) = env.get_inductive(&name).cloned()
+    else {
+        panic!(
             "cannot add Quot; improperly formed `Eq` type := {:?} ",
             ctx.debug_print(declar.info().name)
-        ),
-    }
+        )
+    };
+    let eq_const = ctx.mk_const(name, info.uparams);
+    assert_eq!(ctx.read_levels(info.uparams).len(), 1);
+    assert_eq!(num_params, 2);
+    let &[u] = ctx.read_levels(info.uparams).as_ref() else {
+        panic!(
+            "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
+            ctx.read_levels(info.uparams).len()
+        )
+    };
+    let uparam = ctx.mk_sort(u);
+
+    let a1 = ctx.mk_var(1);
+    let inner = ctx.mk_pi(a1, prop);
+    let a0 = ctx.mk_var(0);
+    let inner = ctx.mk_pi(a0, inner);
+    let expected = ctx.mk_pi(uparam, inner);
+    let mut tc = TypeChecker::new(ctx, &env, arena, Some(info), cache);
+    tc.assert_def_eq(info.ty, expected);
+    let &[ctor_name] = all_ctor_names.as_ref() else {
+        panic!(
+            "cannot add Quot; `Eq` type improperly formed; expected one constructor, found {}",
+            all_ctor_names.len()
+        )
+    };
+    assert_eq!(cname, ctor_name);
+    let Some(ConstructorData { info, .. }) = env.get_constructor(&ctor_name) else {
+        panic!(
+            "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
+        )
+    };
+    let &[uparam] = ctx.read_levels(info.uparams).as_ref() else {
+        panic!()
+    };
+    let uparam_sort = ctx.mk_sort(uparam);
+    let a_alpha = ctx.mk_var(1);
+    let a_a = ctx.mk_var(0);
+    let app = app!(in ctx; eq_const, a_alpha, a_a, a_a);
+    let dom_a = ctx.mk_var(0);
+    let inner = ctx.mk_pi(dom_a, app);
+    let expected = ctx.mk_pi(uparam_sort, inner);
+    let mut tc = TypeChecker::new(ctx, &env, arena, Some(*info), cache);
+    tc.assert_def_eq(info.ty, expected);
 }
 
 #[allow(non_snake_case)]

@@ -4,7 +4,7 @@ use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
-use crate::checker::value::{self, Elim, ElimView, RigidHead, Spine, Value, S, V};
+use crate::checker::value::{self, Elim, ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::ptr::{BigUintPtr, Id, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
@@ -42,14 +42,14 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 spine,
                 ..
             } => {
-                if let Some((num_params, _, inductive_name)) = self.ctor_shape(*ctor_name) {
-                    if inductive_name == ty_name {
-                        let np = usize::from(num_params);
-                        if let Some(ElimView::App(field)) =
-                            spine.get(np + usize::from(idx)).map(|e| e.view())
-                        {
-                            return self.force_thunk(depth, field);
-                        }
+                if let Some((num_params, _, inductive_name)) = self.ctor_shape(*ctor_name)
+                    && inductive_name == ty_name
+                {
+                    let np = usize::from(num_params);
+                    if let Some(ElimView::App(field)) =
+                        spine.get(np + usize::from(idx)).map(|e| e.view())
+                    {
+                        return self.force_thunk(depth, field);
                     }
                 }
                 self.proj_extend_spine(ty_name, idx, v)
@@ -233,13 +233,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                 ..
             } => {
                 let env = self.env;
-                let rec = match env.get_recursor(name) {
-                    Some(r) => r,
-                    None => return ForceStep::Done,
+                let Some(rec) = env.get_recursor(name) else {
+                    return ForceStep::Done;
                 };
-                let args = match self.spine_apps(depth, spine) {
-                    Some(a) => a,
-                    None => return ForceStep::Done,
+                let Some(args) = self.spine_apps(depth, spine) else {
+                    return ForceStep::Done;
                 };
                 if args.len() <= rec.major_idx() {
                     return ForceStep::Done;
@@ -277,13 +275,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     return ForceStep::Done;
                 };
                 let name = *name;
-                let args = match self.spine_apps(depth, spine) {
-                    Some(a) => a,
-                    None => return ForceStep::Done,
+                let Some(args) = self.spine_apps(depth, spine) else {
+                    return ForceStep::Done;
                 };
-                let major = match args.get(qmk_pos) {
-                    Some(m) => *m,
-                    None => return ForceStep::Done,
+                let Some(&major) = args.get(qmk_pos) else {
+                    return ForceStep::Done;
                 };
                 let major_h = self.strip_head(depth, major);
                 if self.is_iota_reducible(major_h) {
@@ -385,15 +381,16 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             if let Some(f) = forced.get() {
                 return f;
             }
-            if self.nat_extension && head.name.as_ref().is_nat_red() {
-                if let Some(args) = self.spine_apps(depth, spine) {
-                    if let Some(r) = self.do_nat_red(depth, head.name, &args) {
-                        let _ = forced.set(r);
-                        return r;
-                    }
-                    if !force && self.nat_red_defer(depth, head.name, &args) {
-                        return v;
-                    }
+            if self.nat_extension
+                && head.name.as_ref().is_nat_red()
+                && let Some(args) = self.spine_apps(depth, spine)
+            {
+                if let Some(r) = self.do_nat_red(depth, head.name, &args) {
+                    let _ = forced.set(r);
+                    return r;
+                }
+                if !force && self.nat_red_defer(depth, head.name, &args) {
+                    return v;
                 }
             }
             let head_value = match head_value.get() {
@@ -490,13 +487,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     pub(crate) fn spine_apps(&mut self, depth: u32, spine: S<'t>) -> Option<SpineArgs<'t>> {
         let mut out = SpineArgs::with_capacity(spine.len() as usize);
-        let mut cur: &Spine<'t> = spine;
-        while let Spine::Snoc { prev, elim, .. } = cur {
-            match elim.view() {
-                ElimView::App(a) => out.push(self.force_thunk(depth, a)),
-                ElimView::Proj { .. } => return None,
-            }
-            cur = prev;
+        for elim in spine.elims_rev() {
+            let ElimView::App(a) = elim.view() else {
+                return None;
+            };
+            out.push(self.force_thunk(depth, a));
         }
         out.reverse();
         Some(out)
@@ -546,10 +541,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     ) -> Option<V<'t>> {
         if self.ctx.export_file.config.nat_extension
             && rec.all_inductives.first().copied() == self.ctx.export_file.name_cache.nat
+            && let Value::NatLit { ptr, .. } = major
         {
-            if let Value::NatLit { ptr, .. } = major {
-                return Some(self.nat_rec_natlit(depth, args, *ptr, rec, levels));
-            }
+            return Some(self.nat_rec_natlit(depth, args, *ptr, rec, levels));
         }
         let major = self
             .major_to_ctor(depth, major)
@@ -960,23 +954,9 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     ..
                 } => true,
                 Value::Rigid { spine, .. } | Value::Unfold { spine, .. } => {
-                    let mut found = false;
-                    let mut s = *spine;
-                    loop {
-                        match s {
-                            Spine::Empty => break,
-                            Spine::Snoc { prev, elim, .. } => {
-                                if let ElimView::App(a) = elim.view() {
-                                    if self.value_has_free_bvar(depth, a) {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                s = *prev;
-                            }
-                        }
-                    }
-                    found
+                    spine.elims_rev().any(|elim| {
+                        matches!(elim.view(), ElimView::App(a) if self.value_has_free_bvar(depth, a))
+                    })
                 }
                 Value::Lam { .. } | Value::Pi { .. } => false,
                 Value::Thunk { .. } => unreachable!("force_thunk left a Thunk"),
@@ -1009,19 +989,17 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
                     if Some(*name) == self.ctx.export_file.name_cache.nat_zero && spine.is_empty() {
                         return Some(BigUint::from(succs));
                     }
-                    if Some(*name) == self.ctx.export_file.name_cache.nat_succ {
-                        if let Spine::Snoc {
+                    if Some(*name) == self.ctx.export_file.name_cache.nat_succ
+                        && let Spine::Snoc {
                             prev: Spine::Empty,
                             elim,
                             ..
                         } = spine
-                        {
-                            if let ElimView::App(a) = elim.view() {
-                                succs += 1;
-                                cur = self.force_thunk(depth, a);
-                                continue;
-                            }
-                        }
+                        && let ElimView::App(a) = elim.view()
+                    {
+                        succs += 1;
+                        cur = self.force_thunk(depth, a);
+                        continue;
                     }
                     return None;
                 }

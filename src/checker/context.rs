@@ -1,16 +1,16 @@
-use super::cache::{caches, Reset, TcCache, SESSION, SMALL};
+use super::cache::{Reset, SESSION, SMALL, TcCache, caches};
 use crate::checker::env::{DeclarMap, Env, EnvLimit, NotationMap};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
 use crate::hash64;
 use crate::term::expr::{
-    Expr, APP_HASH, CONST_HASH, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
+    APP_HASH, CONST_HASH, Expr, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
     STRING_LIT_HASH, VAR_HASH,
 };
 use crate::term::hash::{CowStr, FxHashMap, FxHashSet};
 use crate::term::intern::{Dag, NameCache};
-use crate::term::level::{Level, IMAX_HASH, MAX_HASH, PARAM_HASH, SUCC_HASH};
-use crate::term::name::{Name, NUM_HASH, STR_HASH};
+use crate::term::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
+use crate::term::name::{NUM_HASH, Name, STR_HASH};
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use bumpalo::Bump;
 use num_bigint::BigUint;
@@ -187,10 +187,10 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> Option<BigUintPtr<'t>> {
-        if let Some(global) = self.export_file.dag.bignums.as_ref() {
-            if let Some(r) = global.get(&n) {
-                return Some(BigUintPtr::global(r));
-            }
+        if let Some(global) = self.export_file.dag.bignums.as_ref()
+            && let Some(r) = global.get(&n)
+        {
+            return Some(BigUintPtr::global(r));
         }
         let local = self.dag.bignums.as_mut()?;
         Some(BigUintPtr::local(local.intern(self.arena, n)))

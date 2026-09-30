@@ -1,5 +1,5 @@
 use crate::checker::infer::CachedType;
-use crate::checker::value::{self, Ctx, Env, KeyTag, LevelSub, Spine, Value, C, E, S, V};
+use crate::checker::value::{self, C, Ctx, E, Env, KeyTag, LevelSub, S, Spine, V, Value};
 use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use bumpalo::Bump;
