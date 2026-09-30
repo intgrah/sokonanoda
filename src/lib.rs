@@ -1,13 +1,11 @@
-pub mod checker;
-pub mod config;
-pub mod frontend;
-pub mod outcome;
-pub mod term;
+pub(crate) mod checker;
+pub(crate) mod config;
+pub(crate) mod frontend;
+pub(crate) mod outcome;
+pub(crate) mod term;
 
-pub use checker::{
-    conv, debug_printer, env, eval, inductive, infer, quot, quote, relevance, tc, value,
-};
-pub use frontend::parser;
-pub use term::{expr, level, name};
+pub use checker::context::ExportFile;
+pub use config::{AxiomPolicy, Config, DisallowedAxiom};
+pub use outcome::{CheckError, Decline, Rejection};
 
 pub(crate) const STACK_SIZE: usize = 2 * 1024 * 1024 * 1024;

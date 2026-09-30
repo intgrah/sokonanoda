@@ -1,6 +1,6 @@
-pub mod expr;
-pub mod hash;
-pub mod intern;
-pub mod level;
-pub mod name;
-pub mod ptr;
+pub(crate) mod expr;
+pub(crate) mod hash;
+pub(crate) mod intern;
+pub(crate) mod level;
+pub(crate) mod name;
+pub(crate) mod ptr;

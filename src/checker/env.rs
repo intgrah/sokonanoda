@@ -1,4 +1,4 @@
-use crate::term::hash::{FxHashMap, FxIndexMap};
+use crate::term::hash::FxIndexMap;
 use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -83,7 +83,6 @@ pub struct InductiveData<'a> {
     /// `true` when recursive (that is, the inductive type appears as an argument in a constructor).
     pub(crate) is_recursive: bool,
     /// `true` when this typs is a nested inductive
-    #[allow(dead_code)]
     pub(crate) is_nested: bool,
     /// All inductive types in a mutual block must have the same parameters, though this
     /// does not exactly hold for nested inductives.
@@ -200,60 +199,14 @@ impl<'a> Declar<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Notation<'a> {
-    Prefix {
-        name: NamePtr<'a>,
-        priority: usize,
-        oper: Arc<str>,
-    },
-    Infix {
-        name: NamePtr<'a>,
-        priority: usize,
-        oper: Arc<str>,
-    },
-    Postfix {
-        name: NamePtr<'a>,
-        priority: usize,
-        oper: Arc<str>,
-    },
-}
-
-impl<'a> Notation<'a> {
-    pub fn new_prefix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Prefix {
-            name,
-            priority,
-            oper,
-        }
-    }
-
-    pub fn new_infix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Infix {
-            name,
-            priority,
-            oper,
-        }
-    }
-
-    pub fn new_postfix(name: NamePtr<'a>, priority: usize, oper: Arc<str>) -> Self {
-        Notation::Postfix {
-            name,
-            priority,
-            oper,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum EnvLimit<'a> {
-    Empty,
     ByIndex(usize),
     ByName(NamePtr<'a>),
 }
 
 /// A Lean environment, which consists of a set of declarations that my have a temporary
-/// extension, and some notation items. The temporary extensions are used to acommodate
+/// extension. The temporary extensions are used to acommodate
 /// the specialization process needed for checking nested inductives.
 ///
 /// When a tyep checker looks up a declaration in the environment, it will check the temporary
@@ -262,8 +215,6 @@ pub struct Env<'x, 'a: 'x> {
     declars: &'a FxIndexMap<NamePtr<'a>, Declar<'a>>,
     /// Used for checking nested inductives.
     temp_declars: Option<&'x FxIndexMap<NamePtr<'a>, Declar<'a>>>,
-    #[allow(dead_code)]
-    pub(crate) notation: &'a FxHashMap<NamePtr<'a>, Notation<'a>>,
     /// `cutoff` is used to mark the end of what should be the "visible" environment.
     /// This allows us to make the complete environment at parse time, and then control visibility
     /// between threads by only making a particular slice of that environment available to a thread.
@@ -271,16 +222,11 @@ pub struct Env<'x, 'a: 'x> {
 }
 
 pub(crate) type DeclarMap<'a> = FxIndexMap<NamePtr<'a>, Declar<'a>>;
-pub(crate) type NotationMap<'a> = FxHashMap<NamePtr<'a>, Notation<'a>>;
 
 impl<'x, 'a: 'x> Env<'x, 'a> {
     /// Create a new environment (without any temporary extension)
-    pub fn new(
-        declars: &'a DeclarMap<'a>,
-        notation: &'a NotationMap<'a>,
-        limit: EnvLimit<'a>,
-    ) -> Self {
-        Self::new_w_temp_ext(declars, None, notation, limit)
+    pub fn new(declars: &'a DeclarMap<'a>, limit: EnvLimit<'a>) -> Self {
+        Self::new_w_temp_ext(declars, None, limit)
     }
 
     /// Create a new environment that includes some temporary extension; the temporary
@@ -288,11 +234,9 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     pub fn new_w_temp_ext(
         declars: &'a DeclarMap<'a>,
         temp_declars: Option<&'x DeclarMap<'a>>,
-        notation: &'a NotationMap<'a>,
         limit: EnvLimit<'a>,
     ) -> Self {
         let cutoff = match limit {
-            EnvLimit::Empty => 0,
             EnvLimit::ByIndex(idx) => idx,
             EnvLimit::ByName(n) => match n.as_ref().decl_idx() {
                 crate::term::name::NO_DECL => 0,
@@ -302,7 +246,6 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         Self {
             declars,
             temp_declars,
-            notation,
             cutoff,
         }
     }

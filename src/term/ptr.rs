@@ -55,7 +55,6 @@ macro_rules! tagged_ptr {
             }
 
             #[inline]
-            #[allow(dead_code)]
             pub(crate) fn get_hash(&self) -> u64 { self.ptr.as_ptr().addr() as u64 }
 
             #[inline]
@@ -224,12 +223,6 @@ impl<'a> LevelsPtr<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn is_local(self) -> bool {
-        self.bits.get() & LEVELS_TAG != 0
-    }
-
-    #[inline]
     pub(crate) fn len(self) -> usize {
         ((self.bits.get() >> LEVELS_LEN_SHIFT) & 0x7fff) as usize
     }
@@ -241,7 +234,6 @@ impl<'a> LevelsPtr<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn get_hash(self) -> u64 {
         self.bits.get()
     }

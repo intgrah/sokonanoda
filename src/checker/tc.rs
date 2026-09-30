@@ -2,10 +2,9 @@ use crate::checker::cache::TcCache;
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::E;
+use crate::outcome::CheckError;
 use crate::outcome::ensure;
 use crate::term::ptr::ExprPtr;
-
-use InferFlag::InferOnly;
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
 
@@ -239,12 +238,15 @@ impl<'p> ExportFile<'p> {
 
     /// Check all of the declarations in this export file on the specified number
     /// of threads (checking will be serial on the main thread is `num_threads <= 1`).
-    pub fn check_all_declars(&self) {
-        if self.config.num_threads > 1 {
-            self.check_all_declars_par(self.config.num_threads);
-        } else {
-            self.check_all_declars_serial();
-        }
+    pub fn check_all_declars(&self) -> Result<(), CheckError> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.config.num_threads > 1 {
+                self.check_all_declars_par(self.config.num_threads);
+            } else {
+                self.check_all_declars_serial();
+            }
+        }))
+        .map_err(CheckError::from_panic)
     }
 }
 
@@ -284,20 +286,5 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) {
         ensure!(self.def_eq_core(u, v), "def_eq failed");
-    }
-
-    pub fn is_proposition(&mut self, e: ExprPtr<'t>) -> bool {
-        let depth = 0u32;
-        let env = self.empty_env();
-        let v = self.eval(depth, env, e);
-        self.is_prop_type(depth, v)
-    }
-
-    pub fn is_proof(&mut self, e: ExprPtr<'t>) -> bool {
-        let depth = 0u32;
-        let env = self.empty_env();
-        let ctx = self.empty_ctx();
-        let ty = self.infer_value(InferOnly, depth, env, ctx, e);
-        self.is_prop_type(depth, ty)
     }
 }

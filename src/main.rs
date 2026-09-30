@@ -1,14 +1,13 @@
 use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
-use sokonanoda::config::{AxiomPolicy, Config, DisallowedAxiom};
-use sokonanoda::outcome::{Decline, Rejection};
-use std::error::Error;
+use sokonanoda::{AxiomPolicy, CheckError, Config, Decline, DisallowedAxiom, Rejection};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+const EXIT_ACCEPT: i32 = 0;
 const EXIT_REJECT: i32 = 1;
 const EXIT_DECLINE: i32 = 2;
 const EXIT_INTERNAL: i32 = 3;
@@ -95,56 +94,62 @@ impl From<Cli> for Config {
     }
 }
 
+fn run(cfg: Config) -> i32 {
+    let parse_only = cfg.parse_only;
+    let print_success_message = cfg.print_success_message;
+    let arena = Bump::new();
+    let (export_file, warned_axioms) = match cfg.to_export_file(&arena) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("{e}\n\n{HELP_SHORT}");
+            return if e.is::<Decline>() {
+                EXIT_DECLINE
+            } else {
+                EXIT_REJECT
+            };
+        }
+    };
+    if !warned_axioms.is_empty() {
+        eprintln!("warning: disallowed axioms: {}", warned_axioms.join(", "));
+    }
+    if parse_only {
+        println!("Parsed {} declarations", export_file.num_declars());
+        return EXIT_ACCEPT;
+    }
+    match export_file.check_all_declars() {
+        Ok(()) => {
+            if print_success_message {
+                println!(
+                    "Checked {} declarations with no errors",
+                    export_file.num_declars()
+                );
+            }
+            EXIT_ACCEPT
+        }
+        Err(e @ CheckError::Rejected(_)) => {
+            eprintln!("{e}");
+            EXIT_REJECT
+        }
+        Err(e @ CheckError::Declined(_)) => {
+            eprintln!("{e}");
+            EXIT_DECLINE
+        }
+        Err(CheckError::Internal(_)) => EXIT_INTERNAL,
+    }
+}
+
 fn main() {
     let cfg = Config::from(Cli::parse());
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let payload = info.payload();
-        if let Some(r) = payload.downcast_ref::<Rejection>() {
-            eprintln!("{r}");
-        } else if let Some(d) = payload.downcast_ref::<Decline>() {
-            eprintln!("{d}");
-        } else {
+        if !payload.is::<Rejection>() && !payload.is::<Decline>() {
             eprint!("internal error: ");
             default_hook(info);
         }
     }));
-    let result = std::panic::catch_unwind(|| -> Result<(), Box<dyn Error>> {
-        let arena = Bump::new();
-        let (export_file, warned_axioms) = cfg.to_export_file(&arena)?;
-        if !warned_axioms.is_empty() {
-            eprintln!("warning: disallowed axioms: {}", warned_axioms.join(", "));
-        }
-        if export_file.config.parse_only {
-            println!("Parsed {} declarations", export_file.declars.len());
-            return Ok(());
-        }
-
-        export_file.check_all_declars();
-        if export_file.config.print_success_message {
-            println!(
-                "Checked {} declarations with no errors",
-                export_file.declars.len()
-            );
-        }
-        Ok(())
-    });
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            let declined = e.downcast_ref::<Decline>().is_some();
-            eprintln!("{e}\n\n{HELP_SHORT}");
-            std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT });
-        }
-        Err(payload) => std::process::exit(if payload.is::<Rejection>() {
-            EXIT_REJECT
-        } else if payload.is::<Decline>() {
-            EXIT_DECLINE
-        } else {
-            EXIT_INTERNAL
-        }),
-    }
+    let code = std::panic::catch_unwind(|| run(cfg)).unwrap_or(EXIT_INTERNAL);
+    std::process::exit(code);
 }
 
 const HELP_SHORT: &str = "run with `--help` for command-line options";

@@ -1,5 +1,5 @@
 use super::cache::{Reset, SESSION, SMALL, TcCache, caches};
-use crate::checker::env::{DeclarMap, Env, EnvLimit, NotationMap};
+use crate::checker::env::{DeclarMap, Env, EnvLimit};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
 use crate::hash64;
@@ -29,19 +29,22 @@ pub struct ExportFile<'p> {
     pub(crate) dag: Dag<'p>,
     pub(crate) anon: NamePtr<'p>,
     pub(crate) zero: LevelPtr<'p>,
-    pub declars: DeclarMap<'p>,
-    pub notations: NotationMap<'p>,
-    pub name_cache: NameCache<'p>,
-    pub config: Config,
-    pub mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>,
+    pub(crate) declars: DeclarMap<'p>,
+    pub(crate) name_cache: NameCache<'p>,
+    pub(crate) config: Config,
+    pub(crate) mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>,
 }
 
 impl<'p> ExportFile<'p> {
-    pub fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> {
-        Env::new(&self.declars, &self.notations, env_limit)
+    pub fn num_declars(&self) -> usize {
+        self.declars.len()
     }
 
-    pub fn with_ctx<F, A>(&self, f: F) -> A
+    pub(crate) fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> {
+        Env::new(&self.declars, env_limit)
+    }
+
+    pub(crate) fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t Bump) -> A,
     {
@@ -49,17 +52,6 @@ impl<'p> ExportFile<'p> {
         let mut ctx = TcCtx::new(self, &arena);
         let mut cache = TcCache::new(&arena);
         f(&mut ctx, &mut cache, &arena)
-    }
-
-    pub fn with_tc<F, A>(&self, env_limit: EnvLimit<'p>, f: F) -> A
-    where
-        F: FnOnce(&mut TypeChecker<'_, '_, 'p>) -> A,
-    {
-        self.with_ctx(|ctx, cache, bump| {
-            let env = ctx.export_file.new_env(env_limit);
-            let mut tc = TypeChecker::new(ctx, &env, bump, None, cache);
-            f(&mut tc)
-        })
     }
 }
 
@@ -111,22 +103,13 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     where
         F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A,
     {
-        let env = Env::new_w_temp_ext(
-            &self.export_file.declars,
-            Some(env_ext),
-            &self.export_file.notations,
-            env_limit,
-        );
+        let env = Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), env_limit);
         let mut tc = TypeChecker::new(self, &env, arena, None, cache);
         f(&mut tc)
     }
 
     pub fn read_name(&self, p: NamePtr<'t>) -> Name<'t> {
         p.as_ref().kind
-    }
-
-    pub fn read_name_pr(&self, p: NamePtr<'t>, q: NamePtr<'t>) -> (Name<'t>, Name<'t>) {
-        (self.read_name(p), self.read_name(q))
     }
 
     pub fn read_level(&self, p: LevelPtr<'t>) -> Level<'t> {
@@ -214,12 +197,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     pub fn str(&mut self, pfx: NamePtr<'t>, sfx: StringPtr<'t>) -> NamePtr<'t> {
         let hash = hash64!(STR_HASH, pfx, sfx);
         self.alloc_name(Name::Str(pfx, sfx, hash))
-    }
-
-    pub fn str1_owned(&mut self, s: String) -> NamePtr<'t> {
-        let anon = self.alloc_name(Name::Anon);
-        let s = self.alloc_string(CowStr::Owned(s));
-        self.str(anon, s)
     }
 
     pub fn str1(&mut self, s: &'static str) -> NamePtr<'t> {
@@ -365,6 +342,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }))
     }
 
+    #[cfg(test)]
     pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> Option<ExprPtr<'t>> {
         if !self.export_file.config.string_extension {
             return None;
@@ -381,6 +359,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         Some(self.alloc_expr(Expr::NatLit { ptr: num_ptr, hash }))
     }
 
+    #[cfg(test)]
     pub fn mk_nat_lit_quick(&mut self, n: BigUint) -> Option<ExprPtr<'t>> {
         let num_ptr = self.alloc_bignum(n)?;
         self.mk_nat_lit(num_ptr)

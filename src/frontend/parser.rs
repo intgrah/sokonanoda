@@ -1,5 +1,5 @@
 use crate::checker::env::{
-    ConstructorData, Declar, DeclarInfo, InductiveData, Notation, RecursorData, ReducibilityHint,
+    ConstructorData, Declar, DeclarInfo, InductiveData, RecursorData, ReducibilityHint,
 };
 use crate::config::{AxiomDecision, Config};
 use crate::hash64;
@@ -47,7 +47,6 @@ pub struct Parser<'a, R: BufRead> {
     levels_by_idx: Vec<Option<LevelPtr<'a>>>,
     exprs_by_idx: Vec<ExprEntry<'a>>,
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
-    notations: FxHashMap<NamePtr<'a>, Notation<'a>>,
     config: Config,
     warned_axioms: Vec<String>,
     mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
@@ -702,7 +701,6 @@ impl<'a, R: BufRead> Parser<'a, R> {
             levels_by_idx,
             exprs_by_idx: Vec::with_capacity(input_len / 48),
             declars: new_fx_index_map(),
-            notations: new_fx_hash_map(),
             config,
             warned_axioms: Vec::new(),
             mutual_block_sizes: new_fx_hash_map(),
@@ -871,7 +869,6 @@ impl<'a, R: BufRead> Parser<'a, R> {
             anon: self.anon,
             zero: self.zero,
             declars: self.declars,
-            notations: self.notations,
             name_cache,
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,

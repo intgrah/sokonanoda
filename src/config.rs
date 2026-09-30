@@ -1,5 +1,6 @@
 use crate::checker::context::ExportFile;
 use crate::frontend::parser::{parse_export_file, parse_export_mapped};
+use crate::outcome::CheckError;
 use bumpalo::Bump;
 use std::error::Error;
 use std::fs::OpenOptions;
@@ -94,6 +95,17 @@ impl Config {
         self,
         arena: &Bump,
     ) -> Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.parse(arena))) {
+            Ok(result) => result,
+            Err(payload) => match CheckError::from_panic(payload) {
+                CheckError::Rejected(r) => Err(Box::new(r)),
+                CheckError::Declined(d) => Err(Box::new(d)),
+                CheckError::Internal(payload) => std::panic::resume_unwind(payload),
+            },
+        }
+    }
+
+    fn parse(self, arena: &Bump) -> Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>> {
         if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {

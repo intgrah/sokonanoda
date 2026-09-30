@@ -477,15 +477,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         out
     }
 
-    pub fn num_args(&self, e: ExprPtr<'t>) -> usize {
-        let (mut cursor, mut num_args) = (e, 0);
-        while let App { fun, .. } = self.read_expr(cursor) {
-            cursor = fun;
-            num_args += 1;
-        }
-        num_args
-    }
-
     /// From `f a_0 .. a_N`, return `f`
     pub fn unfold_apps_fun(&self, mut e: ExprPtr<'t>) -> ExprPtr<'t> {
         while let App { fun, .. } = self.read_expr(e) {
