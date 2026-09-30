@@ -135,6 +135,16 @@ macro_rules! memo {
 }
 pub(crate) use memo;
 
+macro_rules! hashcons {
+    ($map:expr, $key:expr, $make:expr) => {
+        match $map.entry($key) {
+            std::collections::hash_map::Entry::Occupied(o) => *o.get(),
+            std::collections::hash_map::Entry::Vacant(slot) => *slot.insert($make),
+        }
+    };
+}
+pub(crate) use hashcons;
+
 caches! {
     pub struct TcCache<'a, 't> {
         #[cap(SESSION_SMALL)] unfold_const_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), V<'a>>,

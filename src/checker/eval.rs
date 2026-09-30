@@ -1,11 +1,10 @@
-use crate::checker::cache::memo;
+use crate::checker::cache::{hashcons, memo};
 use crate::checker::env::Declar;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{self, Closure, Elim, ElimView, RigidHead, Spine, Value, E, S, V};
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
-use std::collections::hash_map::Entry;
 
 mod environment;
 mod reduction;
@@ -411,35 +410,32 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     fn neutral_app(&mut self, f: V<'t>, a: V<'t>) -> V<'t> {
         let f = self.canonicalize_for_spine(f);
         let a = self.canonicalize_for_spine(a);
-        match self.tc_cache.app_hc.entry((Id::of(f), Id::of(a))) {
-            Entry::Occupied(o) => o.get(),
-            Entry::Vacant(slot) => {
-                let (v, spine) = match f {
-                    Value::Rigid { head, spine, .. } => {
-                        let spine = value::spine_snoc(self.arena, spine, Elim::app(a));
-                        (value::mk_rigid(self.arena, *head, spine), spine)
-                    }
-                    Value::Unfold {
-                        head,
+        hashcons!(self.tc_cache.app_hc, (Id::of(f), Id::of(a)), {
+            let (v, spine) = match f {
+                Value::Rigid { head, spine, .. } => {
+                    let spine = value::spine_snoc(self.arena, spine, Elim::app(a));
+                    (value::mk_rigid(self.arena, *head, spine), spine)
+                }
+                Value::Unfold {
+                    head,
+                    spine,
+                    head_value,
+                    ..
+                } => {
+                    let spine = value::spine_snoc(self.arena, spine, Elim::app(a));
+                    (
+                        value::mk_unfold(self.arena, head.name, head.levels, spine, head_value),
                         spine,
-                        head_value,
-                        ..
-                    } => {
-                        let spine = value::spine_snoc(self.arena, spine, Elim::app(a));
-                        (
-                            value::mk_unfold(self.arena, head.name, head.levels, spine, head_value),
-                            spine,
-                        )
-                    }
-                    _ => unreachable!(),
-                };
-                // Both inputs have passed canonicalization. Literal values do
-                // not have a canonical flag, but are interned by content there.
-                spine.mark_canonical();
-                v.mark_canonical();
-                slot.insert(v)
-            }
-        }
+                    )
+                }
+                _ => unreachable!(),
+            };
+            // Both inputs have passed canonicalization. Literal values do
+            // not have a canonical flag, but are interned by content there.
+            spine.mark_canonical();
+            v.mark_canonical();
+            v
+        })
     }
 
     #[inline]

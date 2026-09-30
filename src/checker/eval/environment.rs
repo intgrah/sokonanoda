@@ -1,4 +1,4 @@
-use crate::checker::cache::memo;
+use crate::checker::cache::{hashcons, memo};
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{
     self, Closure, Elim, ElimView, KeyTag, RigidHead, Spine, Value, E, S, V,
@@ -7,7 +7,6 @@ use crate::term::expr::Expr;
 use crate::term::hash::GOLDEN;
 use crate::term::ptr::{ExprPtr, Id, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
-use std::collections::hash_map::Entry;
 
 #[inline]
 fn rigid_head_key(head: RigidHead<'_>) -> (KeyTag, u64, u64) {
@@ -59,10 +58,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
     }
 
     pub(crate) fn env_extend(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
-        match self.tc_cache.env_hc.entry((Id::of(parent), Id::of(v))) {
-            Entry::Occupied(o) => o.get(),
-            Entry::Vacant(slot) => slot.insert(value::env_extend(self.arena, parent, v)),
-        }
+        hashcons!(
+            self.tc_cache.env_hc,
+            (Id::of(parent), Id::of(v)),
+            value::env_extend(self.arena, parent, v)
+        )
     }
 
     fn intern_frame(
@@ -427,55 +427,44 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
 
     #[inline]
     pub(super) fn spine_snoc_hc(&mut self, prev: S<'t>, elim: Elim<'t>) -> S<'t> {
-        let key = (Id::of(prev), elim_key(&elim));
-        let arena = self.arena;
-        match self.tc_cache.spine_hc.entry(key) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(slot) => {
-                let s = value::spine_snoc(arena, prev, elim);
-                let canon = prev.is_canonical()
-                    && match elim.view() {
-                        ElimView::App(a) => a.is_canonical(),
-                        ElimView::Proj { .. } => true,
-                    };
-                if canon {
-                    s.mark_canonical();
-                }
-                *slot.insert(s)
+        hashcons!(self.tc_cache.spine_hc, (Id::of(prev), elim_key(&elim)), {
+            let s = value::spine_snoc(self.arena, prev, elim);
+            let canon = prev.is_canonical()
+                && match elim.view() {
+                    ElimView::App(a) => a.is_canonical(),
+                    ElimView::Proj { .. } => true,
+                };
+            if canon {
+                s.mark_canonical();
             }
-        }
+            s
+        })
     }
 
     #[inline]
     pub(super) fn mk_rigid_hc(&mut self, head: RigidHead<'t>, spine: S<'t>) -> V<'t> {
         let hk = rigid_head_key(head);
-        let key = (hk.0, hk.1, hk.2, Id::of(spine));
-        let arena = self.arena;
-        match self.tc_cache.rigid_hc.entry(key) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(slot) => {
-                let v = value::mk_rigid(arena, head, spine);
-                if spine.is_canonical() {
-                    v.mark_canonical();
-                }
-                *slot.insert(v)
+        hashcons!(self.tc_cache.rigid_hc, (hk.0, hk.1, hk.2, Id::of(spine)), {
+            let v = value::mk_rigid(self.arena, head, spine);
+            if spine.is_canonical() {
+                v.mark_canonical();
             }
-        }
+            v
+        })
     }
 
     #[inline]
     fn mk_lam_hc(&mut self, binder_type: ExprPtr<'t>, body: Closure<'t>) -> V<'t> {
         debug_assert!(body.ctx.is_none());
-        let key = (binder_type, Id::of(body.env), body.body);
-        let arena = self.arena;
-        match self.tc_cache.lam_hc.entry(key) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(slot) => {
-                let v = value::mk_lam(arena, binder_type, body);
+        hashcons!(
+            self.tc_cache.lam_hc,
+            (binder_type, Id::of(body.env), body.body),
+            {
+                let v = value::mk_lam(self.arena, binder_type, body);
                 v.mark_canonical();
-                *slot.insert(v)
+                v
             }
-        }
+        )
     }
 
     #[inline]
@@ -549,15 +538,11 @@ impl<'x, 't, 'p> TypeChecker<'x, 't, 'p> {
             body.body,
             body.ctx.map(Id::of),
         );
-        let arena = self.arena;
-        match self.tc_cache.pi_hc.entry(key) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(slot) => {
-                let v = value::mk_pi(arena, domain, body);
-                v.mark_canonical();
-                *slot.insert(v)
-            }
-        }
+        hashcons!(self.tc_cache.pi_hc, key, {
+            let v = value::mk_pi(self.arena, domain, body);
+            v.mark_canonical();
+            v
+        })
     }
 }
 
