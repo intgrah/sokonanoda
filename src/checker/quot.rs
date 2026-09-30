@@ -3,6 +3,7 @@
 use crate::checker::context::TcCtx;
 use crate::checker::env::{ConstructorData, Declar, DeclarInfo, EnvLimit, InductiveData};
 use crate::checker::tc::TypeChecker;
+use crate::outcome::{ensure_eq, reject};
 
 /// From `in ctx, [a, b, c, .., n]`, create `app(app(app(a, b), c).. n)`
 #[macro_export]
@@ -62,16 +63,16 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
         ..
     }) = env.get_inductive(&name).cloned()
     else {
-        panic!(
+        reject!(
             "cannot add Quot; improperly formed `Eq` type := {:?} ",
             ctx.debug_print(declar.info().name)
         )
     };
     let eq_const = ctx.mk_const(name, info.uparams);
-    assert_eq!(ctx.read_levels(info.uparams).len(), 1);
-    assert_eq!(num_params, 2);
+    ensure_eq!(ctx.read_levels(info.uparams).len(), 1);
+    ensure_eq!(num_params, 2);
     let &[u] = ctx.read_levels(info.uparams) else {
-        panic!(
+        reject!(
             "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
             ctx.read_levels(info.uparams).len()
         )
@@ -86,19 +87,19 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let mut tc = TypeChecker::new(ctx, &env, arena, Some(info), cache);
     tc.assert_def_eq(info.ty, expected);
     let &[ctor_name] = all_ctor_names.as_ref() else {
-        panic!(
+        reject!(
             "cannot add Quot; `Eq` type improperly formed; expected one constructor, found {}",
             all_ctor_names.len()
         )
     };
-    assert_eq!(cname, ctor_name);
+    ensure_eq!(cname, ctor_name);
     let Some(ConstructorData { info, .. }) = env.get_constructor(&ctor_name) else {
-        panic!(
+        reject!(
             "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
         )
     };
     let &[uparam] = ctx.read_levels(info.uparams) else {
-        panic!()
+        reject!("`Eq.refl` must have exactly one universe parameter")
     };
     let uparam_sort = ctx.mk_sort(uparam);
     let a_alpha = ctx.mk_var(1);
@@ -280,7 +281,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
         let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
     } else {
-        panic!(
+        reject!(
             "invalid quotient declaration {:?}",
             ctx.debug_print(declar.info().name)
         )

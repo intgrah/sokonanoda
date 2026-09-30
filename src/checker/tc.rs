@@ -2,6 +2,7 @@ use crate::checker::cache::TcCache;
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::E;
+use crate::outcome::ensure;
 use crate::term::ptr::ExprPtr;
 
 use InferFlag::InferOnly;
@@ -105,7 +106,7 @@ impl<'p> ExportFile<'p> {
         }
         match d {
             Constructor(ctor_data) => {
-                assert!(self.declars.get(&ctor_data.inductive_name).is_some());
+                ensure!(self.declars.get(&ctor_data.inductive_name).is_some());
             }
             Recursor(recursor_data) => {
                 let rec_idx = self
@@ -120,12 +121,12 @@ impl<'p> ExportFile<'p> {
                     .mutual_block_sizes
                     .get(&first)
                     .expect("recursor is associated with a non-inductive declaration");
-                assert!(
+                ensure!(
                     rec_idx >= block.0 && rec_idx < block.0 + block.1,
                     "recursor is not in its associated inductive block"
                 );
                 for ind_name in recursor_data.all_inductives.iter() {
-                    assert!(
+                    ensure!(
                         matches!(self.declars.get(ind_name), Some(Inductive(..)))
                             && self.mutual_block_sizes.get(ind_name) == Some(&block),
                         "recursor is associated with a declaration outside its inductive block"
@@ -196,7 +197,7 @@ impl<'p> ExportFile<'p> {
                 .spawn_scoped(sco, || self.run_session((0, total), || None))
                 .unwrap()
                 .join()
-                .expect("serial checker thread panicked");
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
         });
     }
 
@@ -231,7 +232,7 @@ impl<'p> ExportFile<'p> {
             }
             for t in handles {
                 t.join()
-                    .expect("A thread in `check_all_declars` panicked while being joined");
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
             }
         });
     }
@@ -282,7 +283,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
 
     pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) {
-        assert!(self.def_eq_core(u, v), "def_eq failed");
+        ensure!(self.def_eq_core(u, v), "def_eq failed");
     }
 
     pub fn is_proposition(&mut self, e: ExprPtr<'t>) -> bool {

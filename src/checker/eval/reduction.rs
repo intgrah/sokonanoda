@@ -5,6 +5,7 @@ use crate::checker::nat::{
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
 use crate::checker::value::{self, Elim, ElimView, RigidHead, S, Spine, V, Value};
+use crate::outcome::reject;
 use crate::term::ptr::{BigUintPtr, Id, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
 use num_traits::pow::Pow;
@@ -68,7 +69,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             }
             Value::Rigid { .. } | Value::Unfold { .. } => self.proj_extend_spine(ty_name, idx, v),
             Value::Thunk { .. } => unreachable!("do_proj: Thunk after force_all"),
-            _ => panic!("do_proj: not a neutral"),
+            _ => reject!("do_proj: not a neutral"),
         }
     }
 

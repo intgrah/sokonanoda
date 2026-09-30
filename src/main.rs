@@ -1,6 +1,7 @@
 use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
 use sokonanoda::config::{AxiomPolicy, Config, DisallowedAxiom};
+use sokonanoda::outcome::{Decline, Rejection};
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const EXIT_REJECT: i32 = 1;
 const EXIT_DECLINE: i32 = 2;
+const EXIT_INTERNAL: i32 = 3;
 
 #[derive(Debug, Parser)]
 #[expect(clippy::struct_excessive_bools)]
@@ -95,6 +97,18 @@ impl From<Cli> for Config {
 
 fn main() {
     let cfg = Config::from(Cli::parse());
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        if let Some(r) = payload.downcast_ref::<Rejection>() {
+            eprintln!("{r}");
+        } else if let Some(d) = payload.downcast_ref::<Decline>() {
+            eprintln!("{d}");
+        } else {
+            eprint!("internal error: ");
+            default_hook(info);
+        }
+    }));
     let result = std::panic::catch_unwind(|| -> Result<(), Box<dyn Error>> {
         let arena = Bump::new();
         let (export_file, warned_axioms) = cfg.to_export_file(&arena)?;
@@ -119,13 +133,17 @@ fn main() {
     match result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            let declined = e
-                .downcast_ref::<sokonanoda::frontend::error::Decline>()
-                .is_some();
+            let declined = e.downcast_ref::<Decline>().is_some();
             eprintln!("{e}\n\n{HELP_SHORT}");
             std::process::exit(if declined { EXIT_DECLINE } else { EXIT_REJECT });
         }
-        Err(_) => std::process::exit(EXIT_REJECT),
+        Err(payload) => std::process::exit(if payload.is::<Rejection>() {
+            EXIT_REJECT
+        } else if payload.is::<Decline>() {
+            EXIT_DECLINE
+        } else {
+            EXIT_INTERNAL
+        }),
     }
 }
 

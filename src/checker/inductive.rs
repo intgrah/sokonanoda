@@ -5,6 +5,7 @@ use crate::checker::env::{
 };
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{Closure, ElimView, RigidHead, S, V, Value};
+use crate::outcome::{ensure, ensure_eq, reject};
 use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use crate::term::hash::{FxHashSet, FxIndexMap};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
@@ -44,7 +45,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                         _ => {}
                     }
                 }
-                assert!(
+                ensure!(
                     !physical_ind_names.is_empty(),
                     "inductive block contains no inductive types"
                 );
@@ -59,7 +60,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 }
                 let nested = ctx.str1("_nested");
                 for ty in physical_inductive_types_and_ctors.iter().copied() {
-                    assert!(
+                    ensure!(
                         !ctx.has_nested_name(ty, nested),
                         "reserved _nested name in inductive block"
                     );
@@ -80,10 +81,10 @@ impl<'t, 'p: 't> ExportFile<'p> {
                     }
                     false
                 };
-                assert_eq!(ind.is_recursive, is_recursive);
+                ensure_eq!(ind.is_recursive, is_recursive);
                 (ind, crate::checker::env::EnvLimit::ByIndex(start + size))
             }
-            _ => panic!("expected inductive"),
+            _ => reject!("expected inductive"),
         };
         {
             // The **unmodified** types and constructors for all of the types in this mutual block.
@@ -197,7 +198,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                         Var { dbj_idx, .. } if usize::from(dbj_idx) == usize::from(offset) - 1 - i
                     )
                 });
-            assert!(
+            ensure!(
                 levels_match && params_match,
                 "inductive occurrence is not applied uniformly to the block parameters and universe levels"
             );
@@ -465,8 +466,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            imported, expected,
+        ensure_eq!(
+            imported,
+            expected,
             "imported inductive block contains an underived recursor"
         );
     }
@@ -481,7 +483,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn assert_imported_expr_matches(&mut self, imported: ExprPtr<'t>, reconstructed: ExprPtr<'t>) {
         self.tc_cache.clear();
-        assert!(
+        ensure!(
             self.def_eq_core(imported, reconstructed),
             "imported recursor rule does not match the reconstructed rule"
         );
@@ -505,9 +507,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         self.specialize_nested_aux(&mut st);
 
         for ind in &st.all_inductives_incl_specialized {
-            assert_eq!(ind.ty.num_loose_bvars(), 0);
+            ensure_eq!(ind.ty.num_loose_bvars(), 0);
             for c in &ind.ctors {
-                assert_eq!(c.ty.num_loose_bvars(), 0);
+                ensure_eq!(c.ty.num_loose_bvars(), 0);
             }
         }
         st
@@ -564,7 +566,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut cur = self.value_of(e);
         for _ in 0..num_params {
             let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) else {
-                panic!("exhausted telescope early")
+                reject!("exhausted telescope early")
             };
             let domain = *domain;
             let binder_type = self.quote(depth, domain);
@@ -662,7 +664,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let stored = st.local_params[i];
                 self.tc_cache.clear();
                 let expected = self.eval(depth, env, stored);
-                assert!(self.def_eq_at(depth, domain, expected), "def_eq failed");
+                ensure!(self.def_eq_at(depth, domain, expected), "def_eq failed");
             } else {
                 let binder_type = self.quote(depth, domain);
                 indices.push(binder_type);
@@ -709,7 +711,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             i += 1;
         }
         let codom_level = self.ensure_sort_v(depth, cur);
-        assert!(self.ctx.eq_antisymm(codom_level, st.block_codom.unwrap()));
+        ensure!(self.ctx.eq_antisymm(codom_level, st.block_codom.unwrap()));
         st.local_indices.push(indices);
         st.ind_consts.push(self.ctx.mk_const(name, st.uparams));
     }
@@ -748,24 +750,24 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 .env
                 .get_inductive(&header.name)
                 .expect("inductive is not declared");
-            assert_eq!(
+            ensure_eq!(
                 usize::from(ind.num_params),
                 num_params,
                 "inductive declares the wrong number of parameters"
             );
-            assert_eq!(
+            ensure_eq!(
                 usize::from(ind.num_indices),
                 st.local_indices[i].len(),
                 "inductive declares the wrong number of indices"
             );
-            assert_eq!(
+            ensure_eq!(
                 ind.all_ctor_names.len(),
                 header.ctors.len(),
                 "inductive declares the wrong number of constructors"
             );
             for (ctor_idx, ctor) in header.ctors.iter().enumerate() {
                 let telescope = self.ctx.pi_telescope_size(ctor.ty) as usize;
-                assert!(
+                ensure!(
                     telescope >= num_params,
                     "constructor telescope is shorter than the parameters"
                 );
@@ -773,21 +775,22 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     .env
                     .get_constructor(&ctor.name)
                     .expect("constructor is not declared");
-                assert_eq!(
-                    cd.inductive_name, header.name,
+                ensure_eq!(
+                    cd.inductive_name,
+                    header.name,
                     "constructor declares the wrong inductive"
                 );
-                assert_eq!(
+                ensure_eq!(
                     usize::from(cd.ctor_idx),
                     ctor_idx,
                     "constructor declares the wrong index"
                 );
-                assert_eq!(
+                ensure_eq!(
                     usize::from(cd.num_params),
                     num_params,
                     "constructor declares the wrong number of parameters"
                 );
-                assert_eq!(
+                ensure_eq!(
                     usize::from(cd.num_fields),
                     telescope - num_params,
                     "constructor declares the wrong number of fields"
@@ -798,17 +801,17 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.ctx.str(header.name, rec_str_ptr)
             };
             if let Some(rd) = self.env.get_recursor(&rec_name) {
-                assert_eq!(
+                ensure_eq!(
                     rd.is_k,
                     st.k_target.unwrap(),
                     "recursor declares the wrong k-reduction flag"
                 );
-                assert_eq!(
+                ensure_eq!(
                     usize::from(rd.num_params),
                     num_params,
                     "recursor declares the wrong number of parameters"
                 );
-                assert_eq!(
+                ensure_eq!(
                     usize::from(rd.num_indices),
                     st.local_indices[i].len(),
                     "recursor declares the wrong number of indices"
@@ -843,7 +846,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         if !is_nested {
             return None;
         }
-        assert!(
+        ensure!(
             !params
                 .iter()
                 .any(|&p| self.ctx.has_loose_bvar_below(p, offset)),
@@ -1116,11 +1119,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let Value::Pi { domain, body, .. } = cur else {
                 // We only need to know that it's a valid ind-app for SOMETHING in the block, since
                 // this is only a binder in the constructor, not the end of the telescope.
-                assert!(self.which_valid_ind_app_v(st, depth, cur).is_some());
+                ensure!(self.which_valid_ind_app_v(st, depth, cur).is_some());
                 return;
             };
             let (domain, body) = (*domain, *body);
-            assert!(
+            ensure!(
                 !self.value_has_ind_occ(depth, domain, st.ind_consts.as_ref()),
                 "non-positive occurrence"
             );
@@ -1340,11 +1343,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut cur = self.value_of(ctor_type_cursor);
         for i in 0..st.local_params.len() {
             let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) else {
-                panic!()
+                reject!("constructor type has fewer binders than the block parameters")
             };
             let domain = *domain;
             let expected = self.eval(depth, env, st.local_params[i]);
-            assert!(self.def_eq_at(depth, domain, expected), "def_eq failed");
+            ensure!(self.def_eq_at(depth, domain, expected), "def_eq failed");
             let fresh = self.mk_bvar_hc(depth, domain);
             env = self.env_extend(env, fresh);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -1359,7 +1362,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             // The inductive being constructed either has to be a `Prop`,
             // or the constructor argument's type has to be <= the inductive's
             // type.
-            assert!(
+            ensure!(
                 st.is_zero.unwrap() || self.ctx.leq(s, st.block_codom.unwrap()),
                 "Constructor argument was too large for the corresponding inductive type"
             );
@@ -1372,7 +1375,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         // The end of the constructor has to be of the form `parentIndConst params* indices*`
         // as in `List A` or `Nat.le x y`
-        assert!(self.is_valid_ind_app_v(st, parent_ind_name, depth, cur));
+        ensure!(self.is_valid_ind_app_v(st, parent_ind_name, depth, cur));
     }
 
     // Test large elimination for an inductive that we know is...
@@ -1444,7 +1447,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
 
         match st.all_inductives_incl_specialized.as_slice() {
-            [] => panic!("inductive declaration with no types declared"),
+            [] => reject!("inductive declaration with no types declared"),
             [ind_ty] => {
                 match ind_ty.ctors.as_slice() {
                     // This type is an empty prop (has no constructors)
@@ -1603,7 +1606,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut cur = self.value_of(ctor_type_cursor);
         for i in 0..st.local_params.len() {
             let Some(Value::Pi { domain, body, .. }) = self.weak_pi(depth, cur) else {
-                panic!()
+                reject!("constructor type has fewer binders than the block parameters")
             };
             let domain = *domain;
             let lv = self.mk_bvar_hc(
@@ -1825,8 +1828,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             self.ctx
                 .str(st.all_inductives_incl_specialized[ind_ty_idx].name, rec)
         };
-        assert_eq!(
-            rec_name, expected_rec_name,
+        ensure_eq!(
+            rec_name,
+            expected_rec_name,
             "computation rule belongs to the wrong recursor"
         );
 
@@ -1895,7 +1899,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.empty_ctx(),
                     rule.val,
                 );
-                assert!(
+                ensure!(
                     self.conv_types_at(0, lhs_ty, rhs_ty),
                     "generated recursor computation rule is not type-preserving"
                 );
@@ -1937,12 +1941,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.env.get_temp_declar(name),
             ) {
                 (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
-                    assert!(old.aux_data_ck(new));
+                    ensure!(old.aux_data_ck(new));
                     debug_assert!(!std::ptr::eq(old, new));
                     self.tc_cache.clear();
                     self.assert_def_eq(old.info.ty, new.info.ty);
                 }
-                _ => panic!(),
+                _ => reject!("expected an inductive declaration"),
             }
         }
     }
@@ -1956,12 +1960,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.env.get_temp_declar(&ctor.name),
                 ) {
                     (Some(Declar::Constructor(old)), Some(Declar::Constructor(new))) => {
-                        assert!(old.aux_data_ck(new));
+                        ensure!(old.aux_data_ck(new));
                         debug_assert!(!std::ptr::eq(old, new));
                         self.tc_cache.clear();
                         self.assert_def_eq(old.info.ty, new.info.ty);
                     }
-                    _ => panic!(),
+                    _ => reject!("expected an inductive declaration"),
                 }
             }
         }
@@ -1979,8 +1983,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         assert_ne!(imported_rr, constructed_rr);
         assert!(!st.is_nested());
         self.tc_cache.clear();
-        assert_eq!(imported_rr.ctor_name, constructed_rr.ctor_name);
-        assert_eq!(
+        ensure_eq!(imported_rr.ctor_name, constructed_rr.ctor_name);
+        ensure_eq!(
             imported_rr.ctor_telescope_size_wo_params,
             constructed_rr.ctor_telescope_size_wo_params
         );
@@ -2015,7 +2019,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     ),
                 ) => {
                     self.tc_cache.clear();
-                    assert!(old_r.aux_data_ck(new_r));
+                    ensure!(old_r.aux_data_ck(new_r));
                     assert!(!std::ptr::eq(old, new));
                     // Should be structurally != because they come from different envs.
                     assert_ne!(old, new);
@@ -2025,12 +2029,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                         st.rec_uparams.unwrap(),
                     );
                     self.assert_def_eq(imported_w_new_uparams, new.info().ty);
-                    assert_eq!(old_rec_rules.len(), new_rec_rules.len());
+                    ensure_eq!(old_rec_rules.len(), new_rec_rules.len());
                     for (r_old, r_new) in old_rec_rules.iter().zip(new_rec_rules.iter()) {
                         self.assert_nonnested_rec_rule_def_eq(st, old.info().uparams, r_old, r_new);
                     }
                 }
-                _ => panic!("Expected (Declar::Recursor, Declar::Recursor)"),
+                _ => reject!("Expected (Declar::Recursor, Declar::Recursor)"),
             }
         }
     }
@@ -2413,7 +2417,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 Value::Pi { domain, .. } => *domain,
                 // Also match on Lambda for restoring recursor rules.
                 Value::Lam { .. } => self.lam_domain(depth, f),
-                _ => panic!("malformed recursor"),
+                _ => reject!("malformed recursor"),
             };
             let dom_e = self.quote(depth, dom);
             let fresh = self.mk_bvar_hc(depth, dom);
@@ -2517,17 +2521,17 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             .unwrap_or(rec_name);
         match self.env.get_old_declar(&resolved_rec_name) {
             Some(Declar::Recursor(original @ RecursorData { .. })) => {
-                assert!(original.aux_data_ck(&restored));
+                ensure!(original.aux_data_ck(&restored));
                 self.tc_cache.clear();
                 self.assert_def_eq(original.info.ty, restored.info.ty);
                 // have to do the rec rules as well.
-                assert_eq!(original.rec_rules.len(), restored.rec_rules.len());
+                ensure_eq!(original.rec_rules.len(), restored.rec_rules.len());
                 for (&old, &new) in original.rec_rules.iter().zip(restored.rec_rules.iter()) {
-                    assert_eq!(old.ctor_name, new.ctor_name);
+                    ensure_eq!(old.ctor_name, new.ctor_name);
                     self.assert_imported_expr_matches(old.val, new.val);
                 }
             }
-            _ => panic!("missing imported recursor reconstructed from nested inductive"),
+            _ => reject!("missing imported recursor reconstructed from nested inductive"),
         }
     }
 
@@ -2571,7 +2575,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     ) {
         let new_ctor @ ConstructorData { .. } =
             self.env.get_constructor(&old_ctor.info.name).unwrap();
-        assert!(old_ctor.aux_data_ck(new_ctor));
+        ensure!(old_ctor.aux_data_ck(new_ctor));
         let new_ty = self.restore_e(st, new_ctor.info.ty, rec_name_map);
         self.tc_cache.clear();
         self.assert_def_eq(old_ctor.info.ty, new_ty);
@@ -2599,18 +2603,18 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 self.env.get_temp_declar(&unmodified_ind_type.name),
             ) {
                 (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
-                    assert!(old.aux_data_ck(new));
+                    ensure!(old.aux_data_ck(new));
                     debug_assert!(!std::ptr::eq(old, new));
                     self.tc_cache.clear();
                     self.assert_def_eq(old.info.ty, new.info.ty);
                 }
-                _ => panic!(),
+                _ => reject!("expected an inductive declaration"),
             }
 
             for ctor in &unmodified_ind_type.ctors {
                 let ctor = match self.env.get_old_declar(&ctor.name) {
                     Some(Declar::Constructor(c)) => c.clone(),
-                    _ => panic!(),
+                    _ => reject!("expected a constructor declaration"),
                 };
                 self.check_restored_ctor1(st, &specialized_to_unspecialized_rec_names, &ctor);
             }

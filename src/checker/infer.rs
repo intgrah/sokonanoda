@@ -1,6 +1,7 @@
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
 use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};
+use crate::outcome::{ensure, reject};
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 
@@ -57,7 +58,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn ensure_sort_v(&mut self, depth: u32, v: V<'t>) -> LevelPtr<'t> {
         match self.force_all(depth, v) {
             Value::Sort { level, .. } => *level,
-            _ => panic!("expected a sort"),
+            _ => reject!("expected a sort"),
         }
     }
 
@@ -96,7 +97,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Var { dbj_idx, .. } => return ctx.lookup(dbj_idx).expect("loose bvar in infer"),
             Sort { level, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
-                    assert!(
+                    ensure!(
                         self.ctx.all_uparams_defined(level, info.uparams),
                         "universe parameter not declared by the current declaration"
                     );
@@ -108,7 +109,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Const { name, levels, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
                     for l in self.ctx.read_levels(levels).iter().copied() {
-                        assert!(self.ctx.all_uparams_defined(l, info.uparams));
+                        ensure!(self.ctx.all_uparams_defined(l, info.uparams));
                     }
                 }
                 return self.const_head_type(name, levels);
@@ -185,7 +186,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 if flag == Check {
                     self.infer_sort_of_v(flag, depth, env, ctx, binder_type);
                     let val_ty = self.infer_value(flag, depth, env, ctx, val);
-                    assert!(self.conv_types_at(depth, dom, val_ty), "let def_eq failed");
+                    ensure!(self.conv_types_at(depth, dom, val_ty), "let def_eq failed");
                 }
                 let slot = self.arg_value(depth, env, val);
                 let env2 = self.env_extend(env, slot);
@@ -230,11 +231,11 @@ impl<'t> TypeChecker<'_, 't, '_> {
             let fty_f = self.force_all(depth, fty);
             let (domain, body) = match fty_f {
                 Value::Pi { domain, body, .. } => (*domain, body),
-                _ => panic!("expected a pi type"),
+                _ => reject!("expected a pi type"),
             };
             if flag == Check {
                 let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
-                assert!(
+                ensure!(
                     self.conv_types_at(depth, domain, arg_ty),
                     "app arg def_eq failed"
                 );
@@ -270,9 +271,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 spine,
                 ..
             } => (*n, *ls, *spine),
-            _ => panic!("projection structure type is not an inductive"),
+            _ => reject!("projection structure type is not an inductive"),
         };
-        assert!(
+        ensure!(
             ind_name == ty_name,
             "projection type name does not match the structure's inductive"
         );
@@ -284,7 +285,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 .env
                 .get_inductive(&ind_name)
                 .expect("projection structure type is not an inductive");
-            assert!(
+            ensure!(
                 ind.all_ctor_names.len() == 1,
                 "projection of an inductive without exactly one constructor"
             );
@@ -294,7 +295,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 ind.all_ctor_names[0],
             )
         };
-        assert!(
+        ensure!(
             params.len() == num_params + num_indices,
             "projection structure type is not fully applied"
         );
@@ -306,7 +307,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 Value::Pi { domain, body, .. } => {
                     cur = self.apply_closure(depth, body, p, Some(*domain));
                 }
-                _ => panic!("ran out of param telescope in projection"),
+                _ => reject!("ran out of param telescope in projection"),
             }
         }
         for i in 0..idx {
@@ -316,29 +317,29 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         && struct_ty_is_prop
                         && !self.is_prop_type(depth, domain)
                     {
-                        panic!("projection of a non-proof field from a Prop structure")
+                        reject!("projection of a non-proof field from a Prop structure")
                     }
                     let prior = self.do_proj(depth, ind_name, i, struct_v);
                     cur = self.apply_closure(depth, body, prior, Some(*domain));
                 }
-                _ => panic!("ran out of constructor telescope in projection"),
+                _ => reject!("ran out of constructor telescope in projection"),
             }
         }
         match self.force_all(depth, cur) {
             Value::Pi { domain, .. } => {
-                assert!(
+                ensure!(
                     !struct_ty_is_prop || self.is_prop_type(depth, domain),
                     "projection of a non-proof field from a Prop structure"
                 );
                 domain
             }
-            _ => panic!("ran out of constructor telescope getting projection field"),
+            _ => reject!("ran out of constructor telescope getting projection field"),
         }
     }
 
     pub(crate) fn check_declar_info_v(&mut self, d: &Declar<'t>) {
         let info = d.info();
-        assert!(
+        ensure!(
             self.ctx.no_dupes_all_params(info.uparams),
             "duplicate universe parameters in declaration"
         );
@@ -347,7 +348,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let ty_ty = self.infer_value(Check, 0, empty_env, empty_ctx, info.ty);
         let sort = self.ensure_sort_v(0, ty_ty);
         if let Declar::Theorem { .. } = d {
-            assert!(self.ctx.is_zero(sort), "theorem type must be Prop (sort 0)");
+            ensure!(self.ctx.is_zero(sort), "theorem type must be Prop (sort 0)");
         }
     }
 
@@ -357,6 +358,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let empty_ctx = self.empty_ctx();
         let val_ty = self.infer_value(Check, 0, empty_env, empty_ctx, val);
         let declared = self.eval(0, empty_env, d.info().ty);
-        assert!(self.def_eq_at(0, val_ty, declared), "def_eq failed");
+        ensure!(self.def_eq_at(0, val_ty, declared), "def_eq failed");
     }
 }

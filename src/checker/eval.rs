@@ -2,6 +2,7 @@ use crate::checker::cache::{hashcons, memo};
 use crate::checker::env::Declar;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{self, Closure, E, Elim, ElimView, RigidHead, S, Spine, V, Value};
+use crate::outcome::reject;
 use crate::term::expr::Expr;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
@@ -360,7 +361,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return cached;
         }
         let Some(d) = self.env.get_declar(&name) else {
-            panic!("const_head_type: unknown const {name:?}")
+            reject!("const_head_type: unknown const {name:?}")
         };
         let info = *d.info();
         let v = self.eval_inst(info.ty, info.uparams, levels);
@@ -474,7 +475,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 }
                 self.neutral_app(f, a)
             }
-            _ => panic!("apply: ill-typed application"),
+            _ => reject!("apply: ill-typed application"),
         }
     }
 
@@ -645,14 +646,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         Value::Pi { domain, body, .. } => {
                             ty = self.apply_closure(depth, body, a, Some(*domain));
                         }
-                        _ => panic!("spine_type_with_value: expected Pi"),
+                        _ => reject!("spine_type_with_value: expected Pi"),
                     }
                     prev = self.apply(depth, prev, a);
                 }
                 ElimView::Proj { ty_name, idx } => {
                     ty = self
                         .proj_field_type_with(depth, prev, ty, ty_name, idx)
-                        .expect("spine_type_with_value: bad proj");
+                        .unwrap_or_else(|| reject!("spine_type_with_value: bad proj"));
                     prev = self.do_proj(depth, ty_name, idx, prev);
                 }
             }

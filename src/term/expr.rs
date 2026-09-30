@@ -5,6 +5,7 @@ use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, String
 use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use num_bigint::BigUint;
 
+use crate::outcome::{ensure_eq, reject};
 pub(crate) const VAR_HASH: u64 = 281;
 pub(crate) const SORT_HASH: u64 = 563;
 pub(crate) const CONST_HASH: u64 = 1129;
@@ -128,7 +129,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             if let Pi { body, .. } = self.read_expr(e) {
                 e = body;
             } else {
-                panic!()
+                reject!("type has fewer binders than arguments")
             }
         }
         self.inst_open(e, &all_args[0..n])
@@ -463,14 +464,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         vs: LevelsPtr<'t>,
     ) -> ExprPtr<'t> {
         if ks == vs || self.read_levels(ks).is_empty() {
-            assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+            ensure_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
             return e;
         }
         if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)).copied() {
             return cached;
         }
         self.expr_cache.subst.clear();
-        assert_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
+        ensure_eq!(self.read_levels(ks).len(), self.read_levels(vs).len());
         let out = self.subst_aux(e, ks, vs);
         self.expr_cache.dsubst.insert((e, ks, vs), out);
         out

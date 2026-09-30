@@ -3,6 +3,7 @@ use crate::checker::env::{
 };
 use crate::config::{AxiomDecision, Config};
 use crate::hash64;
+use crate::outcome::{decline, ensure, reject, unsupported};
 use crate::term::expr::Expr;
 use crate::term::hash::{FxHashMap, FxIndexMap, new_fx_hash_map, new_fx_index_map};
 use crate::term::intern::Dag;
@@ -24,11 +25,11 @@ fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     const MAX_SEMVER: semver::Version = semver::Version::new(3, 2, 0);
     let export_file_semver = semver::Version::parse(&meta.format.version)?;
     if export_file_semver < MIN_SEMVER {
-        crate::frontend::error::decline(format!(
+        decline(format!(
             "export format version is less than the minimum supported version. Found {export_file_semver}, but min supported is {MIN_SEMVER}"
         ))
     } else if export_file_semver >= MAX_SEMVER {
-        crate::frontend::error::decline(format!(
+        decline(format!(
             "export format version is greater than the maximum supported version. Found {export_file_semver}, but max (exclusive) supported is {MAX_SEMVER}"
         ))
     } else {
@@ -647,7 +648,7 @@ const NO_EXPR: ExprEntry<'static> = ExprEntry {
 #[cold]
 #[inline(never)]
 fn undefined_index(kind: &str, idx: u32) -> ! {
-    panic!("export references {kind} index {idx} before it is defined")
+    reject!("export references {kind} index {idx} before it is defined")
 }
 
 #[inline(always)]
@@ -710,7 +711,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn push_name(&mut self, expected: BackRef, n: Name<'a>) {
-        assert!(
+        ensure!(
             self.dag.names.get(&n).is_none(),
             "Attempted to insert duplicate Name"
         );
@@ -719,7 +720,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     }
 
     fn push_level(&mut self, expected: BackRef, l: Level<'a>) {
-        assert!(
+        ensure!(
             self.dag.levels.get(&l).is_none(),
             "Attempted to insert duplicate Level"
         );
@@ -1170,7 +1171,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_nat_lit(&mut self, idx: BackRef, big_uint: BigUint) -> Result<(), Box<dyn Error>> {
         if !self.config.nat_extension {
-            return crate::frontend::error::decline(
+            return decline(
                 "Nat lit extension disallowed by checker execution config, but export file contains a nat literal",
             );
         }
@@ -1189,7 +1190,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_str_lit(&mut self, idx: BackRef, s: &str) -> Result<(), Box<dyn Error>> {
         if !self.config.string_extension {
-            return crate::frontend::error::decline(
+            return decline(
                 "String lit extension disallowed by checker execution config, but export file contains a string literal",
             );
         }
@@ -1275,7 +1276,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
     #[inline]
     fn do_bvar(&mut self, idx: BackRef, dbj_idx: u16) -> Result<(), Box<dyn Error>> {
         if dbj_idx == u16::MAX {
-            return crate::frontend::error::decline("bvar index exceeds implementation limit");
+            return decline("bvar index exceeds implementation limit");
         }
         let hash = hash64!(crate::term::expr::VAR_HASH, dbj_idx);
         let fv_mask = if dbj_idx < 64 { 1u64 << dbj_idx } else { 0 };
@@ -1377,11 +1378,10 @@ impl<'a, R: BufRead> Parser<'a, R> {
 
     fn add_declar(&mut self, name: NamePtr<'a>, d: Declar<'a>) {
         let idx = u32::try_from(self.declars.len()).expect("declaration count exceeds u32");
-        assert!(
-            idx != crate::term::name::NO_DECL,
-            "declaration count exceeds u32"
-        );
-        assert!(self.declars.insert(name, d).is_none());
+        if idx == crate::term::name::NO_DECL {
+            unsupported!("declaration count exceeds u32");
+        }
+        ensure!(self.declars.insert(name, d).is_none());
         name.as_ref().set_decl_idx(idx);
     }
 
@@ -1430,9 +1430,7 @@ impl<'a, R: BufRead> Parser<'a, R> {
             LevelIMax([l, r]) => self.do_imax(assigned_idx.unwrap(), l, r),
             LevelParam(var_idx) => self.do_level_param(assigned_idx.unwrap(), var_idx),
             ExprSort(level) => self.do_sort(assigned_idx.unwrap(), level),
-            ExprMData { .. } => {
-                panic!("Expr.mdata not supported");
-            }
+            ExprMData { .. } => return decline("Expr.mdata is not supported"),
             ExprConst { name, levels } => self.do_const(assigned_idx.unwrap(), name, &levels),
             ExprApp { fun, arg } => self.do_app(assigned_idx.unwrap(), fun, arg),
             ExprBVar(dbj_idx) => self.do_bvar(assigned_idx.unwrap(), dbj_idx)?,
@@ -1457,7 +1455,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 uparams,
                 is_unsafe,
             } => {
-                assert!(!is_unsafe);
+                if is_unsafe {
+                    return decline("unsafe declarations are not supported");
+                }
                 let name = self.get_name_ptr(name);
                 let uparams = self.get_uparams_ptr(&uparams);
                 let ty = self.get_expr_ptr(ty);
@@ -1486,10 +1486,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 hint,
                 safety,
             } => {
-                assert!(!matches!(
-                    safety,
-                    DefinitionSafety::Unsafe | DefinitionSafety::Partial
-                ));
+                if matches!(safety, DefinitionSafety::Unsafe | DefinitionSafety::Partial) {
+                    return decline("unsafe and partial definitions are not supported");
+                }
                 self.do_def(name, ty, value, &uparams, hint);
             }
             Thm {
@@ -1505,7 +1504,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                 value,
                 is_unsafe,
             } => {
-                assert!(!is_unsafe);
+                if is_unsafe {
+                    return decline("unsafe declarations are not supported");
+                }
                 let name = self.get_name_ptr(name);
                 let ty = self.get_expr_ptr(ty);
                 let val = self.get_expr_ptr(value);
@@ -1545,7 +1546,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     ..
                 } in ind_vals
                 {
-                    assert!(!is_unsafe);
+                    if is_unsafe {
+                        return decline("unsafe declarations are not supported");
+                    }
                     let name = self.get_name_ptr(name);
                     self.mutual_block_sizes
                         .insert(name, (block_start, block_size));
@@ -1576,7 +1579,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     ..
                 } in ctor_vals
                 {
-                    assert!(!is_unsafe);
+                    if is_unsafe {
+                        return decline("unsafe declarations are not supported");
+                    }
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
                     let uparams = self.get_uparams_ptr(&uparams);
@@ -1607,7 +1612,9 @@ impl<'a, R: BufRead> Parser<'a, R> {
                     ..
                 } in rec_vals
                 {
-                    assert!(!is_unsafe);
+                    if is_unsafe {
+                        return decline("unsafe declarations are not supported");
+                    }
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
                     let uparams = self.get_uparams_ptr(&uparams);
@@ -1801,13 +1808,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "export references expression index 99 before it is defined")]
     fn reject_undefined_binder_type() {
         let arena = Bump::new();
         let mut parser = Parser::new(&arena, &b""[..], config());
         parser.do_sort(BackRef::Ie(0), 0);
-        parser
-            .go1_general(r#"{"ie":1,"lam":{"type":99,"body":0}}"#)
-            .unwrap();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parser
+                .go1_general(r#"{"ie":1,"lam":{"type":99,"body":0}}"#)
+                .unwrap();
+        }))
+        .unwrap_err();
+        let rejection = payload
+            .downcast::<crate::outcome::Rejection>()
+            .expect("expected a rejection");
+        assert_eq!(
+            rejection.0,
+            "export references expression index 99 before it is defined"
+        );
     }
 }

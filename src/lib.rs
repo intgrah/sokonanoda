@@ -5,6 +5,7 @@
 pub mod checker;
 pub mod config;
 pub mod frontend;
+pub mod outcome;
 pub mod term;
 
 pub use checker::{
