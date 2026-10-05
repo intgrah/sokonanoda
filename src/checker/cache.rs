@@ -173,6 +173,8 @@ caches! {
         #[session(0)] probe_budget: u32,
         #[session(false)] probe_exhausted: bool,
         #[cap(SESSION_SMALL)] closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
+        #[cap(SESSION_SMALL)]
+        closed_lsub_eval_cache: FxHashMap<(ExprPtr<'t>, Id<'a, LevelSub<'a>>), V<'a>>,
         #[keep(FxHashMap::default())] whnf_store: FxHashMap<u64, (u128, ExprPtr<'t>)>,
         #[keep(Box::new([0; 1024]))] whnf_store_filter: Box<[u64; 1024]>,
         #[keep(Box::new([0; 1024]))] whnf_head_filter: Box<[u64; 1024]>,

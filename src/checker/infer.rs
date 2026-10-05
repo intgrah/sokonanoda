@@ -84,8 +84,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     fn lit_inductive_type(&mut self, n: Option<NamePtr<'t>>) -> V<'t> {
         let name = n.expect("infer: literal type name missing");
         let levels = self.ctx.alloc_levels_slice(&[]);
-        let empty = self.empty_spine();
-        value::mk_rigid_head_with_empty(self.arena, RigidHead::Inductive(name, levels), empty)
+        self.mk_head_hc(RigidHead::Inductive(name, levels))
     }
 
     pub(crate) fn infer_value(
@@ -107,7 +106,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 }
                 let sc = self.ctx.succ(level);
                 let sc = self.ctx.simplify(sc);
-                return value::mk_sort(self.arena, sc);
+                return self.mk_sort_hc(sc);
             }
             Const { name, levels, .. } => {
                 if let (Check, Some(info)) = (flag, self.declar_info) {
@@ -160,7 +159,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     Some(_) => Closure::mk_eval(self.empty_env(), binder_type),
                     None => Closure::mk_infer(self.key_env(env, e), ctx, body),
                 };
-                value::mk_pi(self.arena, dom, clo)
+                self.mk_pi_hc(dom, clo)
             }
             Pi {
                 binder_type, body, ..
@@ -173,7 +172,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let l2 = self.infer_sort_of_v(flag, depth + 1, env2, ctx2, body);
                 let im = self.ctx.imax(l1, l2);
                 let im = self.ctx.simplify(im);
-                value::mk_sort(self.arena, im)
+                self.mk_sort_hc(im)
             }
             Let {
                 data:

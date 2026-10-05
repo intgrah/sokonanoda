@@ -14,6 +14,8 @@ mod environment;
 mod reduction;
 mod whnf_cache;
 
+const SPINE: usize = 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConstKind {
     Unfoldable,
@@ -26,12 +28,18 @@ enum ConstKind {
 
 impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn eval(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
-        if e.num_loose_bvars() == 0 && env.lsub().is_none() {
-            return memo!(
-                self.tc_cache.closed_eval_cache,
-                e,
-                self.eval_no_cache(depth, env, e)
-            );
+        if e.num_loose_bvars() == 0 {
+            let Some(ls) = env.lsub() else {
+                return memo!(
+                    self.tc_cache.closed_eval_cache,
+                    e,
+                    self.eval_no_cache(depth, env, e)
+                );
+            };
+            return memo!(self.tc_cache.closed_lsub_eval_cache, (e, Id::of(ls)), {
+                let base = self.lsub_base(Some(ls));
+                self.eval_no_cache(depth, base, e)
+            });
         }
         if matches!(
             e.as_ref(),
@@ -141,22 +149,22 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 }
                 return result;
             }
-            let mut arg_exprs = smallvec::SmallVec::<[ExprPtr<'t>; 16]>::new();
-            arg_exprs.push(arg);
+            let mut buf = [std::mem::MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
+            buf[0].write(arg);
+            let mut n = 1;
             let mut head = fun;
             while let &Expr::App { fun, arg, .. } = head.as_ref() {
-                arg_exprs.push(arg);
+                if n == SPINE {
+                    return self.eval_long_spine(depth, env, e);
+                }
+                buf[n].write(arg);
+                n += 1;
                 head = fun;
             }
-            let f = self.eval(depth, env, head);
-            let mut args = smallvec::SmallVec::<[V<'t>; 16]>::with_capacity(arg_exprs.len());
-            for &a in arg_exprs.iter().rev() {
-                args.push(self.eval(depth, env, a));
-            }
-            if let Some(r) = self.fire_saturated(depth, f, &args) {
-                return r;
-            }
-            return self.apply_many(depth, f, &args);
+            let f = self.eval_arg(depth, env, head);
+            let rev_args =
+                unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
+            return self.eval_spine(depth, env, f, rev_args);
         }
         match first {
             Expr::Var { dbj_idx, .. } => env.lookup(dbj_idx).expect("eval: loose bvar"),
@@ -165,7 +173,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     Some(ls) => self.ctx.subst_level(level, ls.ks, ls.vs),
                     None => level,
                 };
-                value::mk_sort(self.arena, self.ctx.simplify(level))
+                let level = self.ctx.simplify(level);
+                self.mk_sort_hc(level)
             }
             Expr::Const { name, levels, .. } => {
                 let levels = match env.lsub() {
@@ -179,7 +188,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 binder_type, body, ..
             } => {
                 let ce = self.key_env(env, e);
-                value::mk_lam(self.arena, binder_type, Closure::mk_eval(ce, body))
+                self.mk_lam_hc(binder_type, Closure::mk_eval(ce, body))
             }
             Expr::Pi {
                 binder_type, body, ..
@@ -187,7 +196,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let dom = self.eval(depth, env, binder_type);
                 {
                     let ce = self.key_env(env, e);
-                    value::mk_pi(self.arena, dom, Closure::mk_eval(ce, body))
+                    self.mk_pi_hc(dom, Closure::mk_eval(ce, body))
                 }
             }
             Expr::Let { .. } => {
@@ -213,9 +222,83 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let vs = self.eval(depth, env, structure);
                 self.do_proj(depth, ty_name, idx, vs)
             }
-            Expr::NatLit { ptr, .. } => value::mk_natlit(self.arena, ptr),
-            Expr::StringLit { ptr, .. } => value::mk_strlit(self.arena, ptr),
+            Expr::NatLit { ptr, .. } => self.mk_natlit_hc(ptr),
+            Expr::StringLit { ptr, .. } => self.mk_strlit_hc(ptr),
         }
+    }
+
+    #[inline(always)]
+    fn eval_arg(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
+        match e.as_ref() {
+            &Expr::Var { dbj_idx, .. } => env.lookup(dbj_idx).expect("eval: loose bvar"),
+            _ => self.eval(depth, env, e),
+        }
+    }
+
+    #[inline(always)]
+    fn eval_spine(
+        &mut self,
+        depth: u32,
+        env: E<'t>,
+        mut f: V<'t>,
+        rev_args: &[ExprPtr<'t>],
+    ) -> V<'t> {
+        if let Value::Rigid {
+            head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+            spine: Spine::Empty,
+            ..
+        } = f
+        {
+            let mut args = smallvec::SmallVec::<[V<'t>; 16]>::with_capacity(rev_args.len());
+            for &a in rev_args.iter().rev() {
+                args.push(self.eval_arg(depth, env, a));
+            }
+            if let Some(r) = self.fire_saturated(depth, f, &args) {
+                return r;
+            }
+            return self.apply_many(depth, f, &args);
+        }
+        let mut i = rev_args.len();
+        while i > 0 {
+            if let Value::Lam { body: clo, .. } = f {
+                let mut benv = clo.env;
+                let mut body = clo.body;
+                loop {
+                    i -= 1;
+                    let a = self.eval_arg(depth, env, rev_args[i]);
+                    benv = self.env_extend(benv, a);
+                    match body.as_ref() {
+                        &Expr::Lambda { body: inner, .. } if i > 0 => body = inner,
+                        _ => break,
+                    }
+                }
+                f = self.eval(depth, benv, body);
+            } else {
+                i -= 1;
+                let a = self.eval_arg(depth, env, rev_args[i]);
+                f = self.apply(depth, f, a);
+            }
+        }
+        f
+    }
+
+    #[inline(never)]
+    fn eval_long_spine(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
+        let mut arg_exprs = smallvec::SmallVec::<[ExprPtr<'t>; 16]>::new();
+        let mut head = e;
+        while let &Expr::App { fun, arg, .. } = head.as_ref() {
+            arg_exprs.push(arg);
+            head = fun;
+        }
+        let f = self.eval(depth, env, head);
+        let mut args = smallvec::SmallVec::<[V<'t>; 16]>::with_capacity(arg_exprs.len());
+        for &a in arg_exprs.iter().rev() {
+            args.push(self.eval(depth, env, a));
+        }
+        if let Some(r) = self.fire_saturated(depth, f, &args) {
+            return r;
+        }
+        self.apply_many(depth, f, &args)
     }
 
     fn fire_saturated(&mut self, depth: u32, f: V<'t>, args: &[V<'t>]) -> Option<V<'t>> {
@@ -289,27 +372,11 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let cell = &*self.arena.alloc(OnceCell::new());
                 value::mk_unfold_head_with_empty(self.arena, name, levels, cell, empty)
             }
-            ConstKind::Ctor => {
-                value::mk_rigid_head_with_empty(self.arena, RigidHead::Ctor(name, levels), empty)
-            }
-            ConstKind::Recursor => value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::Recursor(name, levels),
-                empty,
-            ),
-            ConstKind::Quot => value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::QuotConst(name, levels),
-                empty,
-            ),
-            ConstKind::Inductive => value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::Inductive(name, levels),
-                empty,
-            ),
-            ConstKind::Axiom => {
-                value::mk_rigid_head_with_empty(self.arena, RigidHead::Axiom(name, levels), empty)
-            }
+            ConstKind::Ctor => self.mk_head_hc(RigidHead::Ctor(name, levels)),
+            ConstKind::Recursor => self.mk_head_hc(RigidHead::Recursor(name, levels)),
+            ConstKind::Quot => self.mk_head_hc(RigidHead::QuotConst(name, levels)),
+            ConstKind::Inductive => self.mk_head_hc(RigidHead::Inductive(name, levels)),
+            ConstKind::Axiom => self.mk_head_hc(RigidHead::Axiom(name, levels)),
         };
         v.mark_canonical();
         self.tc_cache
@@ -417,8 +484,16 @@ impl<'t> TypeChecker<'_, 't, '_> {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn apply(&mut self, depth: u32, f: V<'t>, a: V<'t>) -> V<'t> {
+        match self.tc_cache.app_hc.get(&(Id::of(f), Id::of(a))) {
+            Some(v) => v,
+            None => self.apply_new(depth, f, a),
+        }
+    }
+
+    #[inline(never)]
+    fn apply_new(&mut self, depth: u32, f: V<'t>, a: V<'t>) -> V<'t> {
         match f {
             Value::Lam { body: clo, .. } => {
                 let clo_env = clo.env;
@@ -432,7 +507,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     && let RigidHead::Ctor(name, _) = head_copy
                     && Some(name) == self.ctx.export_file.name_cache.nat_succ
                 {
-                    let new_spine = value::spine_snoc(self.arena, spine, Elim::app(a));
+                    let a = self.canonicalize_for_spine(a);
+                    let new_spine = self.spine_snoc_hc(spine, Elim::app(a));
                     return self.try_fire_rigid(depth, head_copy, new_spine);
                 }
                 self.neutral_app(f, a)
@@ -524,7 +600,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         {
             let succ_lit = n + 1u8;
             if let Some(p) = self.ctx.alloc_bignum(succ_lit) {
-                return value::mk_natlit(self.arena, p);
+                return self.mk_natlit_hc(p);
             }
         }
         self.mk_rigid_hc(head, spine)
@@ -534,7 +610,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
         match v {
             Value::Sort { level, .. } => {
                 let s = self.ctx.succ(*level);
-                value::mk_sort(self.arena, self.ctx.simplify(s))
+                let s = self.ctx.simplify(s);
+                self.mk_sort_hc(s)
             }
             Value::NatLit { .. } => {
                 let n = self
@@ -544,11 +621,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     .nat
                     .expect("value_type: Nat name missing");
                 let levels = self.ctx.alloc_levels_slice(&[]);
-                value::mk_rigid_head_with_empty(
-                    self.arena,
-                    RigidHead::Inductive(n, levels),
-                    self.empty_spine(),
-                )
+                self.mk_head_hc(RigidHead::Inductive(n, levels))
             }
             Value::StrLit { .. } => {
                 let n = self
@@ -558,15 +631,11 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     .string
                     .expect("value_type: String name missing");
                 let levels = self.ctx.alloc_levels_slice(&[]);
-                value::mk_rigid_head_with_empty(
-                    self.arena,
-                    RigidHead::Inductive(n, levels),
-                    self.empty_spine(),
-                )
+                self.mk_head_hc(RigidHead::Inductive(n, levels))
             }
             Value::Rigid { head, spine, .. } => {
                 let head_ty = self.rigid_head_type(depth, *head);
-                let prev = value::mk_rigid_head_with_empty(self.arena, *head, self.empty_spine());
+                let prev = self.mk_head_hc(*head);
                 self.spine_type_with_value(depth, head_ty, prev, spine)
             }
             Value::Unfold { head, spine, .. } => {

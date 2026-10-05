@@ -251,7 +251,7 @@ impl Value<'_> {
             | Value::Unfold { canon, .. }
             | Value::Lam { canon, .. }
             | Value::Pi { canon, .. } => canon.get(),
-            _ => false,
+            Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => true,
         }
     }
 
@@ -731,9 +731,6 @@ pub fn mk_strlit<'a>(arena: &'a Bump, ptr: StringPtr<'a>) -> V<'a> {
 }
 pub fn mk_bvar_with_empty<'a>(arena: &'a Bump, level: u32, ty: V<'a>, empty: S<'a>) -> V<'a> {
     mk_rigid(arena, RigidHead::BVar(level, ty), empty)
-}
-pub fn mk_rigid_head_with_empty<'a>(arena: &'a Bump, head: RigidHead<'a>, empty: S<'a>) -> V<'a> {
-    mk_rigid(arena, head, empty)
 }
 
 const _: () = assert!(std::mem::size_of::<Value<'static>>() == 56);

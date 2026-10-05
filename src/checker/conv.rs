@@ -4,7 +4,7 @@
 use crate::checker::env::{Declar, ReducibilityHint};
 use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{self, E, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
+use crate::checker::value::{E, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
@@ -934,7 +934,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return None;
                 }
                 let pred = self.ctx.alloc_bignum(n - 1u8)?;
-                Some(value::mk_natlit(self.arena, pred))
+                Some(self.mk_natlit_hc(pred))
             }
             _ => None,
         }

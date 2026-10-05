@@ -9,7 +9,7 @@ use crate::checker::nat::{
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
 use crate::checker::value::SpineArgs;
-use crate::checker::value::{self, Elim, ElimView, RigidHead, Spine, V, Value};
+use crate::checker::value::{Elim, ElimView, RigidHead, Spine, V, Value};
 use crate::outcome::reject;
 use crate::term::ptr::{BigUintPtr, Id, LevelsPtr, NamePtr, StringPtr};
 use num_bigint::BigUint;
@@ -154,7 +154,20 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn force_all(&mut self, depth: u32, v: V<'t>) -> V<'t> {
+        match v {
+            Value::Unfold { .. }
+            | Value::Rigid {
+                head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
+                ..
+            } => self.force_reducible(depth, v),
+            _ => v,
+        }
+    }
+
+    #[inline(never)]
+    fn force_reducible(&mut self, depth: u32, v: V<'t>) -> V<'t> {
         if let Some(r) = self.store_lookup(depth, v) {
             return r;
         }
@@ -565,13 +578,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 .ctx
                 .alloc_bignum(pred)
                 .expect("nat_rec_natlit: alloc pred");
-            let pred_val = value::mk_natlit(self.arena, pred_ptr);
-            let empty = self.empty_spine();
-            let mut ih = value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::Recursor(rec.info.name, levels),
-                empty,
-            );
+            let pred_val = self.mk_natlit_hc(pred_ptr);
+            let mut ih = self.mk_head_hc(RigidHead::Recursor(rec.info.name, levels));
             for a in &args[..major_idx] {
                 ih = self.apply(depth, ih, a);
             }
@@ -620,11 +628,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let ctor_data = self.env.get_constructor(ctor_name)?;
         let num_fields = ctor_data.num_fields;
         let np = usize::from(rec.num_params);
-        let mut new_ctor = value::mk_rigid_head_with_empty(
-            self.arena,
-            RigidHead::Ctor(ctor_name, ty_levels),
-            self.empty_spine(),
-        );
+        let mut new_ctor = self.mk_head_hc(RigidHead::Ctor(ctor_name, ty_levels));
         for a in ty_args.iter().take(np).copied() {
             new_ctor = self.apply(depth, new_ctor, a);
         }
@@ -658,11 +662,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             .find(|r| r.ctor_name == ctor_name)
             .map_or(0, |r| usize::from(r.ctor_telescope_size_wo_params));
         let take = (np + ctor_self).min(ty_args.len());
-        let mut new_ctor = value::mk_rigid_head_with_empty(
-            self.arena,
-            RigidHead::Ctor(ctor_name, ty_levels),
-            self.empty_spine(),
-        );
+        let mut new_ctor = self.mk_head_hc(RigidHead::Ctor(ctor_name, ty_levels));
         for a in ty_args.iter().take(take).copied() {
             new_ctor = self.apply(depth, new_ctor, a);
         }
@@ -695,23 +695,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let nv = n.as_ref().clone();
         let levels = self.ctx.alloc_levels_slice(&[]);
-        let empty = self.empty_spine();
         if nv.is_zero() {
             let zero_name = self.ctx.export_file.name_cache.nat_zero?;
-            Some(value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::Ctor(zero_name, levels),
-                empty,
-            ))
+            Some(self.mk_head_hc(RigidHead::Ctor(zero_name, levels)))
         } else {
             let pred = self.ctx.alloc_bignum(core::ops::Sub::sub(nv, 1u8))?;
-            let pred_v = value::mk_natlit(self.arena, pred);
+            let pred_v = self.mk_natlit_hc(pred);
             let succ_name = self.ctx.export_file.name_cache.nat_succ?;
-            let succ_v = value::mk_rigid_head_with_empty(
-                self.arena,
-                RigidHead::Ctor(succ_name, levels),
-                empty,
-            );
+            let succ_v = self.mk_head_hc(RigidHead::Ctor(succ_name, levels));
             Some(self.apply(depth, succ_v, pred_v))
         }
     }
@@ -854,7 +845,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     fn mk_natlit_val(&mut self, n: BigUint) -> Option<V<'t>> {
         let p = self.ctx.alloc_bignum(n)?;
-        Some(value::mk_natlit(self.arena, p))
+        Some(self.mk_natlit_hc(p))
     }
 
     fn bool_val(&mut self, b: bool) -> Option<V<'t>> {
@@ -865,11 +856,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             cache.bool_false?
         };
         let levels = self.ctx.alloc_levels_slice(&[]);
-        Some(value::mk_rigid_head_with_empty(
-            self.arena,
-            RigidHead::Ctor(n, levels),
-            self.empty_spine(),
-        ))
+        Some(self.mk_head_hc(RigidHead::Ctor(n, levels)))
     }
 
     pub(crate) fn value_has_free_bvar(&mut self, v: V<'t>) -> bool {

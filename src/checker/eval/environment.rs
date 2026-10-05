@@ -8,7 +8,7 @@ use crate::checker::value::{
 };
 use crate::term::expr::Expr;
 use crate::term::hash::GOLDEN;
-use crate::term::ptr::{ExprPtr, Id, LevelsPtr, NamePtr};
+use crate::term::ptr::{BigUintPtr, ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use std::cell::OnceCell;
 
 #[inline]
@@ -40,6 +40,38 @@ impl<'t> TypeChecker<'_, 't, '_> {
         })
     }
 
+    pub(crate) fn mk_sort_hc(&mut self, level: LevelPtr<'t>) -> V<'t> {
+        memo!(
+            self.tc_cache.content_hc,
+            (KeyTag::Sort, level.get_hash()),
+            value::mk_sort(self.arena, level)
+        )
+    }
+
+    pub(crate) fn mk_natlit_hc(&mut self, ptr: BigUintPtr<'t>) -> V<'t> {
+        memo!(
+            self.tc_cache.content_hc,
+            (KeyTag::NatLit, ptr.get_hash()),
+            value::mk_natlit(self.arena, ptr)
+        )
+    }
+
+    pub(crate) fn mk_strlit_hc(&mut self, ptr: StringPtr<'t>) -> V<'t> {
+        memo!(
+            self.tc_cache.content_hc,
+            (KeyTag::StrLit, ptr.get_hash()),
+            value::mk_strlit(self.arena, ptr)
+        )
+    }
+
+    pub(crate) fn mk_head_hc(&mut self, head: RigidHead<'t>) -> V<'t> {
+        if let RigidHead::BVar(level, ty) = head {
+            return self.mk_bvar_hc(level, ty);
+        }
+        let empty = self.empty_spine();
+        self.mk_rigid_hc(head, empty)
+    }
+
     pub(super) fn mk_unfold_hc(
         &mut self,
         name: NamePtr<'t>,
@@ -60,12 +92,19 @@ impl<'t> TypeChecker<'_, 't, '_> {
         )
     }
 
+    #[inline(always)]
     pub(crate) fn env_extend(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
-        hashcons!(
-            self.tc_cache.env_hc,
-            (Id::of(parent), Id::of(v)),
-            value::env_extend(self.arena, parent, v)
-        )
+        match self.tc_cache.env_hc.get(&(Id::of(parent), Id::of(v))) {
+            Some(e) => e,
+            None => self.env_new(parent, v),
+        }
+    }
+
+    #[inline(never)]
+    fn env_new(&mut self, parent: E<'t>, v: V<'t>) -> E<'t> {
+        let e = value::env_extend(self.arena, parent, v);
+        self.tc_cache.env_hc.insert((Id::of(parent), Id::of(v)), e);
+        e
     }
 
     fn intern_frame(
@@ -107,7 +146,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         e
     }
 
-    fn lsub_base(&mut self, lsub: Option<&'t value::LevelSub<'t>>) -> E<'t> {
+    pub(super) fn lsub_base(&mut self, lsub: Option<&'t value::LevelSub<'t>>) -> E<'t> {
         let Some(ls) = lsub else {
             return self.tc_cache.empty_env;
         };
@@ -455,7 +494,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     #[inline]
-    fn mk_lam_hc(&mut self, binder_type: ExprPtr<'t>, body: Closure<'t>) -> V<'t> {
+    pub(crate) fn mk_lam_hc(&mut self, binder_type: ExprPtr<'t>, body: Closure<'t>) -> V<'t> {
         debug_assert!(body.ctx.is_none());
         hashcons!(
             self.tc_cache.lam_hc,
@@ -468,11 +507,17 @@ impl<'t> TypeChecker<'_, 't, '_> {
         )
     }
 
-    #[inline]
+    #[inline(always)]
     pub(super) fn canonicalize_for_spine(&mut self, v: V<'t>) -> V<'t> {
         if v.is_canonical() {
-            return v;
+            v
+        } else {
+            self.canonicalize(v)
         }
+    }
+
+    #[inline(never)]
+    fn canonicalize(&mut self, v: V<'t>) -> V<'t> {
         memo!(self.tc_cache.canon_cache, Id::of(v), {
             let c = self.canon_compute(v);
             c.mark_canonical();
@@ -528,7 +573,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     #[inline]
-    fn mk_pi_hc(&mut self, domain: V<'t>, body: Closure<'t>) -> V<'t> {
+    pub(crate) fn mk_pi_hc(&mut self, domain: V<'t>, body: Closure<'t>) -> V<'t> {
         let key = (
             Id::of(domain),
             Id::of(body.env),
