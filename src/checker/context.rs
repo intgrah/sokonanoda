@@ -23,7 +23,7 @@ caches! {
         #[cap(SMALL)] inst: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
         #[cap(SMALL)] subst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
         #[cap(SMALL)] dsubst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[cap(SMALL)] simplify: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
+        #[keep(FxHashMap::default())] simplify: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
     }
     fn new();
 }
@@ -65,6 +65,11 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) expr_cache: ExprCache<'t>,
     pub(crate) sig_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
     pub(crate) sig_computing: FxHashSet<(NamePtr<'t>, LevelsPtr<'t>)>,
+    pub(crate) subst_level_cache:
+        FxHashMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
+    pub(crate) leq_cache: FxHashMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
+    pub(crate) subst_levels_cache:
+        FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelsPtr<'t>>,
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
@@ -77,6 +82,9 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
             sig_computing: Reset::with_cap(SMALL),
+            subst_level_cache: Reset::with_cap(SMALL),
+            leq_cache: Reset::with_cap(SMALL),
+            subst_levels_cache: Reset::with_cap(SMALL),
         }
     }
 

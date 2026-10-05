@@ -32,10 +32,10 @@ impl<K, V> Reset for FxHashMap<K, V> {
         self.clear();
     }
     fn reset_shrink(&mut self) {
-        if self.capacity() > KEEP_CAP {
-            *self = FxHashMap::default();
-        } else {
-            self.clear();
+        let used = self.len();
+        self.clear();
+        if self.capacity() > KEEP_CAP.max(4 * used) {
+            *self = FxHashMap::with_capacity_and_hasher(KEEP_CAP.max(2 * used), FxBuildHasher);
         }
     }
 }
@@ -48,10 +48,10 @@ impl<K> Reset for FxHashSet<K> {
         self.clear();
     }
     fn reset_shrink(&mut self) {
-        if self.capacity() > KEEP_CAP {
-            *self = FxHashSet::default();
-        } else {
-            self.clear();
+        let used = self.len();
+        self.clear();
+        if self.capacity() > KEEP_CAP.max(4 * used) {
+            *self = FxHashSet::with_capacity_and_hasher(KEEP_CAP.max(2 * used), FxBuildHasher);
         }
     }
 }
@@ -64,10 +64,10 @@ impl<T> Reset for HashTable<T> {
         self.clear();
     }
     fn reset_shrink(&mut self) {
-        if self.capacity() > KEEP_CAP {
-            *self = HashTable::new();
-        } else {
-            self.clear();
+        let used = self.len();
+        self.clear();
+        if self.capacity() > KEEP_CAP.max(4 * used) {
+            self.shrink_to(KEEP_CAP.max(2 * used), |_| 0);
         }
     }
 }
@@ -88,6 +88,9 @@ macro_rules! caches {
     (@init cap($cap:expr)) => { $crate::checker::cache::Reset::with_cap($cap) };
     (@init keep($init:expr)) => { $init };
     (@init session($init:expr)) => { $init };
+    (@init_small cap($cap:expr)) => { $crate::checker::cache::Reset::with_cap(SMALL) };
+    (@init_small keep($init:expr)) => { $init };
+    (@init_small session($init:expr)) => { $init };
     (@clear $f:expr, cap($cap:expr)) => { $crate::checker::cache::Reset::reset(&mut $f) };
     (@clear $f:expr, keep($init:expr)) => {};
     (@clear $f:expr, session($init:expr)) => {};
@@ -108,6 +111,13 @@ macro_rules! caches {
             pub(crate) fn new($($param: $pty),*) -> Self {
                 Self {
                     $($f: caches!(@init $kind($arg)),)*
+                }
+            }
+
+            #[allow(dead_code)]
+            pub(crate) fn new_small($($param: $pty),*) -> Self {
+                Self {
+                    $($f: caches!(@init_small $kind($arg)),)*
                 }
             }
 
@@ -234,6 +244,12 @@ impl<'b> SessionCache<'b> {
     pub(crate) fn new(base: &'b bumpalo::Bump) -> Self {
         Self {
             inner: TcCache::new(base),
+        }
+    }
+
+    pub(crate) fn new_small(base: &'b bumpalo::Bump) -> Self {
+        Self {
+            inner: TcCache::new_small(base),
         }
     }
 

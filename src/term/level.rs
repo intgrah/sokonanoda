@@ -100,13 +100,18 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> LevelsPtr<'t> {
+        if let Some(cached) = self.subst_levels_cache.get(&(uparams, ks, vs)).copied() {
+            return cached;
+        }
         let out = uparams
             .as_ref()
             .iter()
             .copied()
             .map(|l| self.subst_level(l, ks, vs))
             .collect::<Vec<_>>();
-        self.alloc_levels(&out)
+        let r = self.alloc_levels(&out);
+        self.subst_levels_cache.insert((uparams, ks, vs), r);
+        r
     }
 
     /// Return `uparam [ks |-> vs]`
@@ -118,20 +123,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     ) -> LevelPtr<'t> {
         match *level {
             Zero => self.zero(),
-            Succ(val, ..) => {
-                let val = self.subst_level(val, ks, vs);
-                self.succ(val)
-            }
-            Max(l, r, ..) => {
-                let l_prime = self.subst_level(l, ks, vs);
-                let r_prime = self.subst_level(r, ks, vs);
-                self.max(l_prime, r_prime)
-            }
-            IMax(l, r, ..) => {
-                let l_prime = self.subst_level(l, ks, vs);
-                let r_prime = self.subst_level(r, ks, vs);
-                self.imax(l_prime, r_prime)
-            }
             Param(..) => {
                 let (ks, vs) = (ks.as_ref(), vs.as_ref());
                 for (k, v) in ks.iter().copied().zip(vs.iter().copied()) {
@@ -140,6 +131,30 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     }
                 }
                 level
+            }
+            Succ(..) | Max(..) | IMax(..) => {
+                if let Some(cached) = self.subst_level_cache.get(&(level, ks, vs)).copied() {
+                    return cached;
+                }
+                let r = match *level {
+                    Succ(val, ..) => {
+                        let val = self.subst_level(val, ks, vs);
+                        self.succ(val)
+                    }
+                    Max(l, r, ..) => {
+                        let l_prime = self.subst_level(l, ks, vs);
+                        let r_prime = self.subst_level(r, ks, vs);
+                        self.max(l_prime, r_prime)
+                    }
+                    IMax(l, r, ..) => {
+                        let l_prime = self.subst_level(l, ks, vs);
+                        let r_prime = self.subst_level(r, ks, vs);
+                        self.imax(l_prime, r_prime)
+                    }
+                    Zero | Param(..) => unreachable!(),
+                };
+                self.subst_level_cache.insert((level, ks, vs), r);
+                r
             }
         }
     }
@@ -237,9 +252,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if l == r {
             return true;
         }
+        if let Some(cached) = self.leq_cache.get(&(l, r)).copied() {
+            return cached;
+        }
         let l_prime = self.simplify(l);
         let r_prime = self.simplify(r);
-        self.leq_core(l_prime, r_prime, 0)
+        let result = self.leq_core(l_prime, r_prime, 0);
+        self.leq_cache.insert((l, r), result);
+        result
     }
 
     pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {

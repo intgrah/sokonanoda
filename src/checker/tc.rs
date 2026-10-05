@@ -159,6 +159,9 @@ impl<'p> ExportFile<'p> {
         let base = bumpalo::Bump::new();
         let mut session_cache = crate::checker::cache::SessionCache::new(&base);
         let mut sbump = crate::checker::cache::SessionBump::new();
+        let ind_base = bumpalo::Bump::new();
+        let mut ind_cache = crate::checker::cache::SessionCache::new_small(&ind_base);
+        let mut ind_bump = crate::checker::cache::SessionBump::new();
         let mut pending = Some(first);
         loop {
             let finished = unsafe {
@@ -173,6 +176,14 @@ impl<'p> ExportFile<'p> {
                                 .get_index(i)
                                 .expect("declaration index out of range");
                             i += 1;
+                            if matches!(d, Declar::Inductive(..)) {
+                                ind_cache.enter(|ind| {
+                                    self.check_inductive_declar(tctx, ind, ind_bump.get(), d);
+                                    true
+                                });
+                                ind_bump.reset();
+                                continue;
+                            }
                             self.check_declar_with(tctx, cache, sbump.get(), d);
                             if sbump.allocated_bytes() > SESSION_BUDGET {
                                 pending = Some((i, end));
