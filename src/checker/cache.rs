@@ -202,8 +202,6 @@ caches! {
         #[cap(SMALL)] lsub_bases: PtrMap<Id<'a, LevelSub<'a>>, E<'a>>,
         #[cap(SMALL)] level_subs: PtrMap<(LevelsPtr<'t>, LevelsPtr<'t>), &'a LevelSub<'a>>,
         #[cap(0)] prune_dm: Box<[(Option<Id<'a, Env<'a>>>, u64, Option<E<'a>>); PRUNE_DM_LEN]>,
-        #[cap(SMALL)] wide_fvars: PtrMap<ExprPtr<'t>, &'a [u16]>,
-        #[cap(SMALL)] wide_prune: PtrMap<(Id<'a, Env<'a>>, ExprPtr<'t>), E<'a>>,
         #[cap(SESSION)] rigid_hc: PtrMap<(KeyTag, u64, u64, Id<'a, Spine<'a>>), V<'a>>,
         #[cap(SESSION)] unfold_hc: PtrMap<(Id<'a, OnceCell<V<'a>>>, Id<'a, Spine<'a>>), V<'a>>,
         #[cap(SESSION_SMALL)] iota_stuck: PtrSet<Id<'a, Value<'a>>>,

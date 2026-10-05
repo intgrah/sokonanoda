@@ -6,7 +6,6 @@ use crate::checker::tc::TypeChecker;
 use crate::checker::value::{
     self, Closure, E, Elim, ElimView, KeyTag, RigidHead, S, Spine, V, Value,
 };
-use crate::term::expr::Expr;
 use crate::term::hash::GOLDEN;
 use crate::term::ptr::{BigUintPtr, ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use std::cell::OnceCell;
@@ -109,32 +108,48 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     fn intern_frame(
         &mut self,
-        hash: u64,
-        mask: u64,
+        slots_hash: u64,
+        near: u64,
         slots: &[V<'t>],
+        cut: u32,
+        rest: Option<E<'t>>,
         lsub: Option<&'t value::LevelSub<'t>>,
     ) -> E<'t> {
+        let mut hash = near.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
+        let (mask, cut, len) = match rest {
+            Some(r) => {
+                hash = (hash.rotate_left(29) ^ (Id::of(r).addr() as u64))
+                    .wrapping_mul(GOLDEN)
+                    .wrapping_add(u64::from(cut));
+                (near | value::FAR, cut, cut + r.len())
+            }
+            None => (near, value::NEAR, 64 - near.leading_zeros()),
+        };
         let found = self.tc_cache.frames.find(hash);
         if let Ok(e) = found
             && let value::Env::Framed {
                 mask: m,
                 slots: sl,
+                cut: c,
+                rest: r,
                 lsub: l,
                 ..
             } = e
             && *m == mask
+            && u32::from(*c) == cut
+            && r.map(Id::of) == rest.map(Id::of)
             && l.map(Id::of) == lsub.map(Id::of)
             && sl.len() == slots.len()
             && sl.iter().zip(slots).all(|(a, b)| std::ptr::eq(*a, *b))
         {
             return e;
         }
-        let len = 64 - mask.leading_zeros();
         let e: E<'t> = self.arena.alloc(value::Env::Framed {
             mask,
             slots: copy_slots(self.arena, slots),
+            cut: u8::try_from(cut).expect("a frame spans at most 63 positions"),
+            rest,
             lsub,
-            hash,
             len,
             prune: std::cell::Cell::new((0, None)),
         });
@@ -142,6 +157,30 @@ impl<'t> TypeChecker<'_, 't, '_> {
             self.tc_cache.frames.insert_at(vacant, hash, e);
         }
         e
+    }
+
+    fn frame_without(
+        &mut self,
+        dropped: u32,
+        mask: u64,
+        slots: &'t [V<'t>],
+        cut: u32,
+        rest: Option<E<'t>>,
+        lsub: Option<&'t value::LevelSub<'t>>,
+    ) -> Option<E<'t>> {
+        let near = (mask & !value::FAR) >> dropped;
+        if near == 0 && rest.is_none() {
+            return None;
+        }
+        let skipped = (mask & ((1u64 << dropped) - 1)).count_ones() as usize;
+        let kept = &slots[skipped..];
+        let slots_hash = kept
+            .iter()
+            .fold(lsub.map_or(0, |l| Id::of(l).addr() as u64), |h, v| {
+                h.wrapping_mul(GOLDEN)
+                    .wrapping_add(Id::of(*v).addr() as u64)
+            });
+        Some(self.intern_frame(slots_hash, near, kept, cut - dropped, rest, lsub))
     }
 
     pub(super) fn lsub_base(&mut self, lsub: Option<&'t value::LevelSub<'t>>) -> E<'t> {
@@ -205,7 +244,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return r;
                 }
             }
-            value::Env::Cons { prune, .. } | value::Env::WideFramed { prune, .. } => {
+            value::Env::Cons { prune, .. } => {
                 let (m, r) = prune.get();
                 if m == mask
                     && let Some(r) = r
@@ -223,9 +262,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
             && let Some(hit) = ent.2
         {
             match e {
-                value::Env::Cons { prune, .. }
-                | value::Env::Framed { prune, .. }
-                | value::Env::WideFramed { prune, .. } => prune.set((mask, Some(hit))),
+                value::Env::Cons { prune, .. } | value::Env::Framed { prune, .. } => {
+                    prune.set((mask, Some(hit)));
+                }
                 value::Env::Nil { .. } => {}
             }
             return hit;
@@ -237,25 +276,40 @@ impl<'t> TypeChecker<'_, 't, '_> {
     fn prune_env_cold(&mut self, e: E<'t>, mask: u64, slot: usize) -> E<'t> {
         let mut buf: [std::mem::MaybeUninit<V<'t>>; 64] =
             [const { std::mem::MaybeUninit::uninit() }; 64];
-        let mut slots_hash = e.lsub().map_or(0, |l| Id::of(l).addr() as u64);
+        let lsub = e.lsub();
+        let mut slots_hash = lsub.map_or(0, |l| Id::of(l).addr() as u64);
         let mut n = 0usize;
         let mut out_mask = 0u64;
-        let mut rem = mask;
+        let keep_far = mask & value::FAR != 0;
+        let mut rem = mask & !value::FAR;
         let mut consumed = 0u32;
         let mut cur = e;
-        while rem != 0 {
+        let mut rest = None;
+        loop {
+            if consumed == value::NEAR {
+                if keep_far {
+                    rest = match cur {
+                        value::Env::Nil { .. } | value::Env::Framed { mask: 0, .. } => None,
+                        _ => Some(cur),
+                    };
+                }
+                break;
+            }
+            if rem == 0 && !keep_far {
+                break;
+            }
             match cur {
                 value::Env::Nil { .. } => break,
                 value::Env::Framed {
-                    mask: fmask, slots, ..
+                    mask: fmask,
+                    slots,
+                    cut,
+                    rest: frest,
+                    ..
                 } => {
-                    let limit = 64 - consumed;
-                    let bound = if limit >= 64 {
-                        u64::MAX
-                    } else {
-                        (1u64 << limit) - 1
-                    };
-                    let m2 = rem & *fmask & bound;
+                    let cut = u32::from(*cut);
+                    let taken = cut.min(value::NEAR - consumed);
+                    let m2 = rem & *fmask & ((1u64 << taken) - 1);
                     out_mask |= m2 << consumed;
                     let mut sel = select_ranks(m2, *fmask);
                     while sel != 0 {
@@ -268,23 +322,18 @@ impl<'t> TypeChecker<'_, 't, '_> {
                             .wrapping_add(Id::of(sv).addr() as u64);
                         n += 1;
                     }
-                    break;
-                }
-                value::Env::WideFramed { data, .. } => {
-                    for (&idx, &v) in data.indices.iter().zip(data.slots) {
-                        if u32::from(idx) >= 64 - consumed {
-                            break;
+                    if taken < cut {
+                        if keep_far {
+                            rest = self.frame_without(taken, *fmask, slots, cut, *frest, lsub);
                         }
-                        if (rem >> idx) & 1 != 0 {
-                            buf[n].write(v);
-                            slots_hash = slots_hash
-                                .wrapping_mul(GOLDEN)
-                                .wrapping_add(Id::of(v).addr() as u64);
-                            out_mask |= 1u64 << (u32::from(idx) + consumed);
-                            n += 1;
-                        }
+                        break;
                     }
-                    break;
+                    let Some(next) = frest else {
+                        break;
+                    };
+                    rem >>= taken;
+                    consumed += taken;
+                    cur = next;
                 }
                 value::Env::Cons { v, parent, .. } => {
                     if rem & 1 != 0 {
@@ -296,9 +345,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         n += 1;
                     }
                     rem >>= 1;
-                    if rem == 0 {
-                        break;
-                    }
                     consumed += 1;
                     cur = parent;
                 }
@@ -306,14 +352,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let slots: &[V<'t>] =
             unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<V<'t>>(), n) };
-        let lsub = e.lsub();
-        let hash = out_mask.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
-        let r = self.intern_frame(hash, out_mask, slots, lsub);
+        let r = self.intern_frame(slots_hash, out_mask, slots, value::NEAR, rest, lsub);
         self.tc_cache.prune_dm[slot] = (Some(Id::of(e)), mask, Some(r));
         match e {
-            value::Env::Cons { prune, .. }
-            | value::Env::Framed { prune, .. }
-            | value::Env::WideFramed { prune, .. } => prune.set((mask, Some(r))),
+            value::Env::Cons { prune, .. } | value::Env::Framed { prune, .. } => {
+                prune.set((mask, Some(r)));
+            }
             value::Env::Nil { .. } => {}
         }
         r
@@ -321,145 +365,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     #[inline(always)]
     pub(crate) fn key_env(&mut self, env: E<'t>, e: ExprPtr<'t>) -> E<'t> {
-        let k = e.num_loose_bvars();
-        if k == 0 {
+        if e.num_loose_bvars() == 0 {
             return self.lsub_base(env.lsub());
         }
-        if k > 64 {
-            return self.prune_wide_env(env, e);
-        }
         self.prune_env(env, e.as_ref().fv_mask())
-    }
-
-    fn wide_fvars(&mut self, e: ExprPtr<'t>) -> &'t [u16] {
-        if let Some(indices) = self.tc_cache.wide_fvars.get(&e) {
-            return indices;
-        }
-        let mut indices = smallvec::SmallVec::<[u16; 16]>::new();
-        if e.num_loose_bvars() <= 64 {
-            let mut mask = e.as_ref().fv_mask();
-            while mask != 0 {
-                indices.push(u16::try_from(mask.trailing_zeros()).unwrap());
-                mask &= mask - 1;
-            }
-        } else {
-            match *e.as_ref() {
-                Expr::Var { dbj_idx, .. } => indices.push(dbj_idx),
-                Expr::App { fun, arg, .. } => {
-                    indices.extend_from_slice(self.wide_fvars(fun));
-                    indices.extend_from_slice(self.wide_fvars(arg));
-                }
-                Expr::Pi {
-                    binder_type, body, ..
-                }
-                | Expr::Lambda {
-                    binder_type, body, ..
-                } => {
-                    indices.extend_from_slice(self.wide_fvars(binder_type));
-                    indices.extend(
-                        self.wide_fvars(body)
-                            .iter()
-                            .filter_map(|i| i.checked_sub(1)),
-                    );
-                }
-                Expr::Let { data, .. } => {
-                    indices.extend_from_slice(self.wide_fvars(data.binder_type));
-                    indices.extend_from_slice(self.wide_fvars(data.val));
-                    indices.extend(
-                        self.wide_fvars(data.body)
-                            .iter()
-                            .filter_map(|i| i.checked_sub(1)),
-                    );
-                }
-                Expr::Proj { structure, .. } => {
-                    indices.extend_from_slice(self.wide_fvars(structure));
-                }
-                Expr::Sort { .. }
-                | Expr::Const { .. }
-                | Expr::StringLit { .. }
-                | Expr::NatLit { .. } => {}
-            }
-            indices.sort_unstable();
-            indices.dedup();
-        }
-        let indices = self.arena.alloc_slice_copy(&indices);
-        self.tc_cache.wide_fvars.insert(e, indices);
-        indices
-    }
-
-    #[inline(never)]
-    fn prune_wide_env(&mut self, env: E<'t>, e: ExprPtr<'t>) -> E<'t> {
-        let key = (Id::of(env), e);
-        if let Some(r) = self.tc_cache.wide_prune.get(&key) {
-            return r;
-        }
-        let wanted = self.wide_fvars(e);
-        let mut indices = smallvec::SmallVec::<[u16; 16]>::new();
-        let mut slots = smallvec::SmallVec::<[V<'t>; 16]>::new();
-        let mut cur = env;
-        let mut consumed = 0;
-        let lsub = env.lsub();
-        let mut slots_hash = lsub.map_or(0, |l| Id::of(l).addr() as u64);
-        for &idx in wanted {
-            while consumed < idx {
-                let value::Env::Cons { parent, .. } = cur else {
-                    break;
-                };
-                cur = parent;
-                consumed += 1;
-            }
-            if let Some(v) = cur.lookup(idx - consumed) {
-                indices.push(idx);
-                slots.push(v);
-                slots_hash = slots_hash
-                    .wrapping_mul(GOLDEN)
-                    .wrapping_add(Id::of(v).addr() as u64);
-            }
-        }
-        let r = match indices.last() {
-            None => self.lsub_base(lsub),
-            Some(&last) if last < 64 => {
-                let mask = indices.iter().fold(0u64, |mask, i| mask | (1u64 << i));
-                let hash = mask.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
-                self.intern_frame(hash, mask, &slots, lsub)
-            }
-            Some(&last) => {
-                let hash = indices.iter().fold(slots_hash, |h, i| {
-                    h.wrapping_mul(GOLDEN).wrapping_add(u64::from(*i))
-                });
-                let found = self.tc_cache.frames.find(hash);
-                if let Ok(r) = found
-                    && let value::Env::WideFramed { data, lsub: ls, .. } = r
-                    && data.indices == indices.as_slice()
-                    && ls.map(Id::of) == lsub.map(Id::of)
-                    && data
-                        .slots
-                        .iter()
-                        .zip(&slots)
-                        .all(|(a, b)| std::ptr::eq(*a, *b))
-                {
-                    r
-                } else {
-                    let data = self.arena.alloc(value::WideFrame {
-                        indices: self.arena.alloc_slice_copy(&indices),
-                        slots: self.arena.alloc_slice_copy(&slots),
-                    });
-                    let r: E<'t> = self.arena.alloc(value::Env::WideFramed {
-                        data,
-                        lsub,
-                        hash,
-                        len: u32::from(last) + 1,
-                        prune: std::cell::Cell::new((0, None)),
-                    });
-                    if let Err(vacant) = found {
-                        self.tc_cache.frames.insert_at(vacant, hash, r);
-                    }
-                    r
-                }
-            }
-        };
-        self.tc_cache.wide_prune.insert(key, r);
-        r
     }
 
     #[inline]

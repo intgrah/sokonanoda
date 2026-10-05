@@ -364,33 +364,18 @@ pub enum Env<'a> {
     Framed {
         mask: u64,
         slots: &'a [V<'a>],
+        cut: u8,
+        rest: Option<E<'a>>,
         lsub: Option<&'a LevelSub<'a>>,
-        hash: u64,
-        len: u32,
-        prune: Cell<(u64, Option<E<'a>>)>,
-    },
-    WideFramed {
-        data: &'a WideFrame<'a>,
-        lsub: Option<&'a LevelSub<'a>>,
-        hash: u64,
         len: u32,
         prune: Cell<(u64, Option<E<'a>>)>,
     },
 }
 
-#[derive(Debug)]
-pub struct WideFrame<'a> {
-    pub indices: &'a [u16],
-    pub slots: &'a [V<'a>],
-}
+const _: () = assert!(std::mem::size_of::<Env<'static>>() == 64);
 
-impl<'a> WideFrame<'a> {
-    #[cold]
-    #[inline(never)]
-    fn lookup(&self, idx: u16) -> Option<V<'a>> {
-        self.indices.binary_search(&idx).ok().map(|i| self.slots[i])
-    }
-}
+pub(crate) const NEAR: u32 = crate::term::expr::NEAR_VARS as u32;
+pub(crate) const FAR: u64 = crate::term::expr::FAR_VARS;
 
 pub fn lsub_key(lsub: Option<&LevelSub<'_>>) -> u64 {
     match lsub {
@@ -408,10 +393,8 @@ impl<'a> Env<'a> {
     #[inline]
     pub fn get_hash(&self) -> u64 {
         match self {
-            Env::Nil { hash, .. }
-            | Env::Cons { hash, .. }
-            | Env::Framed { hash, .. }
-            | Env::WideFramed { hash, .. } => *hash,
+            Env::Nil { hash, .. } | Env::Cons { hash, .. } => *hash,
+            Env::Framed { .. } => std::ptr::from_ref(self).addr() as u64,
         }
     }
 
@@ -419,17 +402,14 @@ impl<'a> Env<'a> {
     pub(crate) fn len(&self) -> u32 {
         match self {
             Env::Nil { .. } => 0,
-            Env::Cons { len, .. } | Env::Framed { len, .. } | Env::WideFramed { len, .. } => *len,
+            Env::Cons { len, .. } | Env::Framed { len, .. } => *len,
         }
     }
 
     #[inline]
     pub fn lsub(&self) -> Option<&'a LevelSub<'a>> {
         match self {
-            Env::Nil { lsub, .. }
-            | Env::Cons { lsub, .. }
-            | Env::Framed { lsub, .. }
-            | Env::WideFramed { lsub, .. } => *lsub,
+            Env::Nil { lsub, .. } | Env::Cons { lsub, .. } | Env::Framed { lsub, .. } => *lsub,
         }
     }
 }
@@ -500,7 +480,8 @@ impl Spine<'_> {
 
 impl<'a> Env<'a> {
     #[inline]
-    pub fn lookup(&self, mut idx: u16) -> Option<V<'a>> {
+    pub fn lookup(&self, idx: u16) -> Option<V<'a>> {
+        let mut idx = u32::from(idx);
         let mut cur = self;
         loop {
             match cur {
@@ -512,14 +493,24 @@ impl<'a> Env<'a> {
                     idx -= 1;
                     cur = parent;
                 }
-                Env::Framed { mask, slots, .. } => {
-                    if idx >= 64 || (mask >> idx) & 1 == 0 {
-                        return None;
+                Env::Framed {
+                    mask,
+                    slots,
+                    cut,
+                    rest,
+                    ..
+                } => {
+                    let cut = u32::from(*cut);
+                    if idx < cut {
+                        if (mask >> idx) & 1 == 0 {
+                            return None;
+                        }
+                        let below = mask & ((1u64 << idx) - 1);
+                        return Some(slots[below.count_ones() as usize]);
                     }
-                    let below = mask & ((1u64 << idx) - 1);
-                    return Some(slots[below.count_ones() as usize]);
+                    idx -= cut;
+                    cur = (*rest)?;
                 }
-                Env::WideFramed { data, .. } => return data.lookup(idx),
             }
         }
     }

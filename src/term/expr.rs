@@ -592,30 +592,35 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
 #[inline]
 pub(crate) fn ignores_binder(body: ExprPtr<'_>) -> bool {
-    let k = body.num_loose_bvars();
-    k == 0 || (k <= 64 && body.as_ref().fv_mask() & 1 == 0)
+    body.as_ref().fv_mask() & 1 == 0
+}
+
+pub(crate) const NEAR_VARS: u16 = 63;
+pub(crate) const FAR_VARS: u64 = 1 << NEAR_VARS;
+
+#[inline]
+pub(crate) fn var_mask(dbj_idx: u16) -> u64 {
+    1u64 << dbj_idx.min(NEAR_VARS)
 }
 
 #[inline]
 pub(crate) fn child_mask(e: ExprPtr<'_>) -> u64 {
-    let k = e.num_loose_bvars();
-    if k == 0 || k > 64 {
-        0
+    e.as_ref().fv_mask()
+}
+
+#[inline]
+pub(crate) fn under_binder(mask: u64, num_loose_bvars: u16) -> u64 {
+    let far = if num_loose_bvars > NEAR_VARS + 1 {
+        FAR_VARS
     } else {
-        e.as_ref().fv_mask()
-    }
+        0
+    };
+    (mask >> 1) | far
 }
 
 #[inline]
 pub(crate) fn body_mask(body: ExprPtr<'_>) -> u64 {
-    let k = body.num_loose_bvars();
-    if k == 0 {
-        0
-    } else if k <= 64 {
-        body.as_ref().fv_mask() >> 1
-    } else {
-        u64::MAX
-    }
+    under_binder(body.as_ref().fv_mask(), body.num_loose_bvars())
 }
 
 impl Expr<'_> {
@@ -646,13 +651,7 @@ impl Expr<'_> {
     #[inline]
     pub(crate) fn fv_mask(&self) -> u64 {
         match self {
-            Var { dbj_idx, .. } => {
-                if *dbj_idx < 64 {
-                    1u64 << dbj_idx
-                } else {
-                    0
-                }
-            }
+            Var { dbj_idx, .. } => var_mask(*dbj_idx),
             App { fv_mask, .. }
             | Pi { fv_mask, .. }
             | Lambda { fv_mask, .. }

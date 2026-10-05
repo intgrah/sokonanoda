@@ -780,7 +780,7 @@ impl<'a> Parser<'a> {
         let ptr = ExprPtr::global(r, num_loose_bvars);
         let entry = ExprEntry {
             ptr: Some(ptr),
-            child_mask: if num_loose_bvars > 64 { 0 } else { fv_mask },
+            child_mask: fv_mask,
         };
         debug_assert_eq!(entry.child_mask, crate::term::expr::child_mask(ptr));
         let i = expected.index() as usize;
@@ -850,11 +850,7 @@ impl<'a> Parser<'a> {
         let (p, child_mask) = self.get_expr(idx);
         (
             p,
-            if p.num_loose_bvars() > 64 {
-                u64::MAX
-            } else {
-                child_mask >> 1
-            },
+            crate::term::expr::under_binder(child_mask, p.num_loose_bvars()),
         )
     }
 
@@ -1324,7 +1320,7 @@ impl<'a> Parser<'a> {
             return decline("bvar index exceeds implementation limit");
         }
         let hash = hash64!(crate::term::expr::VAR_HASH, dbj_idx);
-        let fv_mask = if dbj_idx < 64 { 1u64 << dbj_idx } else { 0 };
+        let fv_mask = crate::term::expr::var_mask(dbj_idx);
         self.push_expr(idx, Expr::Var { dbj_idx, hash }, dbj_idx + 1, fv_mask);
         Ok(())
     }
