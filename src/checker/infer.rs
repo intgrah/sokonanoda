@@ -114,21 +114,27 @@ impl<'t> TypeChecker<'_, 't, '_> {
         match *e {
             Var { dbj_idx, .. } => return ctx.lookup(dbj_idx).expect("loose bvar in infer"),
             Sort { level, .. } => {
-                if let (Check, Some(info)) = (flag, self.declar_info) {
+                if let (Check, Some(info)) = (flag, self.declar_info)
+                    && !self.ctx.leaf_checked(e)
+                {
                     ensure!(
                         level.all_uparams_defined(info.uparams),
                         "universe parameter not declared by the current declaration"
                     );
+                    self.ctx.mark_leaf_checked(e);
                 }
                 let sc = self.ctx.succ(level);
                 let sc = self.ctx.simplify(sc);
                 return self.mk_sort_hc(sc);
             }
             Const { name, levels, .. } => {
-                if let (Check, Some(info)) = (flag, self.declar_info) {
+                if let (Check, Some(info)) = (flag, self.declar_info)
+                    && !self.ctx.leaf_checked(e)
+                {
                     for l in levels.as_ref().iter().copied() {
                         ensure!(l.all_uparams_defined(info.uparams));
                     }
+                    self.ctx.mark_leaf_checked(e);
                 }
                 return self.const_head_type(name, levels);
             }
@@ -150,6 +156,21 @@ impl<'t> TypeChecker<'_, 't, '_> {
         {
             return cached.result;
         }
+
+        let reusable = match self.declar_info {
+            Some(info)
+                if flag == Check
+                    && self.ordered_declaration
+                    && e.num_loose_bvars() == 0
+                    && !e.is_local() =>
+            {
+                Some(info.uparams)
+            }
+            _ => None,
+        };
+        let known = reusable.is_some_and(|u| self.ctx.checked_closed.contains(&(e, u)));
+        let requested = flag;
+        let flag = if known { InferOnly } else { flag };
 
         let r = match *e {
             App { .. } => self.infer_app_v(flag, depth, env, ctx, e),
@@ -220,7 +241,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
             _ => unreachable!(),
         };
 
-        let checked_under = if flag == Check {
+        if let (Some(u), false) = (reusable, known) {
+            self.ctx.checked_closed.insert((e, u));
+        }
+        let checked_under = if requested == Check {
             scope
         } else {
             CheckScope::Unchecked

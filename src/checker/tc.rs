@@ -66,6 +66,7 @@ pub struct TypeChecker<'x, 't, 'p> {
     /// properly represented in the declaration's uparams info.
     pub(crate) declar_info: Option<DeclarInfo<'t>>,
     pub(crate) nat_extension: bool,
+    pub(crate) ordered_declaration: bool,
 }
 
 impl<'p> ExportFile<'p> {
@@ -99,6 +100,7 @@ impl<'p> ExportFile<'p> {
         use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         let env = self.new_env(EnvLimit::ByName(d.info().name));
         let mut tc = TypeChecker::new(ctx, &env, bump, Some(*d.info()), cache);
+        tc.ordered_declaration = true;
         match d {
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => {
                 tc.check_def_like_v(d, *val);
@@ -273,6 +275,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         tc_cache: &'x mut TcCache<'t, 't>,
     ) -> Self {
         let nat_extension = dag.export_file.config.nat_extension;
+        dag.next_declaration();
         Self {
             ctx: dag,
             env,
@@ -280,6 +283,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             arena,
             declar_info,
             nat_extension,
+            ordered_declaration: false,
         }
     }
 

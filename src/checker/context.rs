@@ -58,6 +58,9 @@ impl<'p> ExportFile<'p> {
     }
 }
 
+const LEAF_BITS: u32 = 12;
+const LEAF_SLOTS: usize = 1 << LEAF_BITS;
+
 pub struct TcCtx<'t, 'p> {
     pub(crate) export_file: &'t ExportFile<'p>,
     pub(crate) arena: &'t Bump,
@@ -69,6 +72,9 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) subst_level_cache:
         FxHashMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
     pub(crate) leq_cache: FxHashMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
+    pub(crate) checked_closed: FxHashSet<(ExprPtr<'t>, LevelsPtr<'t>)>,
+    leaf_checked: Box<[(usize, u32)]>,
+    leaf_stamp: u32,
     pub(crate) subst_levels_cache:
         FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelsPtr<'t>>,
 }
@@ -86,8 +92,35 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             sig_computing: Reset::with_cap(SMALL),
             subst_level_cache: Reset::with_cap(SMALL),
             leq_cache: Reset::with_cap(SMALL),
+            checked_closed: Reset::with_cap(SMALL),
+            leaf_checked: vec![(0, 0); LEAF_SLOTS].into_boxed_slice(),
+            leaf_stamp: 1,
             subst_levels_cache: Reset::with_cap(SMALL),
         }
+    }
+
+    pub(crate) fn next_declaration(&mut self) {
+        self.leaf_stamp = self.leaf_stamp.wrapping_add(1);
+        if self.leaf_stamp == 0 {
+            self.leaf_checked.fill((0, 0));
+            self.leaf_stamp = 1;
+        }
+    }
+
+    #[inline]
+    fn leaf_slot(e: ExprPtr<'t>) -> usize {
+        (e.addr().wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - LEAF_BITS))
+            & (LEAF_SLOTS - 1)
+    }
+
+    #[inline]
+    pub(crate) fn leaf_checked(&self, e: ExprPtr<'t>) -> bool {
+        self.leaf_checked[Self::leaf_slot(e)] == (e.addr(), self.leaf_stamp)
+    }
+
+    #[inline]
+    pub(crate) fn mark_leaf_checked(&mut self, e: ExprPtr<'t>) {
+        self.leaf_checked[Self::leaf_slot(e)] = (e.addr(), self.leaf_stamp);
     }
 
     pub fn with_tc<F, A>(
