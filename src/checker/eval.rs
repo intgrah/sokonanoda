@@ -433,6 +433,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
             reject!("const_head_type: unknown const {name:?}")
         };
         let info = *d.info();
+        crate::outcome::ensure!(
+            info.uparams.len() == levels.len(),
+            "wrong number of universe levels for {name:?}"
+        );
         let v = self.eval_inst(info.ty, info.uparams, levels);
         self.tc_cache
             .const_head_type_cache
