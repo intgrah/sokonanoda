@@ -61,7 +61,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             Zero | Param(..) => return ptr,
             _ => {}
         }
-        if let Some(cached) = self.expr_cache.simplify.get(&ptr).copied() {
+        if let Some(cached) = self.expr_cache.simplify.get(&ptr) {
             return cached;
         }
         let result = match *ptr {
@@ -100,7 +100,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         ks: LevelsPtr<'t>,
         vs: LevelsPtr<'t>,
     ) -> LevelsPtr<'t> {
-        if let Some(cached) = self.subst_levels_cache.get(&(uparams, ks, vs)).copied() {
+        if let Some(cached) = self.subst_levels_cache.get(&(uparams, ks, vs)) {
             return cached;
         }
         let out = uparams
@@ -133,7 +133,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 level
             }
             Succ(..) | Max(..) | IMax(..) => {
-                if let Some(cached) = self.subst_level_cache.get(&(level, ks, vs)).copied() {
+                if let Some(cached) = self.subst_level_cache.get(&(level, ks, vs)) {
                     return cached;
                 }
                 let r = match *level {
@@ -252,7 +252,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if l == r {
             return true;
         }
-        if let Some(cached) = self.leq_cache.get(&(l, r)).copied() {
+        if let Some(cached) = self.leq_cache.get(&(l, r)) {
             return cached;
         }
         let l_prime = self.simplify(l);

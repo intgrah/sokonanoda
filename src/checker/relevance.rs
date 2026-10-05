@@ -118,10 +118,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return Sig::ALL_RELEVANT;
         }
         if let Some(s) = self.ctx.sig_cache.get(&(name, levels)) {
-            return *s;
+            return s;
         }
         let template = if let Some(t) = self.ctx.sig_templates.get(&name) {
-            *t
+            t
         } else {
             if !self.ctx.sig_computing.insert(name) {
                 return Sig::ALL_RELEVANT;

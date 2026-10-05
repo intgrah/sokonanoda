@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::cache::{Reset, SESSION, SMALL, TcCache, caches};
+use super::ptrmap::{PtrMap, PtrSet};
 use crate::checker::env::{DeclarMap, Env, EnvLimit};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
@@ -23,7 +24,7 @@ caches! {
         #[cap(SMALL)] inst: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
         #[cap(SMALL)] subst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
         #[cap(SMALL)] dsubst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[keep(FxHashMap::default())] simplify: FxHashMap<LevelPtr<'t>, LevelPtr<'t>>,
+        #[keep(Reset::with_cap(SMALL))] simplify: PtrMap<LevelPtr<'t>, LevelPtr<'t>>,
     }
     fn new();
 }
@@ -66,17 +67,17 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) arena: &'t Bump,
     pub(crate) dag: Dag<'t>,
     pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) sig_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
-    pub(crate) sig_templates: FxHashMap<NamePtr<'t>, crate::checker::relevance::SigTemplate<'t>>,
+    pub(crate) sig_cache: PtrMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
+    pub(crate) sig_templates: PtrMap<NamePtr<'t>, crate::checker::relevance::SigTemplate<'t>>,
     pub(crate) sig_computing: FxHashSet<NamePtr<'t>>,
     pub(crate) subst_level_cache:
-        FxHashMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
-    pub(crate) leq_cache: FxHashMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
-    pub(crate) checked_closed: FxHashSet<(ExprPtr<'t>, LevelsPtr<'t>)>,
+        PtrMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
+    pub(crate) leq_cache: PtrMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
+    pub(crate) checked_closed: PtrSet<(ExprPtr<'t>, LevelsPtr<'t>)>,
     leaf_checked: Box<[(usize, u32)]>,
     leaf_stamp: u32,
     pub(crate) subst_levels_cache:
-        FxHashMap<(LevelsPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelsPtr<'t>>,
+        PtrMap<(LevelsPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelsPtr<'t>>,
 }
 
 impl<'t, 'p: 't> TcCtx<'t, 'p> {
