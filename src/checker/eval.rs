@@ -110,7 +110,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return result;
                 }
 
-                let mut funs: Vec<ExprPtr<'t>> = Vec::with_capacity(count as usize);
+                let mut funs = smallvec::SmallVec::<[ExprPtr<'t>; SPINE]>::new();
                 funs.push(fun);
                 funs.push(f2);
                 let mut cur2 = a2;

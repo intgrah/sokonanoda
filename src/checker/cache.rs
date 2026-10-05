@@ -229,16 +229,20 @@ impl SessionBump {
         }
     }
 
-    pub(crate) fn allocated_bytes(&self) -> usize {
-        self.inner.allocated_bytes()
+    pub(crate) fn used_bytes(&self) -> usize {
+        self.inner.allocated_bytes() - self.inner.chunk_capacity()
     }
 
     pub(crate) unsafe fn get<'a>(&self) -> &'a bumpalo::Bump {
         unsafe { std::ptr::NonNull::from(&self.inner).as_ref() }
     }
 
-    pub(crate) fn reset(&mut self) {
-        self.inner = bumpalo::Bump::new();
+    pub(crate) fn reset(&mut self, keep: usize) {
+        if self.inner.allocated_bytes() > keep {
+            self.inner = bumpalo::Bump::new();
+        } else {
+            self.inner.reset();
+        }
     }
 }
 

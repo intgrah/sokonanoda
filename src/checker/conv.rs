@@ -4,7 +4,7 @@
 use crate::checker::env::{Declar, ReducibilityHint};
 use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{E, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
+use crate::checker::value::{E, Elim, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
@@ -26,6 +26,8 @@ fn is_cacheable(v: &Value<'_>) -> bool {
             }
     )
 }
+
+type ProbePairs<'t> = smallvec::SmallVec<[(V<'t>, V<'t>); 8]>;
 
 impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn def_eq_core(&mut self, x: ExprPtr<'t>, y: ExprPtr<'t>) -> bool {
@@ -474,9 +476,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn probe_pairs(sx: S<'t>, sy: S<'t>, sig: Sig, limit: u32) -> Option<Vec<(V<'t>, V<'t>)>> {
+    fn probe_pairs(sx: S<'t>, sy: S<'t>, sig: Sig, limit: u32) -> Option<ProbePairs<'t>> {
         let (mut a, mut b) = (sx, sy);
-        let mut elims = Vec::new();
+        let mut elims = smallvec::SmallVec::<[(u32, Elim<'t>, Elim<'t>); 8]>::new();
         loop {
             match (a, b) {
                 (Spine::Empty, Spine::Empty) => break,
@@ -495,7 +497,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 _ => return None,
             }
         }
-        let mut out = Vec::new();
+        let mut out = ProbePairs::new();
         for (idx, ea, eb) in elims.into_iter().rev() {
             match (ea.view(), eb.view()) {
                 (ElimView::App(va), ElimView::App(vb)) => {

@@ -573,8 +573,8 @@ impl<'a> Spine<'a> {
         ElimsRev(self)
     }
 
-    pub fn to_vec(&'a self) -> Vec<Elim<'a>> {
-        let mut out = Vec::with_capacity(self.len() as usize);
+    pub fn to_vec(&'a self) -> smallvec::SmallVec<[Elim<'a>; 16]> {
+        let mut out = smallvec::SmallVec::with_capacity(self.len() as usize);
         out.extend(self.elims_rev());
         out.reverse();
         out

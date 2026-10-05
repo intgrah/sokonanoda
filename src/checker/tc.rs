@@ -10,6 +10,7 @@ use crate::outcome::ensure;
 use crate::term::ptr::ExprPtr;
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
+const ARENA_KEEP: usize = 4 * SESSION_BUDGET;
 
 const CHUNK_SIZE: usize = 64;
 
@@ -183,11 +184,11 @@ impl<'p> ExportFile<'p> {
                                     self.check_inductive_declar(tctx, ind, ind_bump.get(), d);
                                     true
                                 });
-                                ind_bump.reset();
+                                ind_bump.reset(ARENA_KEEP);
                                 continue;
                             }
                             self.check_declar_with(tctx, cache, sbump.get(), d);
-                            if sbump.allocated_bytes() > SESSION_BUDGET {
+                            if sbump.used_bytes() > SESSION_BUDGET {
                                 pending = Some((i, end));
                                 return false;
                             }
@@ -195,7 +196,7 @@ impl<'p> ExportFile<'p> {
                     }
                 })
             };
-            sbump.reset();
+            sbump.reset(ARENA_KEEP);
             tctx.expr_cache.clear_session();
             if finished {
                 return;
