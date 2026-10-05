@@ -87,7 +87,23 @@ impl<'t> TypeChecker<'_, 't, '_> {
         self.mk_head_hc(RigidHead::Inductive(name, levels))
     }
 
+    #[inline(always)]
     pub(crate) fn infer_value(
+        &mut self,
+        flag: InferFlag,
+        depth: u32,
+        env: E<'t>,
+        ctx: C<'t>,
+        e: ExprPtr<'t>,
+    ) -> V<'t> {
+        if let &Var { dbj_idx, .. } = e.as_ref() {
+            return ctx.lookup(dbj_idx).expect("loose bvar in infer");
+        }
+        self.infer_nonvar(flag, depth, env, ctx, e)
+    }
+
+    #[inline(never)]
+    fn infer_nonvar(
         &mut self,
         flag: InferFlag,
         depth: u32,
@@ -220,6 +236,91 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     fn infer_app_v(
+        &mut self,
+        flag: InferFlag,
+        depth: u32,
+        env: E<'t>,
+        ctx: C<'t>,
+        e: ExprPtr<'t>,
+    ) -> V<'t> {
+        const SPINE: usize = 16;
+        let mut buf = [std::mem::MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
+        let mut n = 0;
+        let mut head = e;
+        while let &App { fun, arg, .. } = head.as_ref() {
+            if n == SPINE {
+                return self.infer_long_app_v(flag, depth, env, ctx, e);
+            }
+            buf[n].write(arg);
+            n += 1;
+            head = fun;
+        }
+        let rev_args = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
+        let mut fty = self.infer_value(flag, depth, env, ctx, head);
+        let mut telescope: Option<(E<'t>, ExprPtr<'t>)> = None;
+        for &arg in rev_args.iter().rev() {
+            if let Some((tenv, t)) = telescope
+                && let &Pi {
+                    binder_type, body, ..
+                } = t.as_ref()
+            {
+                if flag == Check {
+                    let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
+                    let domain = self.eval_arg(depth, tenv, binder_type);
+                    ensure!(
+                        self.conv_types_at(depth, domain, arg_ty),
+                        "app arg def_eq failed"
+                    );
+                }
+                let av = if crate::term::expr::ignores_binder(body) {
+                    self.placeholder()
+                } else {
+                    self.eval_arg(depth, env, arg)
+                };
+                telescope = Some((self.env_extend(tenv, av), body));
+                continue;
+            }
+            if let Some((tenv, t)) = telescope.take() {
+                fty = self.eval(depth, tenv, t);
+            }
+            let fty_f = self.force_all(depth, fty);
+            let (domain, body) = match fty_f {
+                Value::Pi { domain, body, .. } => (*domain, body),
+                _ => reject!("expected a pi type"),
+            };
+            if flag == Check {
+                let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
+                ensure!(
+                    self.conv_types_at(depth, domain, arg_ty),
+                    "app arg def_eq failed"
+                );
+            }
+            if body.ctx.is_some() {
+                if crate::term::expr::ignores_binder(body.body) {
+                    fty = self.apply_closure(depth, body, domain, Some(domain));
+                } else {
+                    let av = self.eval_arg(depth, env, arg);
+                    fty = self.apply_closure(depth, body, av, Some(domain));
+                }
+            } else if body.body.num_loose_bvars() == 0 {
+                telescope = Some((body.env, body.body));
+            } else {
+                let av = if crate::term::expr::ignores_binder(body.body) {
+                    self.placeholder()
+                } else {
+                    self.eval_arg(depth, env, arg)
+                };
+                telescope = Some((self.env_extend(body.env, av), body.body));
+            }
+        }
+        if let Some((tenv, t)) = telescope {
+            fty = self.eval(depth, tenv, t);
+        }
+        fty
+    }
+
+    #[inline(never)]
+    fn infer_long_app_v(
         &mut self,
         flag: InferFlag,
         depth: u32,

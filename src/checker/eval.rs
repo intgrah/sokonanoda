@@ -227,8 +227,17 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
+    pub(crate) fn placeholder(&mut self) -> V<'t> {
+        if let Some(v) = self.tc_cache.placeholder {
+            return v;
+        }
+        let v = self.mk_sort_hc(self.ctx.zero());
+        self.tc_cache.placeholder = Some(v);
+        v
+    }
+
     #[inline(always)]
-    fn eval_arg(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
+    pub(crate) fn eval_arg(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
         match e.as_ref() {
             &Expr::Var { dbj_idx, .. } => env.lookup(dbj_idx).expect("eval: loose bvar"),
             _ => self.eval(depth, env, e),

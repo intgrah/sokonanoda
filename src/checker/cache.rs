@@ -172,6 +172,7 @@ caches! {
         #[session(0)] probe_depth: u32,
         #[session(0)] probe_budget: u32,
         #[session(false)] probe_exhausted: bool,
+        #[session(None)] placeholder: Option<V<'a>>,
         #[cap(SESSION_SMALL)] closed_eval_cache: FxHashMap<ExprPtr<'t>, V<'a>>,
         #[cap(SESSION_SMALL)]
         closed_lsub_eval_cache: FxHashMap<(ExprPtr<'t>, Id<'a, LevelSub<'a>>), V<'a>>,
