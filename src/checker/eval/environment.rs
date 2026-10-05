@@ -343,10 +343,21 @@ impl<'t> TypeChecker<'_, 't, '_> {
                             .wrapping_add(Id::of(*v).addr() as u64);
                         out_mask |= 1u64 << consumed;
                         n += 1;
+                        rem >>= 1;
+                        consumed += 1;
+                        cur = parent;
+                        continue;
                     }
-                    rem >>= 1;
-                    consumed += 1;
-                    cur = parent;
+                    let unrequested = rem.trailing_zeros().min(value::NEAR - consumed);
+                    let mut hops = 0;
+                    while hops < unrequested
+                        && let value::Env::Cons { parent, .. } = cur
+                    {
+                        cur = parent;
+                        hops += 1;
+                    }
+                    rem >>= hops;
+                    consumed += hops;
                 }
             }
         }
