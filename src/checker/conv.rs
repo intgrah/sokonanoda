@@ -53,8 +53,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
         r
     }
 
+    #[inline]
     pub(crate) fn conv_types_at(&mut self, depth: u32, a: V<'t>, b: V<'t>) -> bool {
-        self.unbudgeted(|s| s.unify::<true>(depth, a, b))
+        std::ptr::eq(a, b) || self.unbudgeted(|s| s.unify_general::<true>(depth, a, b))
     }
 
     pub(crate) fn def_eq_at(&mut self, depth: u32, vx: V<'t>, vy: V<'t>) -> bool {
