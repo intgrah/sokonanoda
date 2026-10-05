@@ -48,6 +48,7 @@ impl<'p> ExportFile<'p> {
         Env::new(&self.declars, env_limit)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_ctx<F, A>(&self, f: F) -> A
     where
         F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t Bump) -> A,
