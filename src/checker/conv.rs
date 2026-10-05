@@ -800,7 +800,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     pub(crate) fn is_prop_type(&mut self, depth: u32, t: V<'t>) -> bool {
         let level = self.level_of_type(depth, t).expect("expected a sort");
-        self.ctx.is_zero(level)
+        level.is_always_zero()
     }
 
     fn try_proof_irrel_lam(&mut self, depth: u32, x: V<'t>, y: V<'t>) -> bool {

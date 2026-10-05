@@ -3,6 +3,7 @@
 
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{S, Value};
+use crate::term::level::Level;
 use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
 
 pub(crate) const MAX_TRACKED: u32 = 64;
@@ -61,6 +62,56 @@ pub(crate) fn app_prefix_len(spine: S<'_>) -> u32 {
         .map_or(len, |(_, i)| i)
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SigTemplate<'t> {
+    uparams: LevelsPtr<'t>,
+    dom: &'t [Option<LevelPtr<'t>>],
+    result: Option<LevelPtr<'t>>,
+    arg_known: u64,
+    absent_arg: u64,
+    result_span: u64,
+}
+
+fn zero_under<'t>(level: LevelPtr<'t>, params: &[LevelPtr<'t>], args: &[LevelPtr<'t>]) -> bool {
+    match *level {
+        Level::Zero => true,
+        Level::Succ(..) => false,
+        Level::Param(..) => params
+            .iter()
+            .position(|p| *p == level)
+            .is_some_and(|i| args[i].is_always_zero()),
+        Level::Max(l, r, ..) => zero_under(l, params, args) && zero_under(r, params, args),
+        Level::IMax(_, r, ..) => zero_under(r, params, args),
+    }
+}
+
+impl<'t> SigTemplate<'t> {
+    fn at(&self, levels: LevelsPtr<'t>) -> Sig {
+        let params = self.uparams.as_ref();
+        let args = levels.as_ref();
+        let mut prop_arg = 0u64;
+        for (i, l) in self.dom.iter().enumerate() {
+            if let Some(l) = *l
+                && zero_under(l, params, args)
+            {
+                prop_arg |= 1u64 << i;
+            }
+        }
+        let prop_result = match self.result {
+            Some(l) if zero_under(l, params, args) => self.result_span,
+            _ => 0,
+        };
+        Sig {
+            arity: u8::try_from(self.dom.len()).expect("telescope arity exceeds the tracked bound"),
+            prop_arg,
+            arg_known: self.arg_known,
+            absent_arg: self.absent_arg,
+            prop_result,
+            result_known: self.result_span,
+        }
+    }
+}
+
 impl<'t> TypeChecker<'_, 't, '_> {
     pub(crate) fn sig_of(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> Sig {
         if self.env.has_temp_ext() {
@@ -69,18 +120,33 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if let Some(s) = self.ctx.sig_cache.get(&(name, levels)) {
             return *s;
         }
-        if !self.ctx.sig_computing.insert((name, levels)) {
-            return Sig::ALL_RELEVANT;
-        }
-        let s = self.sig_compute(name, levels);
-        self.ctx.sig_computing.remove(&(name, levels));
+        let template = if let Some(t) = self.ctx.sig_templates.get(&name) {
+            *t
+        } else {
+            if !self.ctx.sig_computing.insert(name) {
+                return Sig::ALL_RELEVANT;
+            }
+            let t = self.sig_template(name);
+            self.ctx.sig_computing.remove(&name);
+            self.ctx.sig_templates.insert(name, t);
+            t
+        };
+        crate::outcome::ensure!(
+            template.uparams.len() == levels.len(),
+            "wrong number of universe levels for {name:?}"
+        );
+        let s = template.at(levels);
         self.ctx.sig_cache.insert((name, levels), s);
         s
     }
 
-    fn sig_compute(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> Sig {
+    fn sig_template(&mut self, name: NamePtr<'t>) -> SigTemplate<'t> {
+        let Some(d) = self.env.get_declar(name) else {
+            crate::outcome::reject!("sig_template: unknown const {name:?}")
+        };
+        let uparams = d.info().uparams;
         let mut dom: Vec<Option<LevelPtr<'t>>> = Vec::new();
-        let mut cur = self.const_head_type(name, levels);
+        let mut cur = self.const_head_type(name, uparams);
         let mut depth = 0u32;
         let terminal = loop {
             let cur_f = self.force_all(depth, cur);
@@ -98,47 +164,32 @@ impl<'t> TypeChecker<'_, 't, '_> {
         };
 
         let n = dom.len();
-        let mut prop_arg = 0u64;
-        let mut arg_known = 0u64;
-        for (i, l) in dom.iter().enumerate() {
-            if let Some(l) = *l {
-                arg_known |= 1u64 << i;
-                if self.ctx.is_zero(l) {
-                    prop_arg |= 1u64 << i;
-                }
-            }
-        }
+        let arg_known = dom
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.is_some())
+            .fold(0u64, |m, (i, _)| m | (1u64 << i));
 
-        let mut prop_result = 0u64;
-        let mut result_known = 0u64;
-        if let Some(term) = terminal
-            && let Some(sb) = self.level_of_type(depth, term)
-        {
-            let mut r = sb;
-            if n < MAX_TRACKED as usize {
-                result_known |= 1u64 << n;
-                if self.ctx.is_zero(r) {
-                    prop_result |= 1u64 << n;
-                }
-            }
-            for k in (0..n).rev() {
-                let Some(s) = dom[k] else { break };
-                let im = self.ctx.imax(s, r);
-                r = self.ctx.simplify(im);
-                result_known |= 1u64 << k;
-                if self.ctx.is_zero(r) {
-                    prop_result |= 1u64 << k;
-                }
-            }
-        }
+        let result = terminal.and_then(|term| self.level_of_type(depth, term));
+        let result_span = if result.is_some() {
+            let known_from = dom.iter().rposition(Option::is_none).map_or(0, |k| k + 1);
+            let below = u32::try_from(known_from)
+                .ok()
+                .and_then(|k| 1u64.checked_shl(k))
+                .map_or(u64::MAX, |bit| bit - 1);
+            let upto = n.min(MAX_TRACKED as usize - 1);
+            (u64::MAX >> (63 - upto)) & !below
+        } else {
+            0
+        };
 
-        Sig {
-            arity: u8::try_from(n).expect("telescope arity exceeds the tracked bound"),
-            prop_arg,
+        SigTemplate {
+            uparams,
+            dom: self.ctx.arena.alloc_slice_copy(&dom),
+            result,
             arg_known,
             absent_arg: self.absent_args(name),
-            prop_result,
-            result_known,
+            result_span,
         }
     }
 

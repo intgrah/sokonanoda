@@ -46,7 +46,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let block_codom = self.ensure_sort_v(depth, cur);
         let is_nonzero = self.ctx.is_nonzero(block_codom);
-        let is_zero = self.ctx.is_zero(block_codom);
+        let is_zero = block_codom.is_always_zero();
         let ind_const = self.ctx.mk_const(ind_name, uparams);
 
         st.local_indices.push(indices);

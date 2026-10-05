@@ -57,7 +57,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
-        match *ptr {
+        match *ptr.level_succs().0 {
             Zero | Param(..) => return ptr,
             _ => {}
         }
@@ -78,7 +78,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             IMax(l, r, ..) => {
                 let l_simp = self.simplify(l);
                 let r_simp = self.simplify(r);
-                if self.is_zero(l_simp) || self.is_one(l_simp) {
+                if l_simp.is_always_zero() || l_simp.is_always_one() {
                     r_simp
                 } else {
                     match *r_simp {
@@ -281,19 +281,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             .all(|(x, y)| self.eq_antisymm(x, y))
     }
 
-    fn is_one(&mut self, l: LevelPtr<'t>) -> bool {
-        match *l {
-            Level::Succ(pred, _) => self.is_zero(pred),
-            _ => false,
-        }
-    }
-
-    /// l <= 0 -> `is_zero(l)`
-    pub fn is_zero(&mut self, level: LevelPtr<'t>) -> bool {
-        let zero = self.zero();
-        self.leq(level, zero)
-    }
-
     // 1 <= level -> is_nonzero(level)
     pub fn is_nonzero(&mut self, level: LevelPtr<'t>) -> bool {
         let zero = self.zero();
@@ -303,6 +290,22 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 }
 
 impl<'t> LevelPtr<'t> {
+    pub(crate) fn is_always_zero(self) -> bool {
+        match *self {
+            Zero => true,
+            Succ(..) | Param(..) => false,
+            Max(l, r, ..) => l.is_always_zero() && r.is_always_zero(),
+            IMax(_, r, ..) => r.is_always_zero(),
+        }
+    }
+
+    fn is_always_one(self) -> bool {
+        match *self {
+            Succ(pred, ..) => pred.is_always_zero(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn level_succs(mut self) -> (LevelPtr<'t>, usize) {
         let mut num_succs = 0usize;
         while let Succ(pred, ..) = *self {

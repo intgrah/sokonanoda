@@ -451,7 +451,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let ty_ty = self.infer_value(Check, 0, empty_env, empty_ctx, info.ty);
         let sort = self.ensure_sort_v(0, ty_ty);
         if let Declar::Theorem { .. } = d {
-            ensure!(self.ctx.is_zero(sort), "theorem type must be Prop (sort 0)");
+            ensure!(sort.is_always_zero(), "theorem type must be Prop (sort 0)");
         }
     }
 

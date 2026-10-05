@@ -64,7 +64,8 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) dag: Dag<'t>,
     pub(crate) expr_cache: ExprCache<'t>,
     pub(crate) sig_cache: FxHashMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
-    pub(crate) sig_computing: FxHashSet<(NamePtr<'t>, LevelsPtr<'t>)>,
+    pub(crate) sig_templates: FxHashMap<NamePtr<'t>, crate::checker::relevance::SigTemplate<'t>>,
+    pub(crate) sig_computing: FxHashSet<NamePtr<'t>>,
     pub(crate) subst_level_cache:
         FxHashMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
     pub(crate) leq_cache: FxHashMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
@@ -81,6 +82,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             dag,
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
+            sig_templates: Reset::with_cap(SMALL),
             sig_computing: Reset::with_cap(SMALL),
             subst_level_cache: Reset::with_cap(SMALL),
             leq_cache: Reset::with_cap(SMALL),
