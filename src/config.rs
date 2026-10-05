@@ -7,7 +7,6 @@ use crate::outcome::CheckError;
 use bumpalo::Bump;
 use std::error::Error;
 use std::fs::OpenOptions;
-use std::io::BufReader;
 use std::path::PathBuf;
 
 const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
@@ -121,8 +120,7 @@ impl Config {
                 Err(e) => Err(Box::from(format!("Failed to open export file: {e:?}"))),
             }
         } else if self.use_stdin {
-            let reader = BufReader::new(std::io::stdin());
-            parse_export_file(arena, reader, self)
+            parse_export_file(arena, std::io::stdin(), self)
         } else {
             Err("must provide an export file path or enable stdin".into())
         }

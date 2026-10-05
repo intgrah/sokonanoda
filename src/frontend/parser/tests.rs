@@ -14,7 +14,7 @@ fn config() -> Config {
 #[test]
 fn ignore_binder_metadata_in_both_parser_paths() {
     let arena = Bump::new();
-    let mut parser = Parser::new(&arena, &b""[..], config());
+    let mut parser = Parser::new(&arena, config());
     parser.do_sort(BackRef::Ie(0), 0);
     parser.do_bvar(BackRef::Ie(1), 0).unwrap();
     parser.do_bvar(BackRef::Ie(2), 1).unwrap();
@@ -86,7 +86,7 @@ fn ignore_binder_metadata_in_both_parser_paths() {
 #[test]
 fn reject_undefined_binder_type() {
     let arena = Bump::new();
-    let mut parser = Parser::new(&arena, &b""[..], config());
+    let mut parser = Parser::new(&arena, config());
     parser.do_sort(BackRef::Ie(0), 0);
     let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         parser

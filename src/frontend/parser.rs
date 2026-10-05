@@ -20,8 +20,9 @@ use serde::{Deserialize, Deserializer};
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
-use std::io::BufRead;
+use std::io::Read;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 
 fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     const MIN_SEMVER: semver::Version = semver::Version::new(3, 1, 0);
@@ -40,8 +41,7 @@ fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     }
 }
 
-pub struct Parser<'a, R: BufRead> {
-    buf_reader: R,
+pub struct Parser<'a> {
     arena: &'a Bump,
     dag: Dag<'a>,
     anon: NamePtr<'a>,
@@ -338,37 +338,88 @@ pub(crate) fn parse_export_mapped<'p>(
     input: &[u8],
     config: Config,
 ) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
-    let mut parser = Parser::with_input_len(arena, std::io::empty(), config, input.len());
+    let mut parser = Parser::with_input_len(arena, config, input.len());
     parser.run_over(input)?;
     Ok(parser.finish())
 }
 
 const READ_CHUNK: usize = 1 << 22;
+const READ_AHEAD: usize = 2;
 
-pub(crate) fn parse_export_file<R: BufRead>(
-    arena: &Bump,
-    buf_reader: R,
-    config: Config,
-) -> Result<(crate::checker::context::ExportFile<'_>, Vec<String>), Box<dyn Error>> {
-    let mut parser = Parser::new(arena, buf_reader, config);
-    let mut buf: Vec<u8> = Vec::with_capacity(2 * READ_CHUNK);
+struct Block {
+    bytes: Vec<u8>,
+    len: usize,
+}
+
+impl Block {
+    fn new() -> Self {
+        Block {
+            bytes: vec![0; 2 * READ_CHUNK],
+            len: 0,
+        }
+    }
+}
+
+fn read_blocks<R: Read>(
+    mut reader: R,
+    blocks: &SyncSender<std::io::Result<Block>>,
+    spent: &Receiver<Block>,
+) {
+    let mut pending = Block::new();
     loop {
-        let filled = buf.len();
-        buf.resize(filled + READ_CHUNK, 0);
-        let read = parser.buf_reader.read(&mut buf[filled..])?;
-        buf.truncate(filled + read);
+        if pending.bytes.len() - pending.len < READ_CHUNK {
+            pending.bytes.resize(pending.len + READ_CHUNK, 0);
+        }
+        let read = match reader.read(&mut pending.bytes[pending.len..pending.len + READ_CHUNK]) {
+            Ok(read) => read,
+            Err(e) => {
+                let _ = blocks.send(Err(e));
+                return;
+            }
+        };
+        pending.len += read;
         if read == 0 {
             break;
         }
-        if let Some(last) = buf.iter().rposition(|b| *b == b'\n') {
-            parser.run_over(&buf[..=last])?;
-            buf.drain(..=last);
+        let filled = &pending.bytes[..pending.len];
+        if let Some(last) = filled.iter().rposition(|b| *b == b'\n') {
+            let tail = &filled[last + 1..];
+            let mut next = spent.try_recv().unwrap_or_else(|_| Block::new());
+            if next.bytes.len() < tail.len() {
+                next.bytes.resize(tail.len(), 0);
+            }
+            next.bytes[..tail.len()].copy_from_slice(tail);
+            next.len = tail.len();
+            pending.len = last + 1;
+            if blocks
+                .send(Ok(std::mem::replace(&mut pending, next)))
+                .is_err()
+            {
+                return;
+            }
         }
     }
-    if !buf.is_empty() {
-        parser.run_over(&buf)?;
+    if pending.len != 0 {
+        let _ = blocks.send(Ok(pending));
     }
-    drop(buf);
+}
+
+pub(crate) fn parse_export_file<R: Read + Send + 'static>(
+    arena: &Bump,
+    reader: R,
+    config: Config,
+) -> Result<(crate::checker::context::ExportFile<'_>, Vec<String>), Box<dyn Error>> {
+    let mut parser = Parser::new(arena, config);
+    let (blocks_tx, blocks_rx) = sync_channel(READ_AHEAD);
+    let (spent_tx, spent_rx) = channel();
+    std::thread::Builder::new()
+        .name("reader".to_owned())
+        .spawn(move || read_blocks(reader, &blocks_tx, &spent_rx))?;
+    for block in blocks_rx {
+        let block = block?;
+        parser.run_over(&block.bytes[..block.len])?;
+        let _ = spent_tx.send(block);
+    }
     Ok(parser.finish())
 }
 
@@ -676,17 +727,12 @@ impl From<Fallback> for FastError {
     }
 }
 
-impl<'a, R: BufRead> Parser<'a, R> {
-    pub fn new(arena: &'a Bump, buf_reader: R, config: Config) -> Self {
-        Self::with_input_len(arena, buf_reader, config, 0)
+impl<'a> Parser<'a> {
+    pub fn new(arena: &'a Bump, config: Config) -> Self {
+        Self::with_input_len(arena, config, 0)
     }
 
-    pub fn with_input_len(
-        arena: &'a Bump,
-        buf_reader: R,
-        config: Config,
-        input_len: usize,
-    ) -> Self {
+    pub fn with_input_len(arena: &'a Bump, config: Config, input_len: usize) -> Self {
         let mut dag = Dag::new(&config, input_len);
         let anon = NamePtr::global(dag.names.intern(arena, Name::Anon));
         let zero = LevelPtr::global(dag.levels.intern(arena, Level::Zero));
@@ -695,7 +741,6 @@ impl<'a, R: BufRead> Parser<'a, R> {
         let mut levels_by_idx = Vec::with_capacity(input_len / 1024 + 1);
         levels_by_idx.push(Some(zero));
         Self {
-            buf_reader,
             arena,
             dag,
             anon,
