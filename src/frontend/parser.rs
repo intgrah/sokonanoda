@@ -1573,6 +1573,10 @@ impl<'a> Parser<'a> {
             } => {
                 let block_start = self.declars.len();
                 let block_size = ind_vals.len() + ctor_vals.len() + rec_vals.len();
+                let listed_ctors: Vec<(u32, u32)> = ind_vals
+                    .iter()
+                    .flat_map(|ind| ind.ctors.iter().map(move |&ctor| (ctor, ind.name)))
+                    .collect();
                 for IndInfo {
                     name,
                     ty,
@@ -1622,6 +1626,11 @@ impl<'a> Parser<'a> {
                 {
                     if is_unsafe {
                         return decline("unsafe declarations are not supported");
+                    }
+                    if !listed_ctors.contains(&(name, induct)) {
+                        return Err(
+                            "constructor is not listed by its inductive type in this block".into(),
+                        );
                     }
                     let name = self.get_name_ptr(name);
                     let ty = self.get_expr_ptr(ty);
