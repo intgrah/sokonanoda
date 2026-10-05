@@ -71,11 +71,6 @@ pub struct TypeChecker<'x, 't, 'p> {
 }
 
 impl<'p> ExportFile<'p> {
-    /// The entry point for checking a declaration `d`.
-    pub fn check_declar(&self, d: &Declar<'p>) {
-        self.with_ctx(|ctx, cache, bump| self.check_declar_with(ctx, cache, bump, d));
-    }
-
     fn check_declar_with<'t>(
         &'t self,
         ctx: &mut TcCtx<'t, 'p>,

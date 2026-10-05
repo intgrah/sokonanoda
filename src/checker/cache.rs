@@ -7,7 +7,6 @@ use crate::checker::value::{self, C, Ctx, E, Env, KeyTag, LevelSub, S, Spine, V,
 use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use bumpalo::Bump;
-use hashbrown::HashTable;
 use rustc_hash::FxBuildHasher;
 use std::cell::OnceCell;
 
@@ -53,22 +52,6 @@ impl<K> Reset for FxHashSet<K> {
         self.clear();
         if self.capacity() > KEEP_CAP.max(4 * used) {
             *self = FxHashSet::with_capacity_and_hasher(KEEP_CAP.max(2 * used), FxBuildHasher);
-        }
-    }
-}
-
-impl<T> Reset for HashTable<T> {
-    fn with_cap(cap: usize) -> Self {
-        HashTable::with_capacity(cap)
-    }
-    fn reset(&mut self) {
-        self.clear();
-    }
-    fn reset_shrink(&mut self) {
-        let used = self.len();
-        self.clear();
-        if self.capacity() > KEEP_CAP.max(4 * used) {
-            self.shrink_to(KEEP_CAP.max(2 * used), |_| 0);
         }
     }
 }
