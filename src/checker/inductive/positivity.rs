@@ -110,11 +110,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let nlb = clo.body.num_loose_bvars();
         let mask = clo.body.as_ref().fv_mask();
-        for idx in 0..nlb {
-            if idx < 64 && (mask >> idx) & 1 == 0 {
+        for idx in 1..nlb {
+            if (mask >> idx.min(63)) & 1 == 0 {
                 continue;
             }
-            if let Some(slot) = clo.env.lookup(idx)
+            if let Some(slot) = clo.env.lookup(idx - 1)
                 && self.value_has_ind_occ(depth, slot, haystack)
             {
                 return true;
