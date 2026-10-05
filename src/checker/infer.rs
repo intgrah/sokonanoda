@@ -145,7 +145,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
         let key = (Id::of(self.key_env(env, e)), e);
         let scope = self.uparam_scope();
-        if let Some(cached) = self.tc_cache.type_cache.get(&key).copied()
+        if let Some(cached) = self.tc_cache.type_cache.get(&key)
             && (flag == InferOnly || cached.checked_under == scope)
         {
             return cached.result;

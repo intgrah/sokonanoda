@@ -10,6 +10,7 @@ pub(crate) mod eval;
 pub(crate) mod inductive;
 pub(crate) mod infer;
 pub(crate) mod nat;
+pub(crate) mod ptrmap;
 pub(crate) mod quot;
 pub(crate) mod quote;
 pub(crate) mod relevance;

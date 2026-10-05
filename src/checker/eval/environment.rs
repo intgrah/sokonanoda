@@ -114,35 +114,33 @@ impl<'t> TypeChecker<'_, 't, '_> {
         slots: &[V<'t>],
         lsub: Option<&'t value::LevelSub<'t>>,
     ) -> E<'t> {
-        let lsub_id = lsub.map(Id::of);
-        if let Some(e) = self.tc_cache.frames.find(hash, |e: &E<'t>| match e {
-            value::Env::Framed {
+        let found = self.tc_cache.frames.find(hash);
+        if let Ok(e) = found
+            && let value::Env::Framed {
                 mask: m,
                 slots: sl,
                 lsub: l,
                 ..
-            } => {
-                *m == mask
-                    && l.map(Id::of) == lsub_id
-                    && sl.len() == slots.len()
-                    && sl.iter().zip(slots).all(|(a, b)| std::ptr::eq(*a, *b))
-            }
-            _ => false,
-        }) {
+            } = e
+            && *m == mask
+            && l.map(Id::of) == lsub.map(Id::of)
+            && sl.len() == slots.len()
+            && sl.iter().zip(slots).all(|(a, b)| std::ptr::eq(*a, *b))
+        {
             return e;
         }
         let len = 64 - mask.leading_zeros();
         let e: E<'t> = self.arena.alloc(value::Env::Framed {
             mask,
-            slots: self.arena.alloc_slice_copy(slots),
+            slots: copy_slots(self.arena, slots),
             lsub,
             hash,
             len,
             prune: std::cell::Cell::new((0, None)),
         });
-        self.tc_cache
-            .frames
-            .insert_unique(hash, e, |e| e.get_hash());
+        if let Err(vacant) = found {
+            self.tc_cache.frames.insert_at(vacant, hash, e);
+        }
         e
     }
 
@@ -429,19 +427,18 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let hash = indices.iter().fold(slots_hash, |h, i| {
                     h.wrapping_mul(GOLDEN).wrapping_add(u64::from(*i))
                 });
-                if let Some(r) = self.tc_cache.frames.find(hash, |r| match r {
-                    value::Env::WideFramed { data, lsub: ls, .. } => {
-                        data.indices == indices.as_slice()
-                            && ls.map(Id::of) == lsub.map(Id::of)
-                            && data
-                                .slots
-                                .iter()
-                                .zip(&slots)
-                                .all(|(a, b)| std::ptr::eq(*a, *b))
-                    }
-                    _ => false,
-                }) {
-                    *r
+                let found = self.tc_cache.frames.find(hash);
+                if let Ok(r) = found
+                    && let value::Env::WideFramed { data, lsub: ls, .. } = r
+                    && data.indices == indices.as_slice()
+                    && ls.map(Id::of) == lsub.map(Id::of)
+                    && data
+                        .slots
+                        .iter()
+                        .zip(&slots)
+                        .all(|(a, b)| std::ptr::eq(*a, *b))
+                {
+                    r
                 } else {
                     let data = self.arena.alloc(value::WideFrame {
                         indices: self.arena.alloc_slice_copy(&indices),
@@ -454,9 +451,9 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         len: u32::from(last) + 1,
                         prune: std::cell::Cell::new((0, None)),
                     });
-                    self.tc_cache
-                        .frames
-                        .insert_unique(hash, r, |r| r.get_hash());
+                    if let Err(vacant) = found {
+                        self.tc_cache.frames.insert_at(vacant, hash, r);
+                    }
                     r
                 }
             }
@@ -585,6 +582,26 @@ impl<'t> TypeChecker<'_, 't, '_> {
             v.mark_canonical();
             v
         })
+    }
+}
+
+#[inline(always)]
+fn copy_slots<'t>(arena: &'t bumpalo::Bump, slots: &[V<'t>]) -> &'t [V<'t>] {
+    #[inline(always)]
+    fn fixed<'t, const N: usize>(arena: &'t bumpalo::Bump, slots: &[V<'t>]) -> &'t [V<'t>] {
+        let array: [V<'t>; N] = slots.try_into().expect("slot count matches the arm");
+        arena.alloc(array)
+    }
+    match slots.len() {
+        1 => fixed::<1>(arena, slots),
+        2 => fixed::<2>(arena, slots),
+        3 => fixed::<3>(arena, slots),
+        4 => fixed::<4>(arena, slots),
+        5 => fixed::<5>(arena, slots),
+        6 => fixed::<6>(arena, slots),
+        7 => fixed::<7>(arena, slots),
+        8 => fixed::<8>(arena, slots),
+        _ => arena.alloc_slice_copy(slots),
     }
 }
 

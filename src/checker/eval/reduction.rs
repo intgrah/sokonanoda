@@ -432,7 +432,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             return None;
         }
         if let Some(cached) = self.tc_cache.iota_cache.get(&v_key) {
-            return Some(*cached);
+            return Some(cached);
         }
         let result = match v {
             Value::Rigid {
@@ -470,7 +470,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         levels: LevelsPtr<'t>,
     ) -> Option<V<'t>> {
         if let Some(cached) = self.tc_cache.unfold_const_cache.get(&(name, levels)) {
-            return Some(*cached);
+            return Some(cached);
         }
         let (def_uparams, def_value) = self.declar_val(name)?;
         if levels.as_ref().len() != def_uparams.as_ref().len() {

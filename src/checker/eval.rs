@@ -399,12 +399,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         name: NamePtr<'t>,
         levels: LevelsPtr<'t>,
     ) -> Option<LevelPtr<'t>> {
-        if let Some(cached) = self
-            .tc_cache
-            .const_result_level_cache
-            .get(&(name, levels))
-            .copied()
-        {
+        if let Some(cached) = self.tc_cache.const_result_level_cache.get(&(name, levels)) {
             return Some(cached);
         }
         let head_ty = self.const_head_type(name, levels);
