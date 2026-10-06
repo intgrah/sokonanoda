@@ -54,6 +54,13 @@ impl Word for LevelsPtr<'_> {
     }
 }
 
+impl Word for u16 {
+    #[inline(always)]
+    fn word(self) -> u64 {
+        u64::from(self)
+    }
+}
+
 impl Word for u32 {
     #[inline(always)]
     fn word(self) -> u64 {
@@ -203,6 +210,10 @@ impl<K: Key, V: Copy> PtrMap<K, V> {
         if self.len * 8 > self.tags.len() * 6 {
             self.grow();
         }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        Reset::reset(self);
     }
 
     #[inline]

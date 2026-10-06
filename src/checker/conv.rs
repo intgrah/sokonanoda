@@ -6,6 +6,7 @@ use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{E, Elim, ElimView, Env, RigidHead, S, Spine, UnfoldHead, V, Value};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
+use std::ptr;
 fn rigid_head_eq<'a>(hx: RigidHead<'a>, hy: RigidHead<'a>) -> bool {
     match (hx, hy) {
         (RigidHead::BVar(a, _), RigidHead::BVar(b, _)) => a == b,
@@ -55,7 +56,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     #[inline]
     pub(crate) fn conv_types_at(&mut self, depth: u32, a: V<'t>, b: V<'t>) -> bool {
-        std::ptr::eq(a, b) || self.unbudgeted(|s| s.unify_general::<true>(depth, a, b))
+        ptr::eq(a, b) || self.unbudgeted(|s| s.unify_general::<true>(depth, a, b))
     }
 
     pub(crate) fn def_eq_at(&mut self, depth: u32, vx: V<'t>, vy: V<'t>) -> bool {

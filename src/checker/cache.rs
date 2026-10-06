@@ -4,10 +4,9 @@
 use crate::checker::infer::CachedType;
 use crate::checker::ptrmap::{PtrMap, PtrSet};
 use crate::checker::value::{self, C, Ctx, E, Env, KeyTag, LevelSub, S, Spine, V, Value};
-use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
+use crate::term::hash::GOLDEN;
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use bumpalo::Bump;
-use rustc_hash::FxBuildHasher;
 use std::cell::OnceCell;
 
 pub(crate) const PRUNE_DM_LEN: usize = 1 << 10;
@@ -16,44 +15,11 @@ pub(crate) const PRUNE_DM_SHIFT: u32 = 64 - 10;
 pub(crate) const SMALL: usize = 14;
 pub(crate) const SESSION_SMALL: usize = 1 << 12;
 pub(crate) const SESSION: usize = 1 << 13;
-const KEEP_CAP: usize = 1 << 15;
 
 pub(crate) trait Reset {
     fn with_cap(cap: usize) -> Self;
     fn reset(&mut self);
     fn reset_shrink(&mut self);
-}
-
-impl<K, V> Reset for FxHashMap<K, V> {
-    fn with_cap(cap: usize) -> Self {
-        FxHashMap::with_capacity_and_hasher(cap, FxBuildHasher)
-    }
-    fn reset(&mut self) {
-        self.clear();
-    }
-    fn reset_shrink(&mut self) {
-        let used = self.len();
-        self.clear();
-        if self.capacity() > KEEP_CAP.max(4 * used) {
-            *self = FxHashMap::with_capacity_and_hasher(KEEP_CAP.max(2 * used), FxBuildHasher);
-        }
-    }
-}
-
-impl<K> Reset for FxHashSet<K> {
-    fn with_cap(cap: usize) -> Self {
-        FxHashSet::with_capacity_and_hasher(cap, FxBuildHasher)
-    }
-    fn reset(&mut self) {
-        self.clear();
-    }
-    fn reset_shrink(&mut self) {
-        let used = self.len();
-        self.clear();
-        if self.capacity() > KEEP_CAP.max(4 * used) {
-            *self = FxHashSet::with_capacity_and_hasher(KEEP_CAP.max(2 * used), FxBuildHasher);
-        }
-    }
 }
 
 impl<T: Copy + Default, const N: usize> Reset for Box<[T; N]> {
@@ -98,14 +64,12 @@ macro_rules! caches {
                 }
             }
 
-            #[allow(dead_code)]
             pub(crate) fn new_small($($param: $pty),*) -> Self {
                 Self {
                     $($f: caches!(@init_small $kind($arg)),)*
                 }
             }
 
-            #[allow(dead_code)]
             pub(crate) fn clear(&mut self) {
                 $(caches!(@clear self.$f, $kind($arg));)*
             }
@@ -116,7 +80,6 @@ macro_rules! caches {
         }
     };
 }
-pub(crate) use caches;
 
 macro_rules! memo {
     ($map:expr, $key:expr, $compute:expr) => {{
@@ -164,7 +127,7 @@ caches! {
         #[cap(SESSION_SMALL)] closed_eval_cache: PtrMap<ExprPtr<'t>, V<'a>>,
         #[cap(SESSION_SMALL)]
         closed_lsub_eval_cache: PtrMap<(ExprPtr<'t>, Id<'a, LevelSub<'a>>), V<'a>>,
-        #[keep(FxHashMap::default())] whnf_store: FxHashMap<u64, (u128, ExprPtr<'t>)>,
+        #[keep(Reset::with_cap(SMALL))] whnf_store: PtrMap<u64, (u128, ExprPtr<'t>)>,
         #[keep(Box::new([0; 1024]))] whnf_store_filter: Box<[u64; 1024]>,
         #[keep(Box::new([0; 1024]))] whnf_head_filter: Box<[u64; 1024]>,
         #[keep(vec![0; WHNF_ADMIT_LEN].into_boxed_slice().try_into().expect("admit table size"))]

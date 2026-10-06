@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::term::expr::{FAR_VARS, NEAR_VARS};
 use crate::term::hash::GOLDEN;
 use crate::term::ptr::{BigUintPtr, ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use bumpalo::Bump;
 use std::cell::{Cell, OnceCell};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
 pub type V<'a> = &'a Value<'a>;
 pub type E<'a> = &'a Env<'a>;
@@ -372,10 +373,10 @@ pub enum Env<'a> {
     },
 }
 
-const _: () = assert!(std::mem::size_of::<Env<'static>>() == 64);
+const _: () = assert!(size_of::<Env<'static>>() == 64);
 
-pub(crate) const NEAR: u32 = crate::term::expr::NEAR_VARS as u32;
-pub(crate) const FAR: u64 = crate::term::expr::FAR_VARS;
+pub(crate) const NEAR: u32 = NEAR_VARS as u32;
+pub(crate) const FAR: u64 = FAR_VARS;
 
 pub fn lsub_key(lsub: Option<&LevelSub<'_>>) -> u64 {
     match lsub {
@@ -394,7 +395,7 @@ impl<'a> Env<'a> {
     pub fn get_hash(&self) -> u64 {
         match self {
             Env::Nil { hash, .. } | Env::Cons { hash, .. } => *hash,
-            Env::Framed { .. } => std::ptr::from_ref(self).addr() as u64,
+            Env::Framed { .. } => ptr::from_ref(self).addr() as u64,
         }
     }
 

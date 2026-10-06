@@ -42,7 +42,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         depth: u32,
     ) -> (usize, Vec<ExprPtr<'t>>) {
         let valid_app_idx = self.which_valid_ind_app_v(st, depth, v).unwrap();
-        let (_, ctor_args_wo_params) = ind_ty_app.unfold_apps_stack(self.arena);
+        let (_, ctor_args_wo_params) = ind_ty_app.unfold_apps_rev();
         // Compensate for stack-like unfold
         let keep = ctor_args_wo_params
             .len()

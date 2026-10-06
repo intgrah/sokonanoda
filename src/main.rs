@@ -4,9 +4,12 @@
 use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
 use sokonanoda::{AxiomPolicy, CheckError, Config, Decline, DisallowedAxiom, Output, Rejection};
-use std::io::{IsTerminal, Write};
+use std::env;
+use std::io::{self, IsTerminal, Write};
 use std::num::NonZeroUsize;
+use std::panic;
 use std::path::PathBuf;
+use std::thread;
 use std::time::Instant;
 
 #[global_allocator]
@@ -113,8 +116,8 @@ struct Cli {
 }
 
 fn config(cli: Cli) -> (Config, bool) {
-    let stdout_tty = std::io::stdout().is_terminal();
-    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let stdout_tty = io::stdout().is_terminal();
+    let no_color = env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let output = Output {
         verbose: cli.verbose,
         live: stdout_tty && !cli.verbose && !cli.quiet,
@@ -122,7 +125,7 @@ fn config(cli: Cli) -> (Config, bool) {
     };
     let num_threads = cli.num_threads.map_or_else(
         || {
-            std::thread::available_parallelism()
+            thread::available_parallelism()
                 .map_or(1, NonZeroUsize::get)
                 .min(DEFAULT_THREADS)
         },
@@ -181,7 +184,7 @@ fn run(cfg: Config, quiet: bool) -> i32 {
         Ok(()) => {
             if !quiet {
                 let _ = writeln!(
-                    std::io::stdout(),
+                    io::stdout(),
                     "{done} {n} declarations in {:.3}s",
                     start.elapsed().as_secs_f64()
                 );
@@ -210,7 +213,7 @@ fn main() {
             default_hook(info);
         }
     }));
-    let code = std::panic::catch_unwind(|| run(cfg, quiet)).unwrap_or(EXIT_INTERNAL);
+    let code = panic::catch_unwind(|| run(cfg, quiet)).unwrap_or(EXIT_INTERNAL);
     std::process::exit(code);
 }
 

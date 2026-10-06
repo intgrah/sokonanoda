@@ -9,6 +9,7 @@ use crate::checker::value::{
 use crate::term::hash::GOLDEN;
 use crate::term::ptr::{BigUintPtr, ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use std::cell::OnceCell;
+use std::ptr;
 
 #[inline]
 fn rigid_head_key(head: RigidHead<'_>) -> (KeyTag, u64, u64) {
@@ -140,7 +141,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             && r.map(Id::of) == rest.map(Id::of)
             && l.map(Id::of) == lsub.map(Id::of)
             && sl.len() == slots.len()
-            && sl.iter().zip(slots).all(|(a, b)| std::ptr::eq(*a, *b))
+            && sl.iter().zip(slots).all(|(a, b)| ptr::eq(*a, *b))
         {
             return e;
         }

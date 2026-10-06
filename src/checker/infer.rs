@@ -5,8 +5,9 @@ use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
 use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};
 use crate::outcome::{ensure, reject};
-use crate::term::expr::Expr;
+use crate::term::expr::{Expr, SPINE, ignores_binder};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
+use std::mem::MaybeUninit;
 
 use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use InferFlag::{Check, InferOnly};
@@ -267,19 +268,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
         ctx: C<'t>,
         e: ExprPtr<'t>,
     ) -> V<'t> {
-        const SPINE: usize = 16;
-        let mut buf = [std::mem::MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
-        let mut n = 0;
-        let mut head = e;
-        while let &App { fun, arg, .. } = head.as_ref() {
-            if n == SPINE {
-                return self.infer_long_app_v(flag, depth, env, ctx, e);
-            }
-            buf[n].write(arg);
-            n += 1;
-            head = fun;
-        }
-        let rev_args = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
+        let mut buf = [MaybeUninit::uninit(); SPINE];
+        let spilled;
+        let (head, rev_args) = if let Some(peeled) = e.peel_apps(&mut buf) {
+            peeled
+        } else {
+            spilled = e.unfold_apps_rev();
+            (spilled.0, &spilled.1[..])
+        };
         let mut fty = self.infer_value(flag, depth, env, ctx, head);
         let mut telescope: Option<(E<'t>, ExprPtr<'t>)> = None;
         for &arg in rev_args.iter().rev() {
@@ -296,7 +292,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         "app arg def_eq failed"
                     );
                 }
-                let av = if crate::term::expr::ignores_binder(body) {
+                let av = if ignores_binder(body) {
                     self.placeholder()
                 } else {
                     self.eval_arg(depth, env, arg)
@@ -320,7 +316,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 );
             }
             if body.ctx.is_some() {
-                if crate::term::expr::ignores_binder(body.body) {
+                if ignores_binder(body.body) {
                     fty = self.apply_closure(depth, body, domain, Some(domain));
                 } else {
                     let av = self.eval_arg(depth, env, arg);
@@ -329,7 +325,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             } else if body.body.num_loose_bvars() == 0 {
                 telescope = Some((body.env, body.body));
             } else {
-                let av = if crate::term::expr::ignores_binder(body.body) {
+                let av = if ignores_binder(body.body) {
                     self.placeholder()
                 } else {
                     self.eval_arg(depth, env, arg)
@@ -339,42 +335,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         if let Some((tenv, t)) = telescope {
             fty = self.eval(depth, tenv, t);
-        }
-        fty
-    }
-
-    #[inline(never)]
-    fn infer_long_app_v(
-        &mut self,
-        flag: InferFlag,
-        depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        e: ExprPtr<'t>,
-    ) -> V<'t> {
-        let (fun, mut args) = e.unfold_apps_stack(self.arena);
-        let mut fty = self.infer_value(flag, depth, env, ctx, fun);
-        while let Some(arg) = args.pop() {
-            let fty_f = self.force_all(depth, fty);
-            let (domain, body) = match fty_f {
-                Value::Pi { domain, body, .. } => (*domain, body),
-                _ => reject!("expected a pi type"),
-            };
-            if flag == Check {
-                let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
-                ensure!(
-                    self.conv_types_at(depth, domain, arg_ty),
-                    "app arg def_eq failed"
-                );
-            }
-            if body.ctx.is_none() && body.body.num_loose_bvars() == 0 {
-                fty = self.eval(depth, body.env, body.body);
-            } else if crate::term::expr::ignores_binder(body.body) {
-                fty = self.apply_closure(depth, body, domain, Some(domain));
-            } else {
-                let av = self.arg_value(depth, env, arg);
-                fty = self.apply_closure(depth, body, av, Some(domain));
-            }
         }
         fty
     }

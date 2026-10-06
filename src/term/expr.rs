@@ -7,6 +7,12 @@ use crate::term::hash::FxHashMap;
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use num_bigint::BigUint;
+use std::mem::MaybeUninit;
+use std::slice;
+
+pub(crate) const SPINE: usize = 16;
+pub(crate) type SpineArgs<'t> = smallvec::SmallVec<[ExprPtr<'t>; SPINE]>;
+pub(crate) type SpineBuf<'t> = [MaybeUninit<ExprPtr<'t>>; SPINE];
 
 use crate::outcome::{ensure_eq, reject};
 pub(crate) const VAR_HASH: u64 = 281;
@@ -264,7 +270,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         if e.num_loose_bvars() <= offset {
             e
         } else if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
-            *cached
+            cached
         } else {
             let calcd = match *e {
                 // These expressions should be unreachable since they return `n_loose_bvars() == 0`
@@ -342,7 +348,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             return e;
         }
         if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
-            return *cached;
+            return cached;
         }
         let calcd = match *e {
             Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
@@ -402,7 +408,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
 
     fn subst_aux(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
         if let Some(cached) = self.expr_cache.subst.get(&(e, ks, vs)) {
-            *cached
+            cached
         } else {
             let r = match *e {
                 Var { .. } | NatLit { .. } | StringLit { .. } => e,
@@ -470,7 +476,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             ensure_eq!(ks.as_ref().len(), vs.as_ref().len());
             return e;
         }
-        if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)).copied() {
+        if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)) {
             return cached;
         }
         self.expr_cache.subst.clear();
@@ -712,16 +718,31 @@ impl<'t> ExprPtr<'t> {
         }
     }
 
-    pub(crate) fn unfold_apps_stack<'b>(
-        mut self,
-        arena: &'b bumpalo::Bump,
-    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
-        let mut args = bumpalo::collections::Vec::new_in(arena);
+    pub(crate) fn unfold_apps_rev(mut self) -> (ExprPtr<'t>, SpineArgs<'t>) {
+        let mut args = SpineArgs::new();
         while let App { fun, arg, .. } = *self {
             args.push(arg);
             self = fun;
         }
         (self, args)
+    }
+
+    #[inline(always)]
+    pub(crate) fn peel_apps<'b>(
+        mut self,
+        buf: &'b mut SpineBuf<'t>,
+    ) -> Option<(ExprPtr<'t>, &'b [ExprPtr<'t>])> {
+        let mut n = 0;
+        while let App { fun, arg, .. } = *self {
+            if n == SPINE {
+                return None;
+            }
+            buf[n].write(arg);
+            n += 1;
+            self = fun;
+        }
+        let args = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
+        Some((self, args))
     }
 
     pub(crate) fn find_const<F>(self, pred: F) -> bool

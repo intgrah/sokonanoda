@@ -5,16 +5,15 @@ use crate::checker::cache::{hashcons, memo};
 use crate::checker::env::Declar;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{self, Closure, E, Elim, ElimView, RigidHead, S, Spine, V, Value};
-use crate::outcome::reject;
-use crate::term::expr::Expr;
+use crate::outcome::{ensure, reject};
+use crate::term::expr::{Expr, SPINE, SpineArgs};
 use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
 use std::cell::OnceCell;
+use std::mem::MaybeUninit;
 
 mod environment;
 mod reduction;
 mod whnf_cache;
-
-const SPINE: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConstKind {
@@ -110,7 +109,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     return result;
                 }
 
-                let mut funs = smallvec::SmallVec::<[ExprPtr<'t>; SPINE]>::new();
+                let mut funs = SpineArgs::new();
                 funs.push(fun);
                 funs.push(f2);
                 let mut cur2 = a2;
@@ -149,21 +148,15 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 }
                 return result;
             }
-            let mut buf = [std::mem::MaybeUninit::<ExprPtr<'t>>::uninit(); SPINE];
-            buf[0].write(arg);
-            let mut n = 1;
-            let mut head = fun;
-            while let &Expr::App { fun, arg, .. } = head.as_ref() {
-                if n == SPINE {
-                    return self.eval_long_spine(depth, env, e);
-                }
-                buf[n].write(arg);
-                n += 1;
-                head = fun;
-            }
+            let mut buf = [MaybeUninit::uninit(); SPINE];
+            let spilled;
+            let (head, rev_args) = if let Some(peeled) = e.peel_apps(&mut buf) {
+                peeled
+            } else {
+                spilled = e.unfold_apps_rev();
+                (spilled.0, &spilled.1[..])
+            };
             let f = self.eval_arg(depth, env, head);
-            let rev_args =
-                unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
             return self.eval_spine(depth, env, f, rev_args);
         }
         match first {
@@ -291,25 +284,6 @@ impl<'t> TypeChecker<'_, 't, '_> {
         f
     }
 
-    #[inline(never)]
-    fn eval_long_spine(&mut self, depth: u32, env: E<'t>, e: ExprPtr<'t>) -> V<'t> {
-        let mut arg_exprs = smallvec::SmallVec::<[ExprPtr<'t>; 16]>::new();
-        let mut head = e;
-        while let &Expr::App { fun, arg, .. } = head.as_ref() {
-            arg_exprs.push(arg);
-            head = fun;
-        }
-        let f = self.eval(depth, env, head);
-        let mut args = smallvec::SmallVec::<[V<'t>; 16]>::with_capacity(arg_exprs.len());
-        for &a in arg_exprs.iter().rev() {
-            args.push(self.eval(depth, env, a));
-        }
-        if let Some(r) = self.fire_saturated(depth, f, &args) {
-            return r;
-        }
-        self.apply_many(depth, f, &args)
-    }
-
     fn fire_saturated(&mut self, depth: u32, f: V<'t>, args: &[V<'t>]) -> Option<V<'t>> {
         let Value::Rigid {
             head,
@@ -433,7 +407,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             reject!("const_head_type: unknown const {name:?}")
         };
         let info = *d.info();
-        crate::outcome::ensure!(
+        ensure!(
             info.uparams.len() == levels.len(),
             "wrong number of universe levels for {name:?}"
         );

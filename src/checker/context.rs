@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use super::cache::{Reset, SESSION, SMALL, TcCache, caches};
+use super::cache::{Reset, SESSION, SMALL, TcCache};
 use super::ptrmap::{PtrMap, PtrSet};
 use crate::checker::env::{DeclarMap, Env, EnvLimit};
+use crate::checker::relevance::{Sig, SigTemplate};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
 use crate::hash64;
@@ -18,15 +19,30 @@ use crate::term::name::{NUM_HASH, Name, STR_HASH};
 use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
 use bumpalo::Bump;
 use num_bigint::BigUint;
+use rustc_hash::FxBuildHasher;
 
-caches! {
-    pub struct ExprCache<'t> {
-        #[cap(SMALL)] inst: FxHashMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
-        #[cap(SMALL)] subst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[cap(SMALL)] dsubst: FxHashMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-        #[keep(Reset::with_cap(SMALL))] simplify: PtrMap<LevelPtr<'t>, LevelPtr<'t>>,
+pub struct ExprCache<'t> {
+    pub(crate) inst: PtrMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
+    pub(crate) subst: PtrMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+    pub(crate) dsubst: PtrMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
+    pub(crate) simplify: PtrMap<LevelPtr<'t>, LevelPtr<'t>>,
+}
+
+impl ExprCache<'_> {
+    fn new() -> Self {
+        ExprCache {
+            inst: Reset::with_cap(SMALL),
+            subst: Reset::with_cap(SMALL),
+            dsubst: Reset::with_cap(SMALL),
+            simplify: Reset::with_cap(SMALL),
+        }
     }
-    fn new();
+
+    pub(crate) fn clear_session(&mut self) {
+        self.inst.reset_shrink();
+        self.subst.reset_shrink();
+        self.dsubst.reset_shrink();
+    }
 }
 
 pub struct ExportFile<'p> {
@@ -68,8 +84,8 @@ pub struct TcCtx<'t, 'p> {
     pub(crate) arena: &'t Bump,
     pub(crate) dag: Dag<'t>,
     pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) sig_cache: PtrMap<(NamePtr<'t>, LevelsPtr<'t>), crate::checker::relevance::Sig>,
-    pub(crate) sig_templates: PtrMap<NamePtr<'t>, crate::checker::relevance::SigTemplate<'t>>,
+    pub(crate) sig_cache: PtrMap<(NamePtr<'t>, LevelsPtr<'t>), Sig>,
+    pub(crate) sig_templates: PtrMap<NamePtr<'t>, SigTemplate<'t>>,
     pub(crate) sig_computing: FxHashSet<NamePtr<'t>>,
     pub(crate) subst_level_cache:
         PtrMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
@@ -91,7 +107,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
             sig_templates: Reset::with_cap(SMALL),
-            sig_computing: Reset::with_cap(SMALL),
+            sig_computing: FxHashSet::with_capacity_and_hasher(SMALL, FxBuildHasher),
             subst_level_cache: Reset::with_cap(SMALL),
             leq_cache: Reset::with_cap(SMALL),
             checked_closed: Reset::with_cap(SMALL),

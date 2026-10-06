@@ -3,7 +3,7 @@
 
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{S, Value};
-use crate::term::level::Level;
+use crate::outcome::{ensure, reject};
 use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
 
 pub(crate) const MAX_TRACKED: u32 = 64;
@@ -72,19 +72,6 @@ pub(crate) struct SigTemplate<'t> {
     result_span: u64,
 }
 
-fn zero_under<'t>(level: LevelPtr<'t>, params: &[LevelPtr<'t>], args: &[LevelPtr<'t>]) -> bool {
-    match *level {
-        Level::Zero => true,
-        Level::Succ(..) => false,
-        Level::Param(..) => params
-            .iter()
-            .position(|p| *p == level)
-            .is_some_and(|i| args[i].is_always_zero()),
-        Level::Max(l, r, ..) => zero_under(l, params, args) && zero_under(r, params, args),
-        Level::IMax(_, r, ..) => zero_under(r, params, args),
-    }
-}
-
 impl<'t> SigTemplate<'t> {
     fn at(&self, levels: LevelsPtr<'t>) -> Sig {
         let params = self.uparams.as_ref();
@@ -92,13 +79,13 @@ impl<'t> SigTemplate<'t> {
         let mut prop_arg = 0u64;
         for (i, l) in self.dom.iter().enumerate() {
             if let Some(l) = *l
-                && zero_under(l, params, args)
+                && l.is_zero_under(params, args)
             {
                 prop_arg |= 1u64 << i;
             }
         }
         let prop_result = match self.result {
-            Some(l) if zero_under(l, params, args) => self.result_span,
+            Some(l) if l.is_zero_under(params, args) => self.result_span,
             _ => 0,
         };
         Sig {
@@ -131,7 +118,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             self.ctx.sig_templates.insert(name, t);
             t
         };
-        crate::outcome::ensure!(
+        ensure!(
             template.uparams.len() == levels.len(),
             "wrong number of universe levels for {name:?}"
         );
@@ -142,7 +129,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
 
     fn sig_template(&mut self, name: NamePtr<'t>) -> SigTemplate<'t> {
         let Some(d) = self.env.get_declar(name) else {
-            crate::outcome::reject!("sig_template: unknown const {name:?}")
+            reject!("sig_template: unknown const {name:?}")
         };
         let uparams = d.info().uparams;
         let mut dom: Vec<Option<LevelPtr<'t>>> = Vec::new();

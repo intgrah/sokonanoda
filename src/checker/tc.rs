@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::checker::cache::TcCache;
+use crate::checker::cache::{SessionBump, SessionCache, TcCache};
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::E;
-use crate::outcome::CheckError;
-use crate::outcome::ensure;
+use crate::outcome::{CheckError, ensure};
 use crate::report::Reporter;
 use crate::term::ptr::ExprPtr;
+use std::panic::{self, AssertUnwindSafe};
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
 const ARENA_KEEP: usize = 4 * SESSION_BUDGET;
@@ -157,11 +157,11 @@ impl<'p> ExportFile<'p> {
         F: FnMut() -> Option<(usize, usize)>,
     {
         let base = bumpalo::Bump::new();
-        let mut session_cache = crate::checker::cache::SessionCache::new(&base);
-        let mut sbump = crate::checker::cache::SessionBump::new();
+        let mut session_cache = SessionCache::new(&base);
+        let mut sbump = SessionBump::new();
         let ind_base = bumpalo::Bump::new();
-        let mut ind_cache = crate::checker::cache::SessionCache::new_small(&ind_base);
-        let mut ind_bump = crate::checker::cache::SessionBump::new();
+        let mut ind_cache = SessionCache::new_small(&ind_base);
+        let mut ind_bump = SessionBump::new();
         let mut pending = Some(first);
         loop {
             let finished = unsafe {
@@ -256,7 +256,7 @@ impl<'p> ExportFile<'p> {
     /// of threads (checking will be serial on the main thread is `num_threads <= 1`).
     pub fn check_all_declars(&self) -> Result<(), CheckError> {
         let report = Reporter::new(&self.config, self.declars.len());
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
             if self.config.parse_only {
                 for (_, d) in &self.declars {
                     report.check(d, || {});

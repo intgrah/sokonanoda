@@ -5,8 +5,8 @@ use crate::checker::env::Declar;
 use crate::config::{AxiomDecision, AxiomPolicy, Config, Output};
 use crate::outcome::{Decline, Rejection};
 use std::any::Any;
-use std::io::{BufWriter, Stdout, Write};
-use std::panic::AssertUnwindSafe;
+use std::io::{self, BufWriter, Stdout, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -96,7 +96,7 @@ impl Reporter {
             width: total.to_string().len(),
             done: AtomicUsize::new(0),
             screen: Mutex::new(Screen {
-                out: Some(BufWriter::new(std::io::stdout())),
+                out: Some(BufWriter::new(io::stdout())),
                 live_shown: false,
                 live_at: None,
             }),
@@ -110,7 +110,7 @@ impl Reporter {
 
     pub(crate) fn check(&self, d: &Declar<'_>, f: impl FnOnce()) {
         let start = Instant::now();
-        let result = std::panic::catch_unwind(AssertUnwindSafe(f));
+        let result = panic::catch_unwind(AssertUnwindSafe(f));
         let status = match &result {
             Ok(()) if self.warned(d) => Status::Warn,
             Ok(()) => Status::Ok,
@@ -121,7 +121,7 @@ impl Reporter {
         self.record(d, status, start.elapsed());
         if let Err(payload) = result {
             self.stopped.store(true, Relaxed);
-            std::panic::resume_unwind(locate(d, payload));
+            panic::resume_unwind(locate(d, payload));
         }
     }
 

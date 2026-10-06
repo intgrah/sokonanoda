@@ -6,6 +6,7 @@ use crate::checker::context::TcCtx;
 use crate::term::hash::CowStr;
 use crate::term::ptr::{NamePtr, StringPtr};
 use Name::{Anon, Num, Str};
+use std::fmt;
 
 pub(crate) const ANON_HASH: u64 = 43;
 pub(crate) const STR_HASH: u64 = 911;
@@ -33,8 +34,8 @@ impl Name<'_> {
     }
 }
 
-impl std::fmt::Display for NamePtr<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for NamePtr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.as_ref().kind {
             Anon => Ok(()),
             Str(pfx, sfx, _) => {
@@ -49,7 +50,7 @@ impl std::fmt::Display for NamePtr<'_> {
     }
 }
 
-fn write_prefix(f: &mut std::fmt::Formatter<'_>, pfx: NamePtr<'_>) -> std::fmt::Result {
+fn write_prefix(f: &mut fmt::Formatter<'_>, pfx: NamePtr<'_>) -> fmt::Result {
     match pfx.as_ref().kind {
         Anon => Ok(()),
         Str(..) | Num(..) => write!(f, "{pfx}."),
@@ -170,7 +171,7 @@ impl crate::term::hash::RawHash for NameNode<'_> {
 }
 
 impl std::fmt::Debug for NameNode<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.kind.fmt(f)
     }
 }

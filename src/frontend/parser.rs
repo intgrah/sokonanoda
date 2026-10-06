@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::checker::context::ExportFile;
 use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, InductiveData, RecursorData, ReducibilityHint,
 };
 use crate::config::{AxiomDecision, Config};
 use crate::hash64;
 use crate::outcome::{decline, ensure, reject, unsupported};
-use crate::term::expr::Expr;
+use crate::term::expr::{
+    APP_HASH, CONST_HASH, Expr, LAMBDA_HASH, LET_HASH, LetData, NAT_LIT_HASH, PI_HASH, PROJ_HASH,
+    SORT_HASH, STRING_LIT_HASH, VAR_HASH, child_mask, under_binder, var_mask,
+};
 use crate::term::hash::{FxHashMap, FxIndexMap, new_fx_hash_map, new_fx_index_map};
 use crate::term::intern::Dag;
 use crate::term::level::Level;
@@ -20,9 +24,11 @@ use serde::{Deserialize, Deserializer};
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read};
+use std::mem;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
+use std::thread;
 
 fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     const MIN_SEMVER: semver::Version = semver::Version::new(3, 1, 0);
@@ -336,7 +342,7 @@ pub(crate) fn parse_export_mapped<'p>(
     arena: &'p Bump,
     input: &[u8],
     config: Config,
-) -> Result<crate::checker::context::ExportFile<'p>, Box<dyn Error>> {
+) -> Result<ExportFile<'p>, Box<dyn Error>> {
     let mut parser = Parser::with_input_len(arena, config, input.len());
     parser.run_over(input)?;
     Ok(parser.finish())
@@ -361,7 +367,7 @@ impl Block {
 
 fn read_blocks<R: Read>(
     mut reader: R,
-    blocks: &SyncSender<std::io::Result<Block>>,
+    blocks: &SyncSender<io::Result<Block>>,
     spent: &Receiver<Block>,
 ) {
     let mut pending = Block::new();
@@ -390,10 +396,7 @@ fn read_blocks<R: Read>(
             next.bytes[..tail.len()].copy_from_slice(tail);
             next.len = tail.len();
             pending.len = last + 1;
-            if blocks
-                .send(Ok(std::mem::replace(&mut pending, next)))
-                .is_err()
-            {
+            if blocks.send(Ok(mem::replace(&mut pending, next))).is_err() {
                 return;
             }
         }
@@ -407,11 +410,11 @@ pub(crate) fn parse_export_file<R: Read + Send + 'static>(
     arena: &Bump,
     reader: R,
     config: Config,
-) -> Result<crate::checker::context::ExportFile<'_>, Box<dyn Error>> {
+) -> Result<ExportFile<'_>, Box<dyn Error>> {
     let mut parser = Parser::new(arena, config);
     let (blocks_tx, blocks_rx) = sync_channel(READ_AHEAD);
     let (spent_tx, spent_rx) = channel();
-    std::thread::Builder::new()
+    thread::Builder::new()
         .name("reader".to_owned())
         .spawn(move || read_blocks(reader, &blocks_tx, &spent_rx))?;
     for block in blocks_rx {
@@ -780,7 +783,7 @@ impl<'a> Parser<'a> {
             ptr: Some(ptr),
             child_mask: fv_mask,
         };
-        debug_assert_eq!(entry.child_mask, crate::term::expr::child_mask(ptr));
+        debug_assert_eq!(entry.child_mask, child_mask(ptr));
         let i = expected.index() as usize;
         if i == self.exprs_by_idx.len() {
             self.exprs_by_idx.push(entry);
@@ -846,10 +849,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn get_body(&self, idx: u32) -> (ExprPtr<'a>, u64) {
         let (p, child_mask) = self.get_expr(idx);
-        (
-            p,
-            crate::term::expr::under_binder(child_mask, p.num_loose_bvars()),
-        )
+        (p, under_binder(child_mask, p.num_loose_bvars()))
     }
 
     #[inline(never)]
@@ -865,7 +865,7 @@ impl<'a> Parser<'a> {
 
     #[inline(never)]
     fn run_over(&mut self, input: &[u8]) -> Result<(), Box<dyn Error>> {
-        let mut idxs = std::mem::take(&mut self.scratch_idxs);
+        let mut idxs = mem::take(&mut self.scratch_idxs);
         let mut pos = 0;
         let out = loop {
             if pos >= input.len() {
@@ -884,9 +884,9 @@ impl<'a> Parser<'a> {
         out
     }
 
-    fn finish(self) -> crate::checker::context::ExportFile<'a> {
+    fn finish(self) -> ExportFile<'a> {
         let name_cache = self.dag.mk_name_cache(self.anon);
-        crate::checker::context::ExportFile {
+        ExportFile {
             dag: self.dag,
             anon: self.anon,
             zero: self.zero,
@@ -1200,7 +1200,7 @@ impl<'a> Parser<'a> {
                 .unwrap()
                 .intern(self.arena, big_uint),
         );
-        let hash = hash64!(crate::term::expr::NAT_LIT_HASH, num_ptr);
+        let hash = hash64!(NAT_LIT_HASH, num_ptr);
         self.push_expr(idx, Expr::NatLit { ptr: num_ptr, hash }, 0, 0);
         Ok(())
     }
@@ -1213,7 +1213,7 @@ impl<'a> Parser<'a> {
             );
         }
         let string_ptr = self.intern_str(s);
-        let hash = hash64!(crate::term::expr::STRING_LIT_HASH, string_ptr);
+        let hash = hash64!(STRING_LIT_HASH, string_ptr);
         self.push_expr(
             idx,
             Expr::StringLit {
@@ -1259,7 +1259,7 @@ impl<'a> Parser<'a> {
     #[inline]
     fn do_sort(&mut self, idx: BackRef, level: u32) {
         let level = self.get_level_ptr(level);
-        let hash = hash64!(crate::term::expr::SORT_HASH, level);
+        let hash = hash64!(SORT_HASH, level);
         self.push_expr(idx, Expr::Sort { level, hash }, 0, 0);
     }
 
@@ -1267,7 +1267,7 @@ impl<'a> Parser<'a> {
     fn do_const(&mut self, idx: BackRef, name: u32, us: &[u32]) {
         let name = self.get_name_ptr(name);
         let levels = self.get_levels_ptr(us);
-        let hash = hash64!(crate::term::expr::CONST_HASH, name, levels);
+        let hash = hash64!(CONST_HASH, name, levels);
         self.push_expr(idx, Expr::Const { name, levels, hash }, 0, 0);
     }
 
@@ -1275,7 +1275,7 @@ impl<'a> Parser<'a> {
     fn do_app(&mut self, idx: BackRef, fun: u32, arg: u32) {
         let (fun, fun_mask) = self.get_expr(fun);
         let (arg, arg_mask) = self.get_expr(arg);
-        let hash = hash64!(crate::term::expr::APP_HASH, fun, arg);
+        let hash = hash64!(APP_HASH, fun, arg);
         let fv_mask = fun_mask | arg_mask;
         let nlb = fun.num_loose_bvars().max(arg.num_loose_bvars());
         self.push_expr(
@@ -1296,8 +1296,8 @@ impl<'a> Parser<'a> {
         if dbj_idx == u16::MAX {
             return decline("bvar index exceeds implementation limit");
         }
-        let hash = hash64!(crate::term::expr::VAR_HASH, dbj_idx);
-        let fv_mask = crate::term::expr::var_mask(dbj_idx);
+        let hash = hash64!(VAR_HASH, dbj_idx);
+        let fv_mask = var_mask(dbj_idx);
         self.push_expr(idx, Expr::Var { dbj_idx, hash }, dbj_idx + 1, fv_mask);
         Ok(())
     }
@@ -1306,7 +1306,7 @@ impl<'a> Parser<'a> {
     fn do_lambda(&mut self, idx: BackRef, binder_type: u32, body: u32) {
         let (binder_type, binder_type_mask) = self.get_expr(binder_type);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::term::expr::LAMBDA_HASH, binder_type, body);
+        let hash = hash64!(LAMBDA_HASH, binder_type, body);
         let fv_mask = binder_type_mask | body_mask;
         let nlb = binder_type
             .num_loose_bvars()
@@ -1328,7 +1328,7 @@ impl<'a> Parser<'a> {
     fn do_pi(&mut self, idx: BackRef, binder_type: u32, body: u32) {
         let (binder_type, binder_type_mask) = self.get_expr(binder_type);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::term::expr::PI_HASH, binder_type, body);
+        let hash = hash64!(PI_HASH, binder_type, body);
         let fv_mask = binder_type_mask | body_mask;
         let nlb = binder_type
             .num_loose_bvars()
@@ -1351,7 +1351,7 @@ impl<'a> Parser<'a> {
         let (binder_type, binder_type_mask) = self.get_expr(ty);
         let (val, val_mask) = self.get_expr(value);
         let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(crate::term::expr::LET_HASH, binder_type, val, body, nondep);
+        let hash = hash64!(LET_HASH, binder_type, val, body, nondep);
         let fv_mask = binder_type_mask | val_mask | body_mask;
         let nlb = binder_type.num_loose_bvars().max(
             val.num_loose_bvars()
@@ -1360,7 +1360,7 @@ impl<'a> Parser<'a> {
         self.push_expr(
             idx,
             Expr::Let {
-                data: self.arena.alloc(crate::term::expr::LetData {
+                data: self.arena.alloc(LetData {
                     binder_type,
                     val,
                     body,
@@ -1379,7 +1379,7 @@ impl<'a> Parser<'a> {
         let proj_idx = u16::try_from(proj_idx).expect("projection index does not fit in u16");
         let ty_name = self.get_name_ptr(type_name);
         let (structure, fv_mask) = self.get_expr(struct_);
-        let hash = hash64!(crate::term::expr::PROJ_HASH, ty_name, proj_idx, structure);
+        let hash = hash64!(PROJ_HASH, ty_name, proj_idx, structure);
         self.push_expr(
             idx,
             Expr::Proj {

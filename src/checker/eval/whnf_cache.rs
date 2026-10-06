@@ -38,7 +38,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
         let (fi, fb) = crate::checker::cache::tenure_slot(k);
         if self.tc_cache.whnf_store_filter[fi] & fb != 0
-            && self.tc_cache.whnf_store.contains_key(&k)
+            && self.tc_cache.whnf_store.get(&k).is_some()
         {
             return;
         }
@@ -98,7 +98,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if self.tc_cache.whnf_store_filter[fi] & fb == 0 {
             return None;
         }
-        let &(full, e) = self.tc_cache.whnf_store.get(&k)?;
+        let (full, e) = self.tc_cache.whnf_store.get(&k)?;
         let (mine, verified) = self.global_key(v, depth).ok()?;
         if !verified || mine != full {
             return None;
