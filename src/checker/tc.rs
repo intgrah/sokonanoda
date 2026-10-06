@@ -7,6 +7,7 @@ use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::E;
 use crate::outcome::CheckError;
 use crate::outcome::ensure;
+use crate::report::Reporter;
 use crate::term::ptr::ExprPtr;
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
@@ -137,17 +138,18 @@ impl<'p> ExportFile<'p> {
         }
     }
 
-    fn run_session<F>(&self, first: (usize, usize), mut next_chunk: F)
+    fn run_session<F>(&self, report: &Reporter, first: (usize, usize), mut next_chunk: F)
     where
         F: FnMut() -> Option<(usize, usize)>,
     {
         let thread_arena = bumpalo::Bump::new();
         let mut tctx = TcCtx::new(self, &thread_arena);
-        self.run_session_inner(first, &mut next_chunk, &mut tctx);
+        self.run_session_inner(report, first, &mut next_chunk, &mut tctx);
     }
 
     fn run_session_inner<'h, F>(
         &'h self,
+        report: &Reporter,
         first: (usize, usize),
         next_chunk: &mut F,
         tctx: &mut TcCtx<'h, 'p>,
@@ -175,14 +177,16 @@ impl<'p> ExportFile<'p> {
                                 .expect("declaration index out of range");
                             i += 1;
                             if matches!(d, Declar::Inductive(..)) {
-                                ind_cache.enter(|ind| {
-                                    self.check_inductive_declar(tctx, ind, ind_bump.get(), d);
-                                    true
+                                report.check(d, || {
+                                    ind_cache.enter(|ind| {
+                                        self.check_inductive_declar(tctx, ind, ind_bump.get(), d);
+                                        true
+                                    });
                                 });
                                 ind_bump.reset(ARENA_KEEP);
                                 continue;
                             }
-                            self.check_declar_with(tctx, cache, sbump.get(), d);
+                            report.check(d, || self.check_declar_with(tctx, cache, sbump.get(), d));
                             if sbump.used_bytes() > SESSION_BUDGET {
                                 pending = Some((i, end));
                                 return false;
@@ -200,12 +204,12 @@ impl<'p> ExportFile<'p> {
     }
 
     /// Check all declarations in this export file using a single thread.
-    pub(crate) fn check_all_declars_serial(&self) {
+    pub(crate) fn check_all_declars_serial(&self, report: &Reporter) {
         let total = self.declars.len();
         std::thread::scope(|sco| {
             std::thread::Builder::new()
                 .stack_size(crate::STACK_SIZE)
-                .spawn_scoped(sco, || self.run_session((0, total), || None))
+                .spawn_scoped(sco, || self.run_session(report, (0, total), || None))
                 .unwrap()
                 .join()
                 .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
@@ -213,14 +217,14 @@ impl<'p> ExportFile<'p> {
     }
 
     /// Check all declarations in this export file, spawning `num_threads` as
-    fn check_all_declars_par(&self, num_threads: usize) {
+    fn check_all_declars_par(&self, report: &Reporter, num_threads: usize) {
         use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
         use std::thread;
         let task_num = AtomicUsize::new(0);
         let total = self.declars.len();
         let claim = || {
             let start = task_num.fetch_add(CHUNK_SIZE, Relaxed);
-            if start >= total {
+            if start >= total || report.stopped() {
                 None
             } else {
                 Some((start, (start + CHUNK_SIZE).min(total)))
@@ -235,7 +239,7 @@ impl<'p> ExportFile<'p> {
                         .stack_size(crate::STACK_SIZE)
                         .spawn_scoped(sco, || {
                             if let Some(first) = claim() {
-                                self.run_session(first, claim);
+                                self.run_session(report, first, claim);
                             }
                         })
                         .unwrap(),
@@ -251,14 +255,20 @@ impl<'p> ExportFile<'p> {
     /// Check all of the declarations in this export file on the specified number
     /// of threads (checking will be serial on the main thread is `num_threads <= 1`).
     pub fn check_all_declars(&self) -> Result<(), CheckError> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if self.config.num_threads > 1 {
-                self.check_all_declars_par(self.config.num_threads);
+        let report = Reporter::new(&self.config, self.declars.len());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.config.parse_only {
+                for (_, d) in &self.declars {
+                    report.check(d, || {});
+                }
+            } else if self.config.num_threads > 1 {
+                self.check_all_declars_par(&report, self.config.num_threads);
             } else {
-                self.check_all_declars_serial();
+                self.check_all_declars_serial(&report);
             }
-        }))
-        .map_err(CheckError::from_panic)
+        }));
+        report.finish();
+        result.map_err(CheckError::from_panic)
     }
 }
 

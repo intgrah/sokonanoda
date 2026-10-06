@@ -188,6 +188,19 @@ impl RecursorData<'_> {
 }
 
 impl<'a> Declar<'a> {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Declar::Axiom { .. } => "axiom",
+            Declar::Quot { .. } => "quot",
+            Declar::Theorem { .. } => "theorem",
+            Declar::Definition { .. } => "def",
+            Declar::Opaque { .. } => "opaque",
+            Declar::Inductive(..) => "inductive",
+            Declar::Constructor(..) => "ctor",
+            Declar::Recursor(..) => "recr",
+        }
+    }
+
     pub fn info(&self) -> &DeclarInfo<'a> {
         use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         match self {

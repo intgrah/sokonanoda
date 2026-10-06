@@ -413,6 +413,7 @@ dependencies = [
  "clap",
  "hashbrown",
  "indexmap",
+ "libc",
  "memmap2",
  "mimalloc",
  "num-bigint",

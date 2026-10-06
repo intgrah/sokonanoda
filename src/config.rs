@@ -7,7 +7,7 @@ use crate::outcome::CheckError;
 use bumpalo::Bump;
 use std::error::Error;
 use std::fs::OpenOptions;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
 
@@ -64,6 +64,13 @@ impl AxiomPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Output {
+    pub verbose: bool,
+    pub live: bool,
+    pub color: bool,
+}
+
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
 pub struct Config {
@@ -74,7 +81,7 @@ pub struct Config {
     pub parse_only: bool,
     pub nat_extension: bool,
     pub string_extension: bool,
-    pub print_success_message: bool,
+    pub output: Output,
 }
 
 impl Default for Config {
@@ -87,16 +94,13 @@ impl Default for Config {
             parse_only: false,
             nat_extension: false,
             string_extension: false,
-            print_success_message: false,
+            output: Output::default(),
         }
     }
 }
 
 impl Config {
-    pub fn to_export_file(
-        self,
-        arena: &Bump,
-    ) -> Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>> {
+    pub fn to_export_file(self, arena: &Bump) -> Result<ExportFile<'_>, Box<dyn Error>> {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.parse(arena))) {
             Ok(result) => result,
             Err(payload) => match CheckError::from_panic(payload) {
@@ -107,8 +111,11 @@ impl Config {
         }
     }
 
-    fn parse(self, arena: &Bump) -> Result<(ExportFile<'_>, Vec<String>), Box<dyn Error>> {
-        if let Some(pathbuf) = self.export_file_path.as_ref() {
+    fn parse(self, arena: &Bump) -> Result<ExportFile<'_>, Box<dyn Error>> {
+        let use_stdin = self.use_stdin || self.export_file_path.as_deref() == Some(Path::new("-"));
+        if use_stdin {
+            parse_export_file(arena, std::io::stdin(), self)
+        } else if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {
                     let map =
@@ -119,8 +126,6 @@ impl Config {
                 }
                 Err(e) => Err(Box::from(format!("Failed to open export file: {e:?}"))),
             }
-        } else if self.use_stdin {
-            parse_export_file(arena, std::io::stdin(), self)
         } else {
             Err("must provide an export file path or enable stdin".into())
         }

@@ -51,7 +51,6 @@ pub struct Parser<'a> {
     exprs_by_idx: Vec<ExprEntry<'a>>,
     declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
     config: Config,
-    warned_axioms: Vec<String>,
     mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
     scratch_idxs: Vec<u32>,
 }
@@ -337,7 +336,7 @@ pub(crate) fn parse_export_mapped<'p>(
     arena: &'p Bump,
     input: &[u8],
     config: Config,
-) -> Result<(crate::checker::context::ExportFile<'p>, Vec<String>), Box<dyn Error>> {
+) -> Result<crate::checker::context::ExportFile<'p>, Box<dyn Error>> {
     let mut parser = Parser::with_input_len(arena, config, input.len());
     parser.run_over(input)?;
     Ok(parser.finish())
@@ -408,7 +407,7 @@ pub(crate) fn parse_export_file<R: Read + Send + 'static>(
     arena: &Bump,
     reader: R,
     config: Config,
-) -> Result<(crate::checker::context::ExportFile<'_>, Vec<String>), Box<dyn Error>> {
+) -> Result<crate::checker::context::ExportFile<'_>, Box<dyn Error>> {
     let mut parser = Parser::new(arena, config);
     let (blocks_tx, blocks_rx) = sync_channel(READ_AHEAD);
     let (spent_tx, spent_rx) = channel();
@@ -750,7 +749,6 @@ impl<'a> Parser<'a> {
             exprs_by_idx: Vec::with_capacity(input_len / 48),
             declars: new_fx_index_map(),
             config,
-            warned_axioms: Vec::new(),
             mutual_block_sizes: new_fx_hash_map(),
             scratch_idxs: Vec::new(),
         }
@@ -854,26 +852,6 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn name_to_string(n: NamePtr<'a>) -> String {
-        match n.as_ref().kind {
-            Name::Anon => String::new(),
-            Name::Str(pfx, sfx, _) => {
-                let mut s = Self::name_to_string(pfx);
-                if !s.is_empty() {
-                    s.push('.');
-                }
-                s + sfx.as_ref()
-            }
-            Name::Num(pfx, sfx, _) => {
-                let mut s = Self::name_to_string(pfx);
-                if !s.is_empty() {
-                    s.push('.');
-                }
-                s + format!("{sfx}").as_str()
-            }
-        }
-    }
-
     #[inline(never)]
     fn slow_line(&mut self, input: &[u8], pos: usize) -> Result<usize, Box<dyn Error>> {
         let end = match find_newline(&input[pos..]) {
@@ -906,9 +884,9 @@ impl<'a> Parser<'a> {
         out
     }
 
-    fn finish(self) -> (crate::checker::context::ExportFile<'a>, Vec<String>) {
+    fn finish(self) -> crate::checker::context::ExportFile<'a> {
         let name_cache = self.dag.mk_name_cache(self.anon);
-        let export_file = crate::checker::context::ExportFile {
+        crate::checker::context::ExportFile {
             dag: self.dag,
             anon: self.anon,
             zero: self.zero,
@@ -916,8 +894,7 @@ impl<'a> Parser<'a> {
             name_cache,
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,
-        };
-        (export_file, self.warned_axioms)
+        }
     }
 
     fn fast_line(&mut self, s: &[u8], pos: usize, idxs: &mut Vec<u32>) -> Result<usize, FastError> {
@@ -1504,13 +1481,9 @@ impl<'a> Parser<'a> {
                 let ty = self.get_expr_ptr(ty);
                 let info = DeclarInfo { name, uparams, ty };
                 let axiom = Declar::Axiom { info };
-                let name_string = Self::name_to_string(name);
+                let name_string = name.to_string();
                 match self.config.axiom_policy.decision(&name_string) {
-                    AxiomDecision::Allow => self.add_declar(name, axiom),
-                    AxiomDecision::Warn => {
-                        self.add_declar(name, axiom);
-                        self.warned_axioms.push(name_string);
-                    }
+                    AxiomDecision::Allow | AxiomDecision::Warn => self.add_declar(name, axiom),
                     AxiomDecision::Reject => {
                         return Err(format!(
                             "export file declares disallowed axiom {name_string:?}"

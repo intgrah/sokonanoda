@@ -377,7 +377,7 @@ mod tests {
 
     fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
         let arena = Bump::new();
-        let (export_file, _) = parse_export_file(&arena, std::io::empty(), Config::default())?;
+        let export_file = parse_export_file(&arena, std::io::empty(), Config::default())?;
         Ok(export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
     }
 

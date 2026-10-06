@@ -33,6 +33,29 @@ impl Name<'_> {
     }
 }
 
+impl std::fmt::Display for NamePtr<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.as_ref().kind {
+            Anon => Ok(()),
+            Str(pfx, sfx, _) => {
+                write_prefix(f, pfx)?;
+                f.write_str(sfx.as_ref())
+            }
+            Num(pfx, sfx, _) => {
+                write_prefix(f, pfx)?;
+                write!(f, "{sfx}")
+            }
+        }
+    }
+}
+
+fn write_prefix(f: &mut std::fmt::Formatter<'_>, pfx: NamePtr<'_>) -> std::fmt::Result {
+    match pfx.as_ref().kind {
+        Anon => Ok(()),
+        Str(..) | Num(..) => write!(f, "{pfx}."),
+    }
+}
+
 pub(crate) const NO_DECL: u32 = u32::MAX;
 
 pub(crate) const NO_NAT_RED: u8 = u8::MAX;
