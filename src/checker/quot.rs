@@ -46,10 +46,9 @@ macro_rules! arrow {
 /// the prelude, so a prereq for checking the `Quot` declarations is asserting
 /// that a propery constructed `Eq` and `Eq.refl`
 pub fn check_eq<'x, 't: 'x, 'p: 't>(
-    ctx: &'x mut TcCtx<'t, 'p>,
-    cache: &mut crate::checker::cache::TcCache<'t, 't>,
-    arena: &'t bumpalo::Bump,
-    declar: &Declar<'t>,
+    ctx: &'x mut TcCtx<'t>,
+    cache: &mut crate::checker::cache::TcCache,
+    declar: &Declar,
 ) {
     let name = ctx.str1("Eq");
     let cname = ctx.str2("Eq", "refl");
@@ -72,12 +71,12 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
         )
     };
     let eq_const = ctx.mk_const(name, info.uparams);
-    ensure_eq!(info.uparams.as_ref().len(), 1);
+    ensure_eq!(ctx.levels(info.uparams).len(), 1);
     ensure_eq!(num_params, 2);
-    let &[u] = info.uparams.as_ref() else {
+    let &[u] = ctx.levels(info.uparams) else {
         reject!(
             "Bad `Eq` type; inductive `Eq` is expected to have 1 uparam, found {}",
-            info.uparams.as_ref().len()
+            ctx.levels(info.uparams).len()
         )
     };
     let uparam = ctx.mk_sort(u);
@@ -87,7 +86,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let a0 = ctx.mk_var(0);
     let inner = ctx.mk_pi(a0, inner);
     let expected = ctx.mk_pi(uparam, inner);
-    let mut tc = TypeChecker::new(ctx, &env, arena, Some(info), cache);
+    let mut tc = TypeChecker::new(ctx, &env, Some(info), cache);
     tc.assert_def_eq(info.ty, expected);
     let &[ctor_name] = all_ctor_names.as_ref() else {
         reject!(
@@ -101,7 +100,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
             "cannot add Quot; constructor `Eq.refl` was expected, but not found in the environment"
         )
     };
-    let &[uparam] = info.uparams.as_ref() else {
+    let &[uparam] = ctx.levels(info.uparams) else {
         reject!("`Eq.refl` must have exactly one universe parameter")
     };
     let uparam_sort = ctx.mk_sort(uparam);
@@ -111,16 +110,15 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let dom_a = ctx.mk_var(0);
     let inner = ctx.mk_pi(dom_a, app);
     let expected = ctx.mk_pi(uparam_sort, inner);
-    let mut tc = TypeChecker::new(ctx, &env, arena, Some(*info), cache);
+    let mut tc = TypeChecker::new(ctx, &env, Some(*info), cache);
     tc.assert_def_eq(info.ty, expected);
 }
 
 #[allow(non_snake_case)]
 pub fn check_quot<'x, 't: 'x, 'p: 't>(
-    ctx: &'x mut TcCtx<'t, 'p>,
-    cache: &mut crate::checker::cache::TcCache<'t, 't>,
-    arena: &'t bumpalo::Bump,
-    declar: &Declar<'t>,
+    ctx: &'x mut TcCtx<'t>,
+    cache: &mut crate::checker::cache::TcCache,
+    declar: &Declar,
 ) {
     // `Eq` matching expectations is a prerequisite for checking `Quot`.
     let prop = ctx.prop();
@@ -132,9 +130,9 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
     let sort_u = ctx.mk_sort(u_level);
     let sort_v = ctx.mk_sort(v_level);
 
-    let levels_u = ctx.alloc_levels_slice(&[u_level]);
-    let levels_v = ctx.alloc_levels_slice(&[v_level]);
-    let levels_uv = ctx.alloc_levels_slice(&[u_level, v_level]);
+    let levels_u = ctx.alloc_levels(&[u_level]);
+    let levels_v = ctx.alloc_levels(&[v_level]);
+    let levels_uv = ctx.alloc_levels(&[u_level, v_level]);
     let quot_name = ctx.export_file.name_cache.quot.unwrap();
     let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap();
 
@@ -180,14 +178,14 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
 
     if declar.info().name == ctx.str1("Quot") {
         let env = ctx.export_file.new_env(EnvLimit::ByName(quot_name));
-        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot.info().ty);
     } else if declar.info().name == ctx.str2("Quot", "mk") {
         let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
-        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
     } else if declar.info().name == ctx.str2("Quot", "lift") {
-        check_eq(ctx, cache, arena, declar);
+        check_eq(ctx, cache, declar);
         // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
         //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
         let expected_quot_lift = Declar::Quot {
@@ -236,7 +234,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
         let env = ctx
             .export_file
             .new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
     } else if declar.info().name == ctx.str2("Quot", "ind") {
         //           (∀ (a : A), B (@Quot.mk A r a)) → ∀ (q : @Quot A r), B q
@@ -281,7 +279,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
         let env = ctx
             .export_file
             .new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, arena, Some(*declar.info()), cache);
+        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
         tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
     } else {
         reject!(

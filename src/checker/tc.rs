@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::checker::cache::{SessionBump, SessionCache, TcCache};
+use crate::checker::cache::TcCache;
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
-use crate::checker::value::E;
+use crate::checker::value::{V, Vals, Value};
 use crate::outcome::{CheckError, ensure};
 use crate::report::Reporter;
-use crate::term::ptr::ExprPtr;
+use crate::term::id::ExprId;
 use std::panic::{self, AssertUnwindSafe};
 
 const SESSION_BUDGET: usize = 16 * 1024 * 1024;
@@ -46,8 +46,8 @@ pub(crate) enum InferFlag {
     Check,
 }
 
-pub struct TypeChecker<'x, 't, 'p> {
-    pub(crate) ctx: &'x mut TcCtx<'t, 'p>,
+pub struct TypeChecker<'x, 't> {
+    pub(crate) ctx: &'x mut TcCtx<'t>,
     /// An immutable reference to an environment, which contains declarations and notation.
     /// To accommodate the temporary declarations created while checking nested inductives,
     /// the environment may have a temporary extension which also holds declarations, and
@@ -58,45 +58,42 @@ pub struct TypeChecker<'x, 't, 'p> {
     /// outstanding references to environment declarations. Rust can tell that borrows
     /// of different struct fields are exclusive, but it can't analyze what fields of a given
     /// field's type are being exclusively borrowed.
-    pub(crate) env: &'x Env<'x, 't>,
+    pub(crate) env: &'x Env<'x>,
     /// The caches for things like inference, reduction, and equality checking.
-    pub(crate) tc_cache: &'x mut TcCache<'t, 't>,
-    pub(crate) arena: &'t bumpalo::Bump,
+    pub(crate) tc_cache: &'x mut TcCache,
     /// If this type checker is being used to check a simple declaration, this field will
     /// contain the universe parameters of that declaration. This is used in a couple of places
     /// to make sure that all of the universe paramters actually used in a declaration `d` are
     /// properly represented in the declaration's uparams info.
-    pub(crate) declar_info: Option<DeclarInfo<'t>>,
+    pub(crate) declar_info: Option<DeclarInfo>,
     pub(crate) nat_extension: bool,
     pub(crate) ordered_declaration: bool,
 }
 
-impl<'p> ExportFile<'p> {
+impl ExportFile {
     fn check_declar_with<'t>(
         &'t self,
-        ctx: &mut TcCtx<'t, 'p>,
-        cache: &mut TcCache<'t, 't>,
-        bump: &'t bumpalo::Bump,
-        d: &Declar<'t>,
+        ctx: &mut TcCtx<'t>,
+        cache: &mut TcCache,
+        d: &Declar,
     ) {
         use Declar::{Inductive, Quot};
         match d {
-            Inductive(..) => self.check_inductive_declar(ctx, cache, bump, d),
-            Quot { .. } => crate::checker::quot::check_quot(ctx, cache, bump, d),
-            _ => self.check_simple_declar(ctx, cache, bump, d),
+            Inductive(..) => self.check_inductive_declar(ctx, cache, d),
+            Quot { .. } => crate::checker::quot::check_quot(ctx, cache, d),
+            _ => self.check_simple_declar(ctx, cache, d),
         }
     }
 
     fn check_simple_declar<'t>(
         &'t self,
-        ctx: &mut TcCtx<'t, 'p>,
-        cache: &mut TcCache<'t, 't>,
-        bump: &'t bumpalo::Bump,
-        d: &Declar<'t>,
+        ctx: &mut TcCtx<'t>,
+        cache: &mut TcCache,
+        d: &Declar,
     ) {
         use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         let env = self.new_env(EnvLimit::ByName(d.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, bump, Some(*d.info()), cache);
+        let mut tc = TypeChecker::new(ctx, &env, Some(*d.info()), cache);
         tc.ordered_declaration = true;
         match d {
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => {
@@ -152,50 +149,39 @@ impl<'p> ExportFile<'p> {
         report: &Reporter,
         first: (usize, usize),
         next_chunk: &mut F,
-        tctx: &mut TcCtx<'h, 'p>,
+        tctx: &mut TcCtx<'h>,
     ) where
         F: FnMut() -> Option<(usize, usize)>,
     {
-        let base = bumpalo::Bump::new();
-        let mut session_cache = SessionCache::new(&base);
-        let mut sbump = SessionBump::new();
-        let ind_base = bumpalo::Bump::new();
-        let mut ind_cache = SessionCache::new_small(&ind_base);
-        let mut ind_bump = SessionBump::new();
+        let mut cache = TcCache::new();
+        let mut ind_cache = TcCache::new_small();
         let mut pending = Some(first);
         loop {
-            let finished = unsafe {
-                session_cache.enter(|cache| {
-                    loop {
-                        let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
-                            return true;
-                        };
-                        while i < end {
-                            let (_, d) = self
-                                .declars
-                                .get_index(i)
-                                .expect("declaration index out of range");
-                            i += 1;
-                            if matches!(d, Declar::Inductive(..)) {
-                                report.check(d, || {
-                                    ind_cache.enter(|ind| {
-                                        self.check_inductive_declar(tctx, ind, ind_bump.get(), d);
-                                        true
-                                    });
-                                });
-                                ind_bump.reset(ARENA_KEEP);
-                                continue;
-                            }
-                            report.check(d, || self.check_declar_with(tctx, cache, sbump.get(), d));
-                            if sbump.used_bytes() > SESSION_BUDGET {
-                                pending = Some((i, end));
-                                return false;
-                            }
-                        }
+            let finished = 'session: loop {
+                let Some((mut i, end)) = pending.take().or_else(&mut *next_chunk) else {
+                    break true;
+                };
+                while i < end {
+                    let (_, d) = self
+                        .declars
+                        .get_index(i)
+                        .expect("declaration index out of range");
+                    i += 1;
+                    if matches!(d, Declar::Inductive(..)) {
+                        report.check(d, || self.check_inductive_declar(tctx, &mut ind_cache, d));
+                        ind_cache.clear_session();
+                        ind_cache.vals.reset(ARENA_KEEP);
+                        continue;
                     }
-                })
+                    report.check(d, || self.check_declar_with(tctx, &mut cache, d));
+                    if cache.vals.used_bytes() > SESSION_BUDGET {
+                        pending = Some((i, end));
+                        break 'session false;
+                    }
+                }
             };
-            sbump.reset(ARENA_KEEP);
+            cache.clear_session();
+            cache.vals.reset(ARENA_KEEP);
             tctx.expr_cache.clear_session();
             if finished {
                 return;
@@ -255,7 +241,7 @@ impl<'p> ExportFile<'p> {
     /// Check all of the declarations in this export file on the specified number
     /// of threads (checking will be serial on the main thread is `num_threads <= 1`).
     pub fn check_all_declars(&self) -> Result<(), CheckError> {
-        let report = Reporter::new(&self.config, self.declars.len());
+        let report = Reporter::new(self);
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             if self.config.parse_only {
                 for (_, d) in &self.declars {
@@ -272,13 +258,12 @@ impl<'p> ExportFile<'p> {
     }
 }
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
     pub fn new(
-        dag: &'x mut TcCtx<'t, 'p>,
-        env: &'x Env<'x, 't>,
-        arena: &'t bumpalo::Bump,
-        declar_info: Option<DeclarInfo<'t>>,
-        tc_cache: &'x mut TcCache<'t, 't>,
+        dag: &'x mut TcCtx<'t>,
+        env: &'x Env<'x>,
+        declar_info: Option<DeclarInfo>,
+        tc_cache: &'x mut TcCache,
     ) -> Self {
         let nat_extension = dag.export_file.config.nat_extension;
         dag.next_declaration();
@@ -286,29 +271,28 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             ctx: dag,
             env,
             tc_cache,
-            arena,
             declar_info,
             nat_extension,
             ordered_declaration: false,
         }
     }
 
-    #[inline]
-    pub(crate) fn empty_env(&self) -> E<'t> {
-        self.tc_cache.empty_env
+    #[inline(always)]
+    pub(crate) fn vals(&self) -> &Vals {
+        &self.tc_cache.vals
     }
 
-    #[inline]
-    pub(crate) fn empty_spine(&self) -> crate::checker::value::S<'t> {
-        self.tc_cache.empty_spine
+    #[inline(always)]
+    pub(crate) fn vals_mut(&mut self) -> &mut Vals {
+        &mut self.tc_cache.vals
     }
 
-    #[inline]
-    pub(crate) fn empty_ctx(&self) -> crate::checker::value::C<'t> {
-        self.tc_cache.empty_ctx
+    #[inline(always)]
+    pub(crate) fn val(&self, v: V) -> Value {
+        self.tc_cache.vals.val(v)
     }
 
-    pub fn assert_def_eq(&mut self, u: ExprPtr<'t>, v: ExprPtr<'t>) {
+    pub fn assert_def_eq(&mut self, u: ExprId, v: ExprId) {
         ensure!(self.def_eq_core(u, v), "def_eq failed");
     }
 }

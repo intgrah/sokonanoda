@@ -4,18 +4,18 @@
 use super::{CtorHeader, InductiveCheckState};
 use crate::checker::env::{Declar, DeclarInfo, RecRule, RecursorData};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{V, Value};
+use crate::checker::value::{EMPTY_CTX, EMPTY_ENV, V, Value};
 use crate::outcome::{ensure, ensure_eq, reject};
-use crate::term::ptr::{ExprPtr, NamePtr};
+use crate::term::id::{ExprId, NameId};
 use std::sync::Arc;
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
-    pub(super) fn mk_majors(&mut self, st: &mut InductiveCheckState<'t>) {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
+    pub(super) fn mk_majors(&mut self, st: &mut InductiveCheckState) {
         for (idx, ind_const) in st.ind_consts.iter().copied().enumerate() {
             let num_indices =
                 u16::try_from(st.local_indices[idx].len()).expect("index count exceeds u16");
             let param_vars = self.param_vars(st, num_indices);
-            let index_vars: Vec<ExprPtr<'t>> = (0..num_indices)
+            let index_vars: Vec<ExprId> = (0..num_indices)
                 .map(|k| self.ctx.mk_var(num_indices - 1 - k))
                 .collect();
             let mut ty = self.ctx.foldl_apps(ind_const, param_vars.into_iter());
@@ -23,14 +23,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             st.majors.push(ty);
         }
     }
-    fn mk_motive_dep(&mut self, st: &InductiveCheckState<'t>, ind_type_idx: usize) -> ExprPtr<'t> {
+    fn mk_motive_dep(&mut self, st: &InductiveCheckState, ind_type_idx: usize) -> ExprId {
         let elim_sort = self.ctx.mk_sort(st.elim_level.unwrap());
         let major = st.majors[ind_type_idx];
         let w_major = self.ctx.mk_pi(major, elim_sort);
         let indices = st.local_indices[ind_type_idx].clone();
         self.mk_pis_dep(indices.as_slice(), 0, w_major)
     }
-    pub(super) fn mk_motives(&mut self, st: &mut InductiveCheckState<'t>) {
+    pub(super) fn mk_motives(&mut self, st: &mut InductiveCheckState) {
         debug_assert_eq!(st.local_indices.len(), st.ind_consts.len());
         debug_assert_eq!(st.majors.len(), st.ind_consts.len());
         for i in 0..st.ind_consts.len() {
@@ -39,14 +39,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn is_rec_argument_v(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        cursor: V<'t>,
+        st: &InductiveCheckState,
+        cursor: V,
         depth0: u32,
     ) -> Option<usize> {
         let mut depth = depth0;
         let mut cur = cursor;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = *domain;
+            let domain = domain;
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
             depth += 1;
@@ -55,14 +55,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn handle_rec_args_aux(
         &mut self,
-        cursor: V<'t>,
+        cursor: V,
         depth0: u32,
-    ) -> (ExprPtr<'t>, Vec<ExprPtr<'t>>, V<'t>, u32) {
+    ) -> (ExprId, Vec<ExprId>, V, u32) {
         let mut depth = depth0;
         let mut cur = cursor;
         let mut xs = Vec::new();
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = *domain;
+            let domain = domain;
             let dom_e = self.quote(depth, domain);
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -75,34 +75,34 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn sep_nonrec_rec_ctor_args(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        ctor_type_cursor: ExprPtr<'t>,
+        st: &InductiveCheckState,
+        ctor_type_cursor: ExprId,
         depth0: u32,
     ) -> (
-        ExprPtr<'t>,
-        V<'t>,
+        ExprId,
+        V,
         u32,
-        Vec<ExprPtr<'t>>,
-        Vec<(usize, V<'t>)>,
+        Vec<ExprId>,
+        Vec<(usize, V)>,
     ) {
-        let mut all_args: Vec<ExprPtr<'t>> = Vec::new();
+        let mut all_args: Vec<ExprId> = Vec::new();
         let mut rec_positions = Vec::new();
         self.tc_cache.clear();
         let mut depth = depth0;
         let mut cur = self.value_of(ctor_type_cursor);
         for i in 0..st.local_params.len() {
-            let Value::Pi { domain, body, .. } = cur else {
+            let Value::Pi { domain, body, .. } = self.val(cur) else {
                 reject!("constructor type has fewer binders than the block parameters")
             };
-            let domain = *domain;
+            let domain = domain;
             let lv = self.mk_bvar_hc(
                 u32::try_from(i).expect("parameter count exceeds u32"),
                 domain,
             );
             cur = self.apply_closure(depth, body, lv, Some(domain));
         }
-        while let Value::Pi { domain, body, .. } = cur {
-            let domain = *domain;
+        while let Value::Pi { domain, body, .. } = self.val(cur) {
+            let domain = domain;
             let binder_type = self.quote(depth, domain);
             let is_rec = self.is_rec_argument_v(st, domain, depth).is_some();
             let fresh = self.mk_bvar_hc(depth, domain);
@@ -118,11 +118,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn handle_rec_args_minor(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        rec_args: &[(usize, V<'t>)],
+        st: &InductiveCheckState,
+        rec_args: &[(usize, V)],
         ctor_args_base: u32,
         base_depth: u32,
-    ) -> Vec<ExprPtr<'t>> {
+    ) -> Vec<ExprId> {
         let mut out = Vec::new();
         for (i, (pos, dom_v)) in rec_args.iter().copied().enumerate() {
             self.tc_cache.clear();
@@ -136,7 +136,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let motive = self.ctx.mk_var(total - 1 - motive_level);
             let arg_level = u16::try_from(ctor_args_base).expect("depth exceeds u16")
                 + u16::try_from(pos).expect("position exceeds u16");
-            let x_vars: Vec<ExprPtr<'t>> = (0..n).map(|j| self.ctx.mk_var(n - 1 - j)).collect();
+            let x_vars: Vec<ExprId> = (0..n).map(|j| self.ctx.mk_var(n - 1 - j)).collect();
             let rec_arg_var = self.ctx.mk_var(total - 1 - arg_level);
             let motive_base = {
                 let lhs = self
@@ -152,9 +152,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn mk_minors1group(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        ctors: &[CtorHeader<'t>],
-    ) -> Vec<ExprPtr<'t>> {
+        st: &InductiveCheckState,
+        ctors: &[CtorHeader],
+    ) -> Vec<ExprId> {
         let mut out = Vec::new();
         let base = u32::from(st.minor_base());
         for ctor in ctors.iter().copied() {
@@ -169,7 +169,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let motive_level =
                 u16::try_from(ind_ty_idx).expect("motive count exceeds u16") + st.num_params();
             let motive = self.ctx.mk_var(total - 1 - motive_level);
-            let arg_vars: Vec<ExprPtr<'t>> = (0..n_args)
+            let arg_vars: Vec<ExprId> = (0..n_args)
                 .map(|j| self.ctx.mk_var(total - 1 - (st.minor_base() + j)))
                 .collect();
             let param_vars = self.param_vars(st, total - st.num_params());
@@ -178,7 +178,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 let rhs = self.ctx.foldl_apps(rhs, param_vars.into_iter());
                 self.ctx.foldl_apps(rhs, arg_vars.iter().copied())
             };
-            let shifted_indices: Vec<ExprPtr<'t>> = applied_indices
+            let shifted_indices: Vec<ExprId> = applied_indices
                 .into_iter()
                 .map(|e| self.ctx.lift(e, 0, n_v))
                 .collect();
@@ -193,7 +193,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         out
     }
-    pub(super) fn mk_minors(&mut self, st: &mut InductiveCheckState<'t>) {
+    pub(super) fn mk_minors(&mut self, st: &mut InductiveCheckState) {
         assert_eq!(
             st.all_inductives_incl_specialized.len(),
             st.ind_consts.len()
@@ -205,15 +205,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn handle_rec_ctor_args_rec_rule(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        rec_args: &[(usize, V<'t>)],
+        st: &InductiveCheckState,
+        rec_args: &[(usize, V)],
         ctor_args_base: u32,
         base_depth: u32,
-    ) -> Vec<ExprPtr<'t>> {
+    ) -> Vec<ExprId> {
         let mut out = Vec::new();
         let num_minors = u16::try_from(st.minors.iter().map(std::vec::Vec::len).sum::<usize>())
             .expect("too many minors");
-        let rec_str_ptr = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+        let rec_str_ptr = self.ctx.alloc_string("rec");
         for (pos, dom_v) in rec_args.iter().copied() {
             self.tc_cache.clear();
             let (u_i_ty, xs, u_i_v, u_i_depth) = self.handle_rec_args_aux(dom_v, base_depth);
@@ -228,10 +228,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let n = u16::try_from(xs.len()).expect("telescope exceeds u16");
             let total = u16::try_from(u_i_depth).expect("depth exceeds u16");
             let param_vars = self.param_vars(st, total - st.num_params());
-            let motive_vars: Vec<ExprPtr<'t>> = (0..st.num_motives())
+            let motive_vars: Vec<ExprId> = (0..st.num_motives())
                 .map(|j| self.ctx.mk_var(total - 1 - (st.num_params() + j)))
                 .collect();
-            let minor_vars: Vec<ExprPtr<'t>> = (0..num_minors)
+            let minor_vars: Vec<ExprId> = (0..num_minors)
                 .map(|k| self.ctx.mk_var(total - 1 - (st.minor_base() + k)))
                 .collect();
             let app = self.ctx.foldl_apps(rec_app, param_vars.into_iter());
@@ -242,7 +242,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 .foldl_apps(app, applied_indices.iter().copied().rev());
             let arg_level = u16::try_from(ctor_args_base).expect("depth exceeds u16")
                 + u16::try_from(pos).expect("position exceeds u16");
-            let x_vars: Vec<ExprPtr<'t>> = (0..n).map(|j| self.ctx.mk_var(n - 1 - j)).collect();
+            let x_vars: Vec<ExprId> = (0..n).map(|j| self.ctx.mk_var(n - 1 - j)).collect();
             let rec_arg_var = self.ctx.mk_var(total - 1 - arg_level);
             let app_rhs = self.ctx.foldl_apps(rec_arg_var, x_vars.iter().copied());
             let app = self.ctx.mk_app(app, app_rhs);
@@ -252,11 +252,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn mk_rec_rule1(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        ctor: CtorHeader<'t>,
-        flat_mapped_minors: &[ExprPtr<'t>],
+        st: &InductiveCheckState,
+        ctor: CtorHeader,
+        flat_mapped_minors: &[ExprId],
         minor_idx: u16,
-    ) -> RecRule<'t> {
+    ) -> RecRule {
         let num_minors = u16::try_from(flat_mapped_minors.len()).expect("too many minors");
         let ctor_args_base = u32::from(st.minor_base() + num_minors);
         let (_, _, args_depth, all_ctor_args, rec_ctor_args) =
@@ -269,7 +269,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         );
         let n_args = u16::try_from(all_ctor_args.len()).expect("telescope exceeds u16");
         let total = u16::try_from(args_depth).expect("depth exceeds u16");
-        let arg_vars: Vec<ExprPtr<'t>> = (0..n_args)
+        let arg_vars: Vec<ExprId> = (0..n_args)
             .map(|j| self.ctx.mk_var(n_args - 1 - j))
             .collect();
         let this_minor = self.ctx.mk_var(total - 1 - (st.minor_base() + minor_idx));
@@ -283,7 +283,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let comp_rhs = self.mk_lambdas_flat(motives.as_slice(), comp_rhs);
         let params = st.local_params.clone();
         let comp_rhs = self.mk_lambdas_dep(params.as_slice(), 0, comp_rhs);
-        let num_fields = ctor.ty.pi_telescope_size() as usize - st.local_params.len();
+        let num_fields = self.ctx.pi_telescope_size(ctor.ty) as usize - st.local_params.len();
         RecRule {
             ctor_name: ctor.name,
             ctor_telescope_size_wo_params: u16::try_from(num_fields).unwrap(),
@@ -292,11 +292,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn mk_rec_rule_lhs(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        rec_name: NamePtr<'t>,
-        ctor: CtorHeader<'t>,
-        flat_mapped_minors: &[ExprPtr<'t>],
-    ) -> ExprPtr<'t> {
+        st: &InductiveCheckState,
+        rec_name: NameId,
+        ctor: CtorHeader,
+        flat_mapped_minors: &[ExprId],
+    ) -> ExprId {
         let num_minors = u16::try_from(flat_mapped_minors.len()).expect("too many minors");
         let ctor_args_base = u32::from(st.minor_base() + num_minors);
         let (ind_ty_app, ind_ty_v, args_depth, all_ctor_args, _) =
@@ -304,7 +304,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let (ind_ty_idx, applied_indices) =
             self.get_i_indices_at(st, ind_ty_app, ind_ty_v, args_depth);
         let expected_rec_name = {
-            let rec = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+            let rec = self.ctx.alloc_string("rec");
             self.ctx
                 .str(st.all_inductives_incl_specialized[ind_ty_idx].name, rec)
         };
@@ -343,8 +343,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     pub(super) fn check_generated_recursors(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        recursors: &[Declar<'t>],
+        st: &InductiveCheckState,
+        recursors: &[Declar],
     ) {
         let minors = st.flat_minors();
         assert_eq!(recursors.len(), st.all_inductives_incl_specialized.len());
@@ -360,22 +360,22 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             assert_eq!(recursor.rec_rules.len(), ind.ctors.len());
             for (rule, ctor) in recursor.rec_rules.iter().zip(ind.ctors.iter().copied()) {
                 assert_eq!(rule.ctor_name, ctor.name);
-                let expected_fields = ctor.ty.pi_telescope_size() - st.num_params();
+                let expected_fields = self.ctx.pi_telescope_size(ctor.ty) - st.num_params();
                 assert_eq!(rule.ctor_telescope_size_wo_params, expected_fields);
                 let lhs = self.mk_rec_rule_lhs(st, recursor.info.name, ctor, minors.as_slice());
                 self.tc_cache.clear();
                 let lhs_ty = self.infer_value(
                     crate::checker::tc::InferFlag::Check,
                     0,
-                    self.empty_env(),
-                    self.empty_ctx(),
+                    EMPTY_ENV,
+                    EMPTY_CTX,
                     lhs,
                 );
                 let rhs_ty = self.infer_value(
                     crate::checker::tc::InferFlag::Check,
                     0,
-                    self.empty_env(),
-                    self.empty_ctx(),
+                    EMPTY_ENV,
+                    EMPTY_CTX,
                     rule.val,
                 );
                 ensure!(
@@ -385,7 +385,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
     }
-    fn mk_rec_rules(&mut self, st: &InductiveCheckState<'t>) -> Vec<Vec<RecRule<'t>>> {
+    fn mk_rec_rules(&mut self, st: &InductiveCheckState) -> Vec<Vec<RecRule>> {
         let minors = st.flat_minors();
         let mut overall_ctor_idx = 0u16;
         st.all_inductives_incl_specialized
@@ -406,21 +406,21 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn mk_recursor_aux(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        ind_name: NamePtr<'t>,
+        st: &InductiveCheckState,
+        ind_name: NameId,
         motive_idx: u16,
-        major: ExprPtr<'t>,
-        local_indices: &[ExprPtr<'t>],
-        flat_mapped_minors: &[ExprPtr<'t>],
-        rec_rules: &[RecRule<'t>],
-    ) -> Declar<'t> {
+        major: ExprId,
+        local_indices: &[ExprId],
+        flat_mapped_minors: &[ExprId],
+        rec_rules: &[RecRule],
+    ) -> Declar {
         let num_indices = u16::try_from(local_indices.len()).expect("index count exceeds u16");
         let num_minors = u16::try_from(flat_mapped_minors.len()).expect("too many minors");
         let gap = st.num_motives() + num_minors;
         let total = st.minor_base() + num_minors + num_indices + 1;
 
         let motive = self.ctx.mk_var(total - 1 - (st.num_params() + motive_idx));
-        let index_vars: Vec<ExprPtr<'t>> = (0..num_indices)
+        let index_vars: Vec<ExprId> = (0..num_indices)
             .map(|k| {
                 self.ctx
                     .mk_var(total - 1 - (st.minor_base() + num_minors + k))
@@ -442,7 +442,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let recursor = RecursorData {
             info: DeclarInfo {
                 name: {
-                    let rec_str_ptr = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+                    let rec_str_ptr = self.ctx.alloc_string("rec");
                     self.ctx.str(ind_name, rec_str_ptr)
                 },
                 uparams: st.rec_uparams.unwrap(),
@@ -464,7 +464,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
         Declar::Recursor(recursor)
     }
-    pub(crate) fn mk_recursors(&mut self, st: &InductiveCheckState<'t>) -> Vec<Declar<'t>> {
+    pub(crate) fn mk_recursors(&mut self, st: &InductiveCheckState) -> Vec<Declar> {
         let rec_rules = self.mk_rec_rules(st);
         let mut recursors = Vec::new();
         for (i, ind) in st.all_inductives_incl_specialized.iter().enumerate() {

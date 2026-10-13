@@ -3,52 +3,24 @@
 
 //! Implementation of the `Level` type representing universes
 use crate::checker::context::TcCtx;
-use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
-
-pub(crate) const ZERO_HASH: u64 = 283;
-pub(crate) const SUCC_HASH: u64 = 541;
-pub(crate) const MAX_HASH: u64 = 1091;
-pub(crate) const IMAX_HASH: u64 = 1747;
-pub(crate) const PARAM_HASH: u64 = 947;
+use crate::term::id::{LevelId, LevelsId, NameId, ZERO};
 use Level::{IMax, Max, Param, Succ, Zero};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Level<'a> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Level {
     Zero,
-    Succ(LevelPtr<'a>, u64),
-    Max(LevelPtr<'a>, LevelPtr<'a>, u64),
-    IMax(LevelPtr<'a>, LevelPtr<'a>, u64),
-    Param(NamePtr<'a>, u64),
+    Succ(LevelId),
+    Max(LevelId, LevelId),
+    IMax(LevelId, LevelId),
+    Param(NameId),
 }
 
-impl Level<'_> {
-    fn get_hash(&self) -> u64 {
-        match self {
-            Zero => ZERO_HASH,
-            Succ(.., hash) | Max(.., hash) | IMax(.., hash) | Param(.., hash) => *hash,
-        }
-    }
-}
-
-impl std::hash::Hash for Level<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.get_hash());
-    }
-}
-
-impl crate::term::hash::RawHash for Level<'_> {
-    #[inline]
-    fn raw_hash(&self) -> u64 {
-        self.get_hash()
-    }
-}
-
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    fn combining(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        match (*l, *r) {
+impl TcCtx<'_> {
+    fn combining(&mut self, l: LevelId, r: LevelId) -> LevelId {
+        match (self.level(l), self.level(r)) {
             (Zero, _) => r,
             (_, Zero) => l,
-            (Succ(l, ..), Succ(r, ..)) => {
+            (Succ(l), Succ(r)) => {
                 let pred = self.combining(l, r);
                 self.succ(pred)
             }
@@ -56,32 +28,32 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub fn simplify(&mut self, ptr: LevelPtr<'t>) -> LevelPtr<'t> {
-        match *ptr.level_succs().0 {
+    pub fn simplify(&mut self, ptr: LevelId) -> LevelId {
+        match self.level(self.level_succs(ptr).0) {
             Zero | Param(..) => return ptr,
             _ => {}
         }
         if let Some(cached) = self.expr_cache.simplify.get(&ptr) {
             return cached;
         }
-        let result = match *ptr {
+        let result = match self.level(ptr) {
             Zero | Param(..) => ptr,
-            Succ(val, ..) => {
+            Succ(val) => {
                 let val = self.simplify(val);
                 self.succ(val)
             }
-            Max(l, r, ..) => {
+            Max(l, r) => {
                 let l = self.simplify(l);
                 let r = self.simplify(r);
                 self.combining(l, r)
             }
-            IMax(l, r, ..) => {
+            IMax(l, r) => {
                 let l_simp = self.simplify(l);
                 let r_simp = self.simplify(r);
-                if l_simp.is_always_zero() || l_simp.is_always_one() {
+                if self.is_always_zero(l_simp) || self.is_always_one(l_simp) {
                     r_simp
                 } else {
-                    match *r_simp {
+                    match self.level(r_simp) {
                         Zero => r_simp,
                         Succ(..) => self.combining(l_simp, r_simp),
                         _ => self.imax(l_simp, r_simp),
@@ -94,37 +66,28 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// Return `uparams [ks |-> vs]` for a list of uparams
-    pub fn subst_levels(
-        &mut self,
-        uparams: LevelsPtr<'t>,
-        ks: LevelsPtr<'t>,
-        vs: LevelsPtr<'t>,
-    ) -> LevelsPtr<'t> {
+    pub fn subst_levels(&mut self, uparams: LevelsId, ks: LevelsId, vs: LevelsId) -> LevelsId {
         if let Some(cached) = self.subst_levels_cache.get(&(uparams, ks, vs)) {
             return cached;
         }
-        let out = uparams
-            .as_ref()
-            .iter()
-            .copied()
-            .map(|l| self.subst_level(l, ks, vs))
-            .collect::<Vec<_>>();
+        let n = self.levels(uparams).len();
+        let out = (0..n)
+            .map(|i| {
+                let l = self.levels(uparams)[i];
+                self.subst_level(l, ks, vs)
+            })
+            .collect::<smallvec::SmallVec<[LevelId; 8]>>();
         let r = self.alloc_levels(&out);
         self.subst_levels_cache.insert((uparams, ks, vs), r);
         r
     }
 
     /// Return `uparam [ks |-> vs]`
-    pub fn subst_level(
-        &mut self,
-        level: LevelPtr<'t>,
-        ks: LevelsPtr<'t>,
-        vs: LevelsPtr<'t>,
-    ) -> LevelPtr<'t> {
-        match *level {
-            Zero => self.zero(),
+    pub fn subst_level(&mut self, level: LevelId, ks: LevelsId, vs: LevelsId) -> LevelId {
+        match self.level(level) {
+            Zero => ZERO,
             Param(..) => {
-                let (ks, vs) = (ks.as_ref(), vs.as_ref());
+                let (ks, vs) = (self.levels(ks), self.levels(vs));
                 for (k, v) in ks.iter().copied().zip(vs.iter().copied()) {
                     if level == k {
                         return v;
@@ -136,17 +99,17 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 if let Some(cached) = self.subst_level_cache.get(&(level, ks, vs)) {
                     return cached;
                 }
-                let r = match *level {
-                    Succ(val, ..) => {
+                let r = match self.level(level) {
+                    Succ(val) => {
                         let val = self.subst_level(val, ks, vs);
                         self.succ(val)
                     }
-                    Max(l, r, ..) => {
+                    Max(l, r) => {
                         let l_prime = self.subst_level(l, ks, vs);
                         let r_prime = self.subst_level(r, ks, vs);
                         self.max(l_prime, r_prime)
                     }
-                    IMax(l, r, ..) => {
+                    IMax(l, r) => {
                         let l_prime = self.subst_level(l, ks, vs);
                         let r_prime = self.subst_level(r, ks, vs);
                         self.imax(l_prime, r_prime)
@@ -159,12 +122,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    fn subst_simp(
-        &mut self,
-        level: LevelPtr<'t>,
-        ks: LevelsPtr<'t>,
-        vs: LevelsPtr<'t>,
-    ) -> LevelPtr<'t> {
+    fn subst_simp(&mut self, level: LevelId, ks: LevelsId, vs: LevelsId) -> LevelId {
         let l = self.subst_level(level, ks, vs);
         self.simplify(l)
     }
@@ -173,16 +131,15 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     /// a parameter `p` is zero or non-zero.
     fn leq_imax_by_cases(
         &mut self,
-        param: LevelPtr<'t>,
-        lhs: LevelPtr<'t>,
-        rhs: LevelPtr<'t>,
+        param: LevelId,
+        lhs: LevelId,
+        rhs: LevelId,
         diff: isize,
     ) -> bool {
-        let zero = self.zero();
         let succ_param = self.succ(param);
-        let zero_slice = self.alloc_levels_slice(&[zero]);
-        let succ_param_slice = self.alloc_levels_slice(&[succ_param]);
-        let param_slice = self.alloc_levels_slice(&[param]);
+        let zero_slice = self.alloc_levels(&[ZERO]);
+        let succ_param_slice = self.alloc_levels(&[succ_param]);
+        let param_slice = self.alloc_levels(&[param]);
 
         let lhs_0 = self.subst_simp(lhs, param_slice, zero_slice);
         let rhs_0 = self.subst_simp(rhs, param_slice, zero_slice);
@@ -193,33 +150,31 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     // The more positive it is, the more have been applied to the right side compared to the left side.
-    fn leq_core(&mut self, l_in: LevelPtr<'t>, r_in: LevelPtr<'t>, diff: isize) -> bool {
-        match (*l_in, *r_in) {
+    fn leq_core(&mut self, l_in: LevelId, r_in: LevelId, diff: isize) -> bool {
+        match (self.level(l_in), self.level(r_in)) {
             (Zero, _) if diff >= 0 => true,
             (_, Zero) if diff < 0 => false,
-            (Param(a, ..), Param(x, ..)) => a == x && diff >= 0,
+            (Param(a), Param(x)) => a == x && diff >= 0,
             (Param(..), Zero) => false,
             (Zero, Param { .. }) => diff >= 0,
-            (Succ(s, ..), _) => self.leq_core(s, r_in, diff - 1),
-            (_, Succ(s, ..)) => self.leq_core(l_in, s, diff + 1),
-            (Max(a, b, ..), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
-            (Param(..), Max(x, y, ..)) => {
-                self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff)
-            }
-            (Zero, Max(x, y, ..)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
-            (IMax(a, b, ..), IMax(x, y, ..)) if (a == x) && (b == y) && diff >= 0 => true,
-            (IMax(_, b, _), _) if b.is_param() => self.leq_imax_by_cases(b, l_in, r_in, diff),
+            (Succ(s), _) => self.leq_core(s, r_in, diff - 1),
+            (_, Succ(s)) => self.leq_core(l_in, s, diff + 1),
+            (Max(a, b), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
+            (Param(..), Max(x, y)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (Zero, Max(x, y)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (IMax(a, b), IMax(x, y)) if (a == x) && (b == y) && diff >= 0 => true,
+            (IMax(_, b), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
 
-            (_, IMax(_, y, _)) if y.is_param() => self.leq_imax_by_cases(y, l_in, r_in, diff),
+            (_, IMax(_, y)) if self.is_param(y) => self.leq_imax_by_cases(y, l_in, r_in, diff),
 
-            (IMax(a, b, ..), _) if b.is_any_max() => match *b {
-                IMax(x, y, ..) => {
+            (IMax(a, b), _) if self.is_any_max(b) => match self.level(b) {
+                IMax(x, y) => {
                     let new_lhs = self.imax(a, y);
                     let new_rhs = self.imax(x, y);
                     let new_max = self.max(new_lhs, new_rhs);
                     self.leq_core(new_max, r_in, diff)
                 }
-                Max(x, y, ..) => {
+                Max(x, y) => {
                     let new_lhs = self.imax(a, x);
                     let new_rhs = self.imax(a, y);
                     let new_max = self.max(new_lhs, new_rhs);
@@ -228,14 +183,14 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 }
                 _ => panic!(),
             },
-            (_, IMax(x, y, ..)) if y.is_any_max() => match *y {
-                IMax(j, k, ..) => {
+            (_, IMax(x, y)) if self.is_any_max(y) => match self.level(y) {
+                IMax(j, k) => {
                     let new_lhs = self.imax(x, k);
                     let new_rhs = self.imax(j, k);
                     let new_max = self.max(new_lhs, new_rhs);
                     self.leq_core(l_in, new_max, diff)
                 }
-                Max(j, k, ..) => {
+                Max(j, k) => {
                     let new_lhs = self.imax(x, j);
                     let new_rhs = self.imax(x, k);
                     let new_rhs = self.max(new_lhs, new_rhs);
@@ -248,7 +203,7 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub fn leq(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
+    pub fn leq(&mut self, l: LevelId, r: LevelId) -> bool {
         if l == r {
             return true;
         }
@@ -262,100 +217,94 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         result
     }
 
-    pub fn eq_antisymm(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> bool {
+    pub fn eq_antisymm(&mut self, l: LevelId, r: LevelId) -> bool {
         l == r || (self.leq(l, r) && self.leq(r, l))
     }
 
-    pub fn eq_antisymm_many(&mut self, xs: LevelsPtr<'t>, ys: LevelsPtr<'t>) -> bool {
+    pub fn eq_antisymm_many(&mut self, xs: LevelsId, ys: LevelsId) -> bool {
         if xs == ys {
             return true;
         }
-        let xs = xs.as_ref();
-        let ys = ys.as_ref();
-        if xs.len() != ys.len() {
+        let n = self.levels(xs).len();
+        if n != self.levels(ys).len() {
             return false;
         }
-        xs.iter()
-            .copied()
-            .zip(ys.iter().copied())
-            .all(|(x, y)| self.eq_antisymm(x, y))
+        (0..n).all(|i| {
+            let (x, y) = (self.levels(xs)[i], self.levels(ys)[i]);
+            self.eq_antisymm(x, y)
+        })
     }
 
     // 1 <= level -> is_nonzero(level)
-    pub fn is_nonzero(&mut self, level: LevelPtr<'t>) -> bool {
-        let zero = self.zero();
-        let one = self.succ(zero);
+    pub fn is_nonzero(&mut self, level: LevelId) -> bool {
+        let one = self.succ(ZERO);
         self.leq(one, level)
     }
-}
 
-impl<'t> LevelPtr<'t> {
-    pub(crate) fn is_always_zero(self) -> bool {
-        match *self {
+    pub(crate) fn is_always_zero(&self, l: LevelId) -> bool {
+        match self.level(l) {
             Zero => true,
             Succ(..) | Param(..) => false,
-            Max(l, r, ..) => l.is_always_zero() && r.is_always_zero(),
-            IMax(_, r, ..) => r.is_always_zero(),
+            Max(l, r) => self.is_always_zero(l) && self.is_always_zero(r),
+            IMax(_, r) => self.is_always_zero(r),
         }
     }
 
-    pub(crate) fn is_zero_under(self, params: &[LevelPtr<'t>], args: &[LevelPtr<'t>]) -> bool {
-        match *self {
+    pub(crate) fn is_zero_under(&self, l: LevelId, params: &[LevelId], args: &[LevelId]) -> bool {
+        match self.level(l) {
             Zero => true,
             Succ(..) => false,
             Param(..) => params
                 .iter()
-                .position(|p| *p == self)
-                .is_some_and(|i| args[i].is_always_zero()),
-            Max(l, r, ..) => l.is_zero_under(params, args) && r.is_zero_under(params, args),
-            IMax(_, r, ..) => r.is_zero_under(params, args),
+                .position(|p| *p == l)
+                .is_some_and(|i| self.is_always_zero(args[i])),
+            Max(a, b) => self.is_zero_under(a, params, args) && self.is_zero_under(b, params, args),
+            IMax(_, b) => self.is_zero_under(b, params, args),
         }
     }
 
-    fn is_always_one(self) -> bool {
-        match *self {
-            Succ(pred, ..) => pred.is_always_zero(),
+    fn is_always_one(&self, l: LevelId) -> bool {
+        match self.level(l) {
+            Succ(pred) => self.is_always_zero(pred),
             _ => false,
         }
     }
 
-    pub(crate) fn level_succs(mut self) -> (LevelPtr<'t>, usize) {
+    pub(crate) fn level_succs(&self, mut l: LevelId) -> (LevelId, usize) {
         let mut num_succs = 0usize;
-        while let Succ(pred, ..) = *self {
-            self = pred;
+        while let Succ(pred) = self.level(l) {
+            l = pred;
             num_succs += 1;
         }
-        (self, num_succs)
+        (l, num_succs)
     }
 
     /// for some level `l` and list of params `ps`, assert that:\
     /// `forall Param(n) e. l, n e. params`
-    pub(crate) fn all_uparams_defined(self, params: LevelsPtr<'t>) -> bool {
-        match *self {
+    pub(crate) fn all_uparams_defined(&self, l: LevelId, params: LevelsId) -> bool {
+        match self.level(l) {
             Zero => true,
-            Succ(val, ..) => val.all_uparams_defined(params),
-            Max(l, r, ..) | IMax(l, r, ..) => {
-                l.all_uparams_defined(params) && r.all_uparams_defined(params)
+            Succ(val) => self.all_uparams_defined(val, params),
+            Max(a, b) | IMax(a, b) => {
+                self.all_uparams_defined(a, params) && self.all_uparams_defined(b, params)
             }
-            Param(..) => params.as_ref().iter().copied().any(|x| x == self),
+            Param(..) => self.levels(params).contains(&l),
         }
     }
 
-    fn is_any_max(self) -> bool {
-        matches!(*self, Max(..) | IMax(..))
+    fn is_any_max(&self, l: LevelId) -> bool {
+        matches!(self.level(l), Max(..) | IMax(..))
     }
 
-    fn is_param(self) -> bool {
-        matches!(*self, Param(..))
+    fn is_param(&self, l: LevelId) -> bool {
+        matches!(self.level(l), Param(..))
     }
-}
 
-impl<'t> LevelsPtr<'t> {
     /// returns `true` iff every element in `ls` is a `Param`, and `ls` has no duplicate elements.
-    pub(crate) fn no_dupes_all_params(self) -> bool {
+    pub(crate) fn no_dupes_all_params(&self, ls: LevelsId) -> bool {
         let mut set = crate::term::hash::new_fx_hash_set();
-        for l in self.as_ref().iter().copied() {
-            match *l {
+        for l in self.levels(ls).iter().copied() {
+            match self.level(l) {
                 Param(..) => {
                     if set.contains(&l) {
                         return false;
@@ -371,11 +320,10 @@ impl<'t> LevelsPtr<'t> {
     /// Does this list of universe parameters already contain `Param(n)` for some `n : Name`
     ///
     /// Used for generating a unique elim universe in the inductive module
-    pub(crate) fn contains_param(self, candidate: NamePtr<'t>) -> bool {
-        self.as_ref().iter().copied().any(|lptr| match *lptr {
-            Param(n, ..) => n == candidate,
-            _ => false,
-        })
+    pub(crate) fn contains_param(&self, ls: LevelsId, candidate: NameId) -> bool {
+        self.levels(ls)
+            .iter()
+            .any(|&l| matches!(self.level(l), Param(n) if n == candidate))
     }
 }
 
@@ -384,26 +332,24 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::frontend::parser::parse_export_file;
-    use bumpalo::Bump;
     use rand::random;
     use std::error::Error;
     use std::io;
 
     fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-        let arena = Bump::new();
-        let export_file = parse_export_file(&arena, io::empty(), Config::default())?;
+        let export_file = parse_export_file(io::empty(), Config::default())?;
         Ok(export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
     }
 
-    impl<'t, 'p: 't> TcCtx<'t, 'p> {
-        fn level_n(&mut self, mut level: LevelPtr<'t>, n: u64) -> LevelPtr<'t> {
+    impl TcCtx<'_> {
+        fn level_n(&mut self, mut level: LevelId, n: u64) -> LevelId {
             for _ in 0..n {
                 level = self.succ(level);
             }
             level
         }
 
-        fn param_quick(&mut self, name: &'static str) -> LevelPtr<'t> {
+        fn param_quick(&mut self, name: &'static str) -> LevelId {
             let name = self.str1(name);
             self.param(name)
         }
@@ -587,7 +533,7 @@ mod tests {
             let z = ctx.zero();
             let s = ctx.succ(z);
             let ss = ctx.succ(s);
-            let (z_, num) = ss.level_succs();
+            let (z_, num) = ctx.level_succs(ss);
             assert_eq!(z_, z);
             assert_eq!(num, 2);
             assert_eq!("2", format!("{:?}", ctx.debug_print(ss)));
@@ -601,7 +547,7 @@ mod tests {
             let s = ctx.succ(z);
             let m = ctx.max(s, s);
             let sm = ctx.succ(m);
-            let (m_, num) = sm.level_succs();
+            let (m_, num) = ctx.level_succs(sm);
             assert_eq!(m, m_);
             assert_eq!(num, 1);
             assert_eq!("max(1, 1) + 1", format!("{:?}", ctx.debug_print(sm)));

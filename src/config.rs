@@ -4,7 +4,6 @@
 use crate::checker::context::ExportFile;
 use crate::frontend::parser::{parse_export_file, parse_export_mapped};
 use crate::outcome::CheckError;
-use bumpalo::Bump;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io;
@@ -101,8 +100,8 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn to_export_file(self, arena: &Bump) -> Result<ExportFile<'_>, Box<dyn Error>> {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.parse(arena))) {
+    pub fn to_export_file(self) -> Result<ExportFile, Box<dyn Error>> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.parse())) {
             Ok(result) => result,
             Err(payload) => match CheckError::from_panic(payload) {
                 CheckError::Rejected(r) => Err(Box::new(r)),
@@ -112,10 +111,10 @@ impl Config {
         }
     }
 
-    fn parse(self, arena: &Bump) -> Result<ExportFile<'_>, Box<dyn Error>> {
+    fn parse(self) -> Result<ExportFile, Box<dyn Error>> {
         let use_stdin = self.use_stdin || self.export_file_path.as_deref() == Some(Path::new("-"));
         if use_stdin {
-            parse_export_file(arena, io::stdin(), self)
+            parse_export_file(io::stdin(), self)
         } else if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {
@@ -123,7 +122,7 @@ impl Config {
                         unsafe { memmap2::Mmap::map(&file) }.map_err(|e| -> Box<dyn Error> {
                             Box::from(format!("Failed to map export file: {e:?}"))
                         })?;
-                    parse_export_mapped(arena, &map, self)
+                    parse_export_mapped(&map, self)
                 }
                 Err(e) => Err(Box::from(format!("Failed to open export file: {e:?}"))),
             }

@@ -1,343 +1,114 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use super::hash::{CowStr, RawHash, StructHash};
-use super::ptr::{LevelPtr, NamePtr, StringPtr};
-use crate::config::Config;
-use crate::hash64;
-use crate::term::expr::Expr;
+use crate::term::expr::ExprNode;
+use crate::term::id::{ANON, LevelId, NameId, StrId};
 use crate::term::level::Level;
-use crate::term::name::{NUM_HASH, Name, NameNode, NatRed, STR_HASH};
-use bumpalo::Bump;
+use crate::term::name::{Name, NatRed};
 use hashbrown::HashTable;
 use num_bigint::BigUint;
+use rustc_hash::FxBuildHasher;
+use std::borrow::Borrow;
+use std::hash::{BuildHasher, Hash};
 
-pub(crate) trait Internable<'a>: 'a {
-    type Query<'b>: ?Sized
-    where
-        'a: 'b;
-    type Owned<'x>
-    where
-        'a: 'x;
-    fn query_hash<'b>(q: &Self::Query<'b>) -> u64
-    where
-        'a: 'b;
-    fn stored_hash(&self) -> u64;
-    fn matches<'b>(&self, q: &Self::Query<'b>) -> bool
-    where
-        'a: 'b;
-    fn as_query<'s, 'x>(v: &'s Self::Owned<'x>) -> &'s Self::Query<'a>
-    where
-        'a: 'x;
-    fn alloc<'x>(arena: &'a Bump, v: Self::Owned<'x>) -> &'a Self
-    where
-        'a: 'x;
+pub(crate) struct Interner<T> {
+    pub(crate) items: Vec<T>,
+    table: HashTable<u32>,
 }
 
-pub(crate) struct Interner<'a, T: ?Sized> {
-    table: HashTable<&'a T>,
-}
-
-impl<'a, T: ?Sized + Internable<'a>> Interner<'a, T> {
-    fn with_capacity(cap: usize) -> Self {
+impl<T> Default for Interner<T> {
+    fn default() -> Self {
         Self {
+            items: Vec::new(),
+            table: HashTable::new(),
+        }
+    }
+}
+
+impl<T: Hash + Eq> Interner<T> {
+    pub(crate) fn with_capacity(cap: usize) -> Self {
+        Self {
+            items: Vec::with_capacity(cap),
             table: HashTable::with_capacity(cap),
         }
     }
 
-    pub(crate) fn get<'b>(&self, q: &T::Query<'b>) -> Option<&'a T>
+    pub(crate) fn find<Q: ?Sized + Hash + Eq>(&self, q: &Q) -> Option<u32>
     where
-        'a: 'b,
+        T: Borrow<Q>,
     {
+        let items = &self.items;
         self.table
-            .find(T::query_hash(q), |stored| stored.matches(q))
+            .find(FxBuildHasher.hash_one(q), |&i| items[i as usize].borrow() == q)
             .copied()
     }
 
-    pub(crate) fn insert<'x>(&mut self, arena: &'a Bump, v: T::Owned<'x>) -> &'a T
-    where
-        'a: 'x,
-    {
-        let r = T::alloc(arena, v);
-        self.table
-            .insert_unique(r.stored_hash(), r, |s| s.stored_hash());
-        r
+    pub(crate) fn push(&mut self, t: T) -> u32 {
+        let i = u32::try_from(self.items.len()).expect("term store exceeds u32");
+        self.items.push(t);
+        i
     }
 
-    pub(crate) fn intern<'x>(&mut self, arena: &'a Bump, v: T::Owned<'x>) -> &'a T
-    where
-        'a: 'x,
-    {
-        if let Some(r) = self.get(T::as_query(&v)) {
-            return r;
-        }
-        self.insert(arena, v)
+    pub(crate) fn insert_unique(&mut self, t: T) -> u32 {
+        let hash = FxBuildHasher.hash_one(&t);
+        let i = self.push(t);
+        let items = &self.items;
+        self.table.insert_unique(hash, i, |&j| {
+            FxBuildHasher.hash_one(&items[j as usize])
+        });
+        i
     }
-}
 
-macro_rules! internable_by_value {
-    ($t:ident) => {
-        impl<'a> Internable<'a> for $t<'a> {
-            type Query<'b>
-                = $t<'b>
-            where
-                'a: 'b;
-            type Owned<'x>
-                = $t<'a>
-            where
-                'a: 'x;
-            fn query_hash<'b>(q: &$t<'b>) -> u64
-            where
-                'a: 'b,
-            {
-                q.raw_hash()
-            }
-            fn stored_hash(&self) -> u64 {
-                self.raw_hash()
-            }
-            fn matches<'b>(&self, q: &$t<'b>) -> bool
-            where
-                'a: 'b,
-            {
-                let s: &$t<'b> = self;
-                s == q
-            }
-            fn as_query<'s, 'x>(v: &'s $t<'a>) -> &'s $t<'a>
-            where
-                'a: 'x,
-            {
-                v
-            }
-            fn alloc<'x>(arena: &'a Bump, v: $t<'a>) -> &'a Self
-            where
-                'a: 'x,
-            {
-                arena.alloc(v)
-            }
-        }
-    };
-}
-
-internable_by_value!(Level);
-internable_by_value!(Expr);
-
-impl<'a> Internable<'a> for CowStr<'a> {
-    type Query<'b>
-        = str
-    where
-        'a: 'b;
-    type Owned<'x>
-        = CowStr<'a>
-    where
-        'a: 'x;
-    fn query_hash<'b>(q: &str) -> u64
-    where
-        'a: 'b,
-    {
-        q.struct_hash()
-    }
-    fn stored_hash(&self) -> u64 {
-        self.raw_hash()
-    }
-    fn matches<'b>(&self, q: &str) -> bool
-    where
-        'a: 'b,
-    {
-        self.as_ref() == q
-    }
-    fn as_query<'s, 'x>(v: &'s CowStr<'a>) -> &'s str
-    where
-        'a: 'x,
-    {
-        v.as_ref()
-    }
-    fn alloc<'x>(arena: &'a Bump, v: CowStr<'a>) -> &'a Self
-    where
-        'a: 'x,
-    {
-        arena.alloc(v)
-    }
-}
-
-impl<'a> Internable<'a> for NameNode<'a> {
-    type Query<'b>
-        = Name<'b>
-    where
-        'a: 'b;
-    type Owned<'x>
-        = Name<'a>
-    where
-        'a: 'x;
-    fn query_hash<'b>(q: &Name<'b>) -> u64
-    where
-        'a: 'b,
-    {
-        q.get_hash()
-    }
-    fn stored_hash(&self) -> u64 {
-        self.kind.get_hash()
-    }
-    fn matches<'b>(&self, q: &Name<'b>) -> bool
-    where
-        'a: 'b,
-    {
-        match (&self.kind, q) {
-            (Name::Anon, Name::Anon) => true,
-            (Name::Str(a, x, h), Name::Str(b, y, k)) => {
-                h == k && a.get_hash() == b.get_hash() && x.get_hash() == y.get_hash()
-            }
-            (Name::Num(a, x, h), Name::Num(b, y, k)) => {
-                h == k && a.get_hash() == b.get_hash() && x == y
-            }
-            _ => false,
+    pub(crate) fn intern(&mut self, t: T) -> u32 {
+        match self.find(&t) {
+            Some(i) => i,
+            None => self.insert_unique(t),
         }
     }
-    fn as_query<'s, 'x>(v: &'s Name<'a>) -> &'s Name<'a>
+
+    pub(crate) fn intern_ref<Q: ?Sized + Hash + Eq>(&mut self, q: &Q) -> u32
     where
-        'a: 'x,
+        T: Borrow<Q>,
+        for<'q> &'q Q: Into<T>,
     {
-        v
-    }
-    fn alloc<'x>(arena: &'a Bump, v: Name<'a>) -> &'a Self
-    where
-        'a: 'x,
-    {
-        arena.alloc(NameNode::new(v))
+        match self.find(q) {
+            Some(i) => i,
+            None => self.insert_unique(q.into()),
+        }
     }
 }
 
-impl<'a> Internable<'a> for BigUint {
-    type Query<'b>
-        = BigUint
-    where
-        'a: 'b;
-    type Owned<'x>
-        = BigUint
-    where
-        'a: 'x;
-    fn query_hash<'b>(q: &BigUint) -> u64
-    where
-        'a: 'b,
-    {
-        q.struct_hash()
-    }
-    fn stored_hash(&self) -> u64 {
-        self.struct_hash()
-    }
-    fn matches<'b>(&self, q: &BigUint) -> bool
-    where
-        'a: 'b,
-    {
-        self == q
-    }
-    fn as_query<'s, 'x>(v: &'s BigUint) -> &'s BigUint
-    where
-        'a: 'x,
-    {
-        v
-    }
-    fn alloc<'x>(arena: &'a Bump, v: BigUint) -> &'a Self
-    where
-        'a: 'x,
-    {
-        arena.alloc(v)
-    }
+#[derive(Default)]
+pub struct Terms {
+    pub(crate) names: Interner<Name>,
+    pub(crate) levels: Interner<Level>,
+    pub(crate) lists: Interner<Box<[LevelId]>>,
+    pub(crate) exprs: Interner<ExprNode>,
+    pub(crate) strings: Interner<Box<str>>,
+    pub(crate) bignums: Interner<BigUint>,
 }
 
-impl<'a> Internable<'a> for [LevelPtr<'a>] {
-    type Query<'b>
-        = [LevelPtr<'b>]
-    where
-        'a: 'b;
-    type Owned<'x>
-        = &'x [LevelPtr<'a>]
-    where
-        'a: 'x;
-    fn query_hash<'b>(q: &[LevelPtr<'b>]) -> u64
-    where
-        'a: 'b,
-    {
-        q.struct_hash()
-    }
-    fn stored_hash(&self) -> u64 {
-        self.struct_hash()
-    }
-    fn matches<'b>(&self, q: &[LevelPtr<'b>]) -> bool
-    where
-        'a: 'b,
-    {
-        let s: &[LevelPtr<'b>] = self;
-        s == q
-    }
-    fn as_query<'s, 'x>(v: &'s &'x [LevelPtr<'a>]) -> &'s [LevelPtr<'a>]
-    where
-        'a: 'x,
-    {
-        v
-    }
-    fn alloc<'x>(arena: &'a Bump, v: &'x [LevelPtr<'a>]) -> &'a Self
-    where
-        'a: 'x,
-    {
-        arena.alloc_slice_copy(v)
-    }
-}
-
-pub struct Dag<'a> {
-    pub(crate) names: Interner<'a, NameNode<'a>>,
-    pub(crate) levels: Interner<'a, Level<'a>>,
-    pub(crate) exprs: Interner<'a, Expr<'a>>,
-    pub(crate) uparams: Interner<'a, [LevelPtr<'a>]>,
-    pub(crate) strings: Interner<'a, CowStr<'a>>,
-    pub(crate) bignums: Option<Interner<'a, BigUint>>,
-}
-
-impl Dag<'_> {
-    pub(crate) fn new(config: &Config, input_len: usize) -> Self {
+impl Terms {
+    pub(crate) fn with_input_len(input_len: usize) -> Self {
         Self {
             names: Interner::with_capacity(input_len / 1024 + 16),
-            levels: Interner::with_capacity(0),
-            exprs: Interner::with_capacity(0),
-            uparams: Interner::with_capacity(0),
+            levels: Interner::default(),
+            lists: Interner::default(),
+            exprs: Interner::default(),
             strings: Interner::with_capacity(input_len / 16384 + 16),
-            bignums: config.nat_extension.then(|| Interner::with_capacity(0)),
+            bignums: Interner::default(),
         }
     }
 
-    pub(crate) fn new_local(config: &Config) -> Self {
-        Self {
-            names: Interner::with_capacity(0),
-            levels: Interner::with_capacity(14),
-            exprs: Interner::with_capacity(14),
-            uparams: Interner::with_capacity(14),
-            strings: Interner::with_capacity(0),
-            bignums: config.nat_extension.then(|| Interner::with_capacity(0)),
-        }
-    }
-}
-
-impl<'a> Dag<'a> {
-    fn get_string_ptr(&self, s: &str) -> Option<StringPtr<'a>> {
-        self.strings.get(s).map(StringPtr::global)
-    }
-
-    fn find_name(&self, anon: NamePtr<'a>, dot_separated_name: &str) -> Option<NamePtr<'a>> {
-        let mut pfx = anon;
+    fn find_name(&self, dot_separated_name: &str) -> Option<NameId> {
+        let mut pfx = ANON;
         for s in dot_separated_name.split('.') {
-            if let Ok(num) = s.parse::<u64>() {
-                let hash = hash64!(NUM_HASH, pfx, num);
-                if let Some(r) = self.names.get(&Name::Num(pfx, num, hash)) {
-                    pfx = NamePtr::global(r);
-                    continue;
-                }
-            } else if let Some(sfx) = self.get_string_ptr(s) {
-                let hash = hash64!(STR_HASH, pfx, sfx);
-                if let Some(r) = self.names.get(&Name::Str(pfx, sfx, hash)) {
-                    pfx = NamePtr::global(r);
-                    continue;
-                }
-            }
-            return None;
+            let name = if let Ok(num) = s.parse::<u64>() {
+                Name::Num(pfx, num)
+            } else {
+                Name::Str(pfx, StrId::new(self.strings.find(s)?, false))
+            };
+            pfx = NameId::new(self.names.find(&name)?, false);
         }
         Some(pfx)
     }
@@ -346,18 +117,18 @@ impl<'a> Dag<'a> {
 macro_rules! name_cache {
     ($($field:ident = $path:literal $(=> $red:ident)?,)*) => {
         #[derive(Debug, Clone, Copy)]
-        pub struct NameCache<'p> {
-            $(pub(crate) $field: Option<NamePtr<'p>>,)*
+        pub struct NameCache {
+            $(pub(crate) $field: Option<NameId>,)*
         }
 
-        impl<'a> Dag<'a> {
-            pub(crate) fn mk_name_cache(&self, anon: NamePtr<'a>) -> NameCache<'a> {
+        impl Terms {
+            pub(crate) fn mk_name_cache(&self, nat_red: &mut [u8]) -> NameCache {
                 let cache = NameCache {
-                    $($field: self.find_name(anon, $path),)*
+                    $($field: self.find_name($path),)*
                 };
                 $($(
                     if let Some(n) = cache.$field {
-                        n.as_ref().set_nat_red(NatRed::$red);
+                        nat_red[n.index()] = NatRed::$red as u8;
                     }
                 )?)*
                 cache

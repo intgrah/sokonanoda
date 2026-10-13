@@ -2,43 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use indexmap::IndexMap;
-use rustc_hash::{FxBuildHasher, FxHasher};
-use std::borrow::Cow;
+use rustc_hash::FxBuildHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 
 pub(crate) type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, FxBuildHasher>;
 pub(crate) type FxHashSet<K> = HashSet<K, FxBuildHasher>;
 
-pub(crate) type CowStr<'a> = Cow<'a, str>;
-
 /// <https://en.wikipedia.org/wiki/Hash_function#Fibonacci_hashing>
 /// 2 ^ 64 / φ
 pub(crate) const GOLDEN: u64 = 0x9E37_79B9_7F4A_7C15;
-
-pub(crate) trait StructHash {
-    fn struct_hash(&self) -> u64;
-}
-impl<T: Hash + ?Sized> StructHash for T {
-    #[inline]
-    fn struct_hash(&self) -> u64 {
-        let mut hasher = FxHasher::default();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
-pub(crate) trait RawHash {
-    fn raw_hash(&self) -> u64;
-}
-
-impl RawHash for CowStr<'_> {
-    #[inline]
-    fn raw_hash(&self) -> u64 {
-        self.struct_hash()
-    }
-}
 
 pub(crate) fn new_fx_index_map<K, V>() -> FxIndexMap<K, V> {
     FxIndexMap::with_hasher(FxBuildHasher)
@@ -68,7 +41,6 @@ macro_rules! hash64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::config::Config;
     use crate::frontend::parser::parse_export_file;
     use num_bigint::BigRng010;
@@ -79,8 +51,7 @@ mod tests {
 
     #[test]
     fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
-        let arena = bumpalo::Bump::new();
-        let export = parse_export_file(&arena, io::empty(), Config::default())?;
+        let export = parse_export_file(io::empty(), Config::default())?;
         let mut rng = rand::rng();
         export.with_ctx(|ctx, _cache, _arena| {
             for size in 0..100 {
@@ -90,10 +61,9 @@ mod tests {
                         .take(size)
                         .map(char::from)
                         .collect();
-                    let text = CowStr::Owned(text);
                     let (left, right) = (
-                        ctx.mk_string_lit_quick(text.clone()),
-                        ctx.mk_string_lit_quick(text),
+                        ctx.mk_string_lit_quick(&text),
+                        ctx.mk_string_lit_quick(&text),
                     );
                     assert_eq!(hash64!(left), hash64!(right));
                     assert_eq!(left, right);

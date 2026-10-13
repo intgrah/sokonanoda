@@ -3,26 +3,26 @@
 
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{ElimView, RigidHead, S, Spine, V, Value};
-use crate::term::ptr::{ExprPtr, Id};
+use crate::checker::value::{EMPTY_ENV, ElimView, RigidHead, S, Spine, V, Value};
+use crate::term::id::ExprId;
 
-impl<'t> TypeChecker<'_, 't, '_> {
-    pub(crate) fn quote(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
+impl<'t> TypeChecker<'_, 't> {
+    pub(crate) fn quote(&mut self, depth: u32, v: V) -> ExprId {
         memo!(
             self.tc_cache.quote_cache,
-            (Id::of(v), depth),
-            match v {
-                Value::Sort { level, .. } => self.ctx.mk_sort(*level),
-                Value::NatLit { ptr, .. } => self
+            (v, depth),
+            match self.val(v) {
+                Value::Sort { level, .. } => self.ctx.mk_sort(level),
+                Value::NatLit { lit, .. } => self
                     .ctx
-                    .mk_nat_lit(*ptr)
+                    .mk_nat_lit(lit)
                     .expect("quote: nat literal without extension"),
-                Value::StrLit { ptr, .. } => self
+                Value::StrLit { lit, .. } => self
                     .ctx
-                    .mk_string_lit(*ptr)
+                    .mk_string_lit(lit)
                     .expect("quote: string literal without extension"),
                 Value::Rigid { head, spine, .. } => {
-                    let head = self.quote_rigid_head(depth, *head);
+                    let head = self.quote_rigid_head(depth, head);
                     self.quote_spine(depth, head, spine)
                 }
                 Value::Unfold { head, spine, .. } => {
@@ -38,7 +38,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     self.ctx.mk_lambda(dom_e, body_e)
                 }
                 Value::Pi { domain, body, .. } => {
-                    let domain = *domain;
+                    let domain = domain;
                     let fresh = self.mk_bvar_hc(depth, domain);
                     let body = self.apply_closure(depth + 1, body, fresh, Some(domain));
                     let dom_e = self.quote(depth, domain);
@@ -49,7 +49,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         )
     }
 
-    fn quote_rigid_head(&mut self, depth: u32, head: RigidHead<'t>) -> ExprPtr<'t> {
+    fn quote_rigid_head(&mut self, depth: u32, head: RigidHead) -> ExprId {
         match head {
             RigidHead::BVar(lvl, _) => {
                 assert!(lvl < depth, "quote: bound variable escaped its binder");
@@ -64,8 +64,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn quote_spine(&mut self, depth: u32, head: ExprPtr<'t>, s: S<'t>) -> ExprPtr<'t> {
-        match s {
+    fn quote_spine(&mut self, depth: u32, head: ExprId, s: S) -> ExprId {
+        match self.vals().spine(s) {
             Spine::Empty => head,
             Spine::Snoc { prev, elim, .. } => {
                 let prefix = self.quote_spine(depth, head, prev);
@@ -80,10 +80,10 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    pub(crate) fn quote_weak(&mut self, depth: u32, v: V<'t>) -> ExprPtr<'t> {
-        match v {
+    pub(crate) fn quote_weak(&mut self, depth: u32, v: V) -> ExprId {
+        match self.val(v) {
             Value::Rigid { head, spine, .. } => {
-                let head = self.quote_rigid_head(depth, *head);
+                let head = self.quote_rigid_head(depth, head);
                 self.quote_spine_weak(depth, head, spine)
             }
             Value::Unfold { head, spine, .. } => {
@@ -94,8 +94,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn quote_spine_weak(&mut self, depth: u32, head: ExprPtr<'t>, s: S<'t>) -> ExprPtr<'t> {
-        match s {
+    fn quote_spine_weak(&mut self, depth: u32, head: ExprId, s: S) -> ExprId {
+        match self.vals().spine(s) {
             Spine::Empty => head,
             Spine::Snoc { prev, elim, .. } => {
                 let prefix = self.quote_spine_weak(depth, head, prev);
@@ -110,14 +110,14 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    pub(crate) fn force_pi(&mut self, depth: u32, cur: V<'t>) -> Option<V<'t>> {
-        let f = self.force_all(depth, cur);
+    pub(crate) fn force_pi(&mut self, depth: u32, cur: V) -> Option<Value> {
+        let f = self.force_all_val(depth, cur);
         matches!(f, Value::Pi { .. }).then_some(f)
     }
 
-    pub(crate) fn value_of(&mut self, e: ExprPtr<'t>) -> V<'t> {
+    pub(crate) fn value_of(&mut self, e: ExprId) -> V {
         let depth = 0u32;
-        let env = self.empty_env();
+        let env = EMPTY_ENV;
         self.eval(depth, env, e)
     }
 }

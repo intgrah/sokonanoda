@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use bumpalo::Bump;
 use clap::{ArgGroup, Parser};
 use sokonanoda::{AxiomPolicy, CheckError, Config, Decline, DisallowedAxiom, Output, Rejection};
 use std::env;
@@ -166,8 +165,7 @@ fn config(cli: Cli) -> (Config, bool) {
 fn run(cfg: Config, quiet: bool) -> i32 {
     let start = Instant::now();
     let parse_only = cfg.parse_only;
-    let arena = Bump::new();
-    let export_file = match cfg.to_export_file(&arena) {
+    let export_file = match cfg.to_export_file() {
         Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("{e}\n\n{HELP_SHORT}");

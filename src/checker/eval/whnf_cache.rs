@@ -3,8 +3,8 @@
 
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{Closure, E, ElimView, KeyTag, RigidHead, S, V, Value, kmix};
-use crate::term::ptr::{Id, LevelsPtr, NamePtr};
+use crate::checker::value::{Closure, E, EMPTY_ENV, ElimView, KeyTag, RigidHead, S, V, Value, kmix};
+use crate::term::id::{LevelsId, NameId};
 
 #[inline]
 fn mix(a: u128, b: u128) -> u128 {
@@ -13,10 +13,10 @@ fn mix(a: u128, b: u128) -> u128 {
         .rotate_left(47)
 }
 
-fn head_key(tag: KeyTag, n: NamePtr<'_>, ls: LevelsPtr<'_>) -> u128 {
+fn head_key(tag: KeyTag, n: NameId, ls: LevelsId) -> u128 {
     mix(
-        mix(tag.u128(), u128::from(n.get_hash())),
-        u128::from(ls.get_hash()),
+        mix(tag.u128(), u128::from(n.raw())),
+        u128::from(ls.raw()),
     )
 }
 
@@ -25,14 +25,14 @@ const WHNF_ADMIT_THRESHOLD: u8 = 2;
 const FAIL_CLOSURE: u8 = 1;
 const FAIL_DEPTH: u8 = 7;
 
-impl<'t> TypeChecker<'_, 't, '_> {
+impl<'t> TypeChecker<'_, 't> {
     #[inline]
-    pub(super) fn note_whnf(&mut self, depth: u32, src: V<'t>, res: V<'t>, steps: u32) {
+    pub(super) fn note_whnf(&mut self, depth: u32, src: V, res: V, steps: u32) {
         if steps == 0 {
             return;
         }
-        let closed = src.is_closed();
-        let k = src.digest();
+        let closed = self.vals_mut().is_closed(src);
+        let k = self.vals_mut().digest(src);
         if !closed {
             return;
         }
@@ -54,7 +54,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if !verified {
             return;
         }
-        let Some(hk) = Self::shallow_head_key(src) else {
+        let Some(hk) = self.shallow_head_key(src) else {
             return;
         };
         let q = self.quote(0, res);
@@ -65,35 +65,35 @@ impl<'t> TypeChecker<'_, 't, '_> {
     }
 
     #[inline]
-    fn shallow_head_key(v: V<'t>) -> Option<u64> {
-        let head = |tag: KeyTag, n: NamePtr<'t>, ls: LevelsPtr<'t>| {
-            kmix(tag.u64(), kmix(n.get_hash(), ls.get_hash()))
+    fn shallow_head_key(&self, v: V) -> Option<u64> {
+        let head = |tag: KeyTag, n: NameId, ls: LevelsId| {
+            kmix(tag.u64(), kmix(u64::from(n.raw()), u64::from(ls.raw())))
         };
-        let (h, spine) = match v {
+        let (h, spine) = match self.val(v) {
             Value::Unfold { head: u, spine, .. } => {
-                (head(KeyTag::Unfold, u.name, u.levels), *spine)
+                (head(KeyTag::Unfold, u.name, u.levels), spine)
             }
             Value::Rigid {
                 head: h @ (RigidHead::Recursor(n, ls) | RigidHead::QuotConst(n, ls)),
                 spine,
                 ..
-            } => (head(h.tag(), *n, *ls), *spine),
+            } => (head(h.tag(), n, ls), spine),
             _ => return None,
         };
-        Some(kmix(h, u64::from(spine.len())))
+        Some(kmix(h, u64::from(self.vals().spine_len(spine))))
     }
 
     #[inline]
-    pub(super) fn store_lookup(&mut self, depth: u32, v: V<'t>) -> Option<V<'t>> {
-        let hk = Self::shallow_head_key(v)?;
+    pub(super) fn store_lookup(&mut self, depth: u32, v: V) -> Option<V> {
+        let hk = self.shallow_head_key(v)?;
         let (hi, hb) = crate::checker::cache::tenure_slot(hk);
         if self.tc_cache.whnf_head_filter[hi] & hb == 0 {
             return None;
         }
-        if !v.is_closed() {
+        if !self.vals_mut().is_closed(v) {
             return None;
         }
-        let k = v.digest();
+        let k = self.vals_mut().digest(v);
         let (fi, fb) = crate::checker::cache::tenure_slot(k);
         if self.tc_cache.whnf_store_filter[fi] & fb == 0 {
             return None;
@@ -103,31 +103,31 @@ impl<'t> TypeChecker<'_, 't, '_> {
         if !verified || mine != full {
             return None;
         }
-        let env = self.empty_env();
+        let env = EMPTY_ENV;
         Some(self.eval(depth, env, e))
     }
 
-    fn global_key(&mut self, v: V<'t>, depth: u32) -> Result<(u128, bool), u8> {
+    fn global_key(&mut self, v: V, depth: u32) -> Result<(u128, bool), u8> {
         memo!(
             self.tc_cache.global_value_cache,
-            (Id::of(v), depth),
+            (v, depth),
             self.global_key_uncached(v, depth)
         )
     }
 
-    fn global_key_uncached(&mut self, v: V<'t>, depth: u32) -> Result<(u128, bool), u8> {
-        match v {
+    fn global_key_uncached(&mut self, v: V, depth: u32) -> Result<(u128, bool), u8> {
+        match self.val(v) {
             Value::Sort { level, .. } => {
-                Ok((mix(KeyTag::Sort.u128(), u128::from(level.get_hash())), true))
+                Ok((mix(KeyTag::Sort.u128(), u128::from(level.raw())), true))
             }
-            Value::NatLit { ptr, .. } => {
-                Ok((mix(KeyTag::NatLit.u128(), u128::from(ptr.get_hash())), true))
+            Value::NatLit { lit, .. } => {
+                Ok((mix(KeyTag::NatLit.u128(), u128::from(lit.raw())), true))
             }
-            Value::StrLit { ptr, .. } => {
-                Ok((mix(KeyTag::StrLit.u128(), u128::from(ptr.get_hash())), true))
+            Value::StrLit { lit, .. } => {
+                Ok((mix(KeyTag::StrLit.u128(), u128::from(lit.raw())), true))
             }
             Value::Rigid { head, spine, .. } => {
-                let (h, c) = match *head {
+                let (h, c) = match head {
                     RigidHead::BVar(lvl, ty) => {
                         if lvl >= depth {
                             return Err(FAIL_DEPTH);
@@ -153,7 +153,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Value::Lam {
                 binder_type, body, ..
             } => {
-                let h = mix(KeyTag::Lam.u128(), binder_type.addr() as u128);
+                let h = mix(KeyTag::Lam.u128(), u128::from(binder_type.raw()));
                 self.closure_key(h, body, depth)
             }
             Value::Pi { domain, body, .. } => {
@@ -167,19 +167,19 @@ impl<'t> TypeChecker<'_, 't, '_> {
     fn closure_key(
         &mut self,
         tag: u128,
-        clo: &Closure<'t>,
+        clo: Closure,
         depth: u32,
     ) -> Result<(u128, bool), u8> {
         if clo.ctx.is_some() {
             return Err(FAIL_CLOSURE);
         }
-        let acc = mix(tag, clo.body.addr() as u128);
+        let acc = mix(tag, u128::from(clo.body.raw()));
         self.env_key(
             acc,
             true,
             clo.env,
             depth,
-            clo.body.num_loose_bvars().saturating_sub(1),
+            clo.loose.saturating_sub(1),
         )
     }
 
@@ -187,20 +187,21 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         acc: u128,
         closed: bool,
-        env: E<'t>,
+        env: E,
         depth: u32,
         count: u16,
     ) -> Result<(u128, bool), u8> {
         let mut acc = acc;
         let mut closed = closed;
-        if let Some(ls) = env.lsub() {
+        if let Some(ls) = self.vals().env_lsub(env) {
+            let ls = self.vals().lsub(ls);
             acc = mix(
-                mix(acc, u128::from(ls.ks.get_hash())),
-                u128::from(ls.vs.get_hash()),
+                mix(acc, u128::from(ls.ks.raw())),
+                u128::from(ls.vs.raw()),
             );
         }
         for i in 0..count {
-            if let Some(slot) = env.lookup(i) {
+            if let Some(slot) = self.vals().env_lookup(env, i) {
                 let (k, c) = self.global_key(slot, depth)?;
                 acc = mix(mix(acc, u128::from(i)), k);
                 closed &= c;
@@ -213,12 +214,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         head: u128,
         closed: bool,
-        s: S<'t>,
+        s: S,
         depth: u32,
     ) -> Result<(u128, bool), u8> {
         let mut acc = head;
         let mut closed = closed;
-        for elim in s.to_vec() {
+        for elim in self.vals().spine_to_vec(s) {
             acc = match elim.view() {
                 ElimView::App(a) => {
                     let (k, c) = self.global_key(a, depth)?;
@@ -226,7 +227,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                     mix(acc, k)
                 }
                 ElimView::Proj { ty_name, idx } => mix(
-                    mix(acc, u128::from(ty_name.get_hash())),
+                    mix(acc, u128::from(ty_name.raw())),
                     u128::from(idx) | (1 << 60),
                 ),
             };

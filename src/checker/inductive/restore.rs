@@ -10,14 +10,14 @@ use crate::checker::value::Value;
 use crate::outcome::{ensure, ensure_eq, reject};
 use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use crate::term::hash::FxIndexMap;
-use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
+use crate::term::id::{ExprId, LevelsId, NameId};
 use std::sync::Arc;
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
     pub(super) fn assert_nonnested_tys_def_eq(
         &mut self,
-        base_ind: &InductiveData<'t>,
-        st: &InductiveCheckState<'t>,
+        base_ind: &InductiveData,
+        st: &InductiveCheckState,
     ) {
         assert!(!st.is_nested());
         for name in base_ind.all_ind_names.iter() {
@@ -35,7 +35,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
     }
-    pub(super) fn assert_nonnested_ctors_def_eq(&mut self, st: &InductiveCheckState<'t>) {
+    pub(super) fn assert_nonnested_ctors_def_eq(&mut self, st: &InductiveCheckState) {
         assert!(!st.is_nested());
         for inductive in &st.all_inductives_incl_specialized {
             for ctor in &inductive.ctors {
@@ -56,10 +56,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn assert_nonnested_rec_rule_def_eq(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        old: LevelsPtr<'t>,
-        imported_rr: &RecRule<'t>,
-        constructed_rr: &RecRule<'t>,
+        st: &InductiveCheckState,
+        old: LevelsId,
+        imported_rr: &RecRule,
+        constructed_rr: &RecRule,
     ) {
         assert!(!std::ptr::eq(imported_rr, constructed_rr));
         // Should be structurally != because they come from different envs.
@@ -78,8 +78,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     pub(super) fn assert_nonnested_recursors_def_eq(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        recursors: &Vec<Declar<'t>>,
+        st: &InductiveCheckState,
+        recursors: &Vec<Declar>,
     ) {
         assert!(!st.is_nested());
         for new_rec in recursors {
@@ -132,13 +132,13 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// ```
     fn mk_specialized_rec_to_unspecialized_map(
         &mut self,
-        base_mutuals: &[IndTyHeader<'t>],
-    ) -> FxIndexMap<NamePtr<'t>, NamePtr<'t>> {
+        base_mutuals: &[IndTyHeader],
+    ) -> FxIndexMap<NameId, NameId> {
         // The unmodified name of the "main" type being checked, e.g. `Lean.Syntax`
         let main_ind_ty_name = base_mutuals.first().map(|zth| zth.name).unwrap();
         let mut specialized_rec_names_to_unspecialized_rec_names =
             crate::term::hash::new_fx_index_map();
-        let rec_str = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+        let rec_str = self.ctx.alloc_string("rec");
 
         // The MODIFIED version looked up in the new environment. The modification would
         // just be additions to `all_ind_names`, which now contains the `_nested.Array`
@@ -169,9 +169,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// you might get `_nested.Array_1`
     fn get_nested_if_aux_ctor(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        c: NamePtr<'t>,
-    ) -> Option<(ExprPtr<'t>, NamePtr<'t>)> {
+        st: &InductiveCheckState,
+        c: NameId,
+    ) -> Option<(ExprId, NameId)> {
         // `inductive_name`
         let ConstructorData { inductive_name, .. } = self.env.get_constructor(c)?;
         let unspecialized_ty = st.nested_to_unspecialized_ty.get(inductive_name).copied()?;
@@ -182,15 +182,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// This is only used in restoring recursor rules, since those hold the constructor name.
     fn restore_ctor_name(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        ctor_name: NamePtr<'t>,
-    ) -> NamePtr<'t> {
+        st: &InductiveCheckState,
+        ctor_name: NameId,
+    ) -> NameId {
         // from `_nested_Array_1.mk`, retrieve `(Array Lean.Syntax, _nested.Array_1)`
         let (unspecialized_ty, base_ind_name) = self.get_nested_if_aux_ctor(st, ctor_name).unwrap();
         // Now get just `Const(Array, [])`
-        let unspecialized_f = unspecialized_ty.unfold_apps_fun();
+        let unspecialized_f = self.ctx.unfold_apps_fun(unspecialized_ty);
         // Get just the name for `Array`
-        let (unspecialized_ty_name, ..) = unspecialized_f.try_const_info().unwrap();
+        let (unspecialized_ty_name, ..) = self.ctx.try_const_info(unspecialized_f).unwrap();
         // Replace ctor_name[specialized_name |-> unspecialized_name]
         // e.g. `_nested.Array_1.mk |-> Array.mk`
         self.ctx
@@ -198,12 +198,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn restore_replace(
         &mut self,
-        e: ExprPtr<'t>,
+        e: ExprId,
         num_params: usize,
         depth: u16,
-        st: &InductiveCheckState<'t>,
-        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-    ) -> ExprPtr<'t> {
+        st: &InductiveCheckState,
+        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NameId, NameId>,
+    ) -> ExprId {
         match self.replace_f(
             e,
             num_params,
@@ -212,11 +212,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             specialized_rec_names_to_unspecialized_rec_names,
         ) {
             Some(out) => out,
-            None => match *e {
+            None => match self.ctx.ex(e) {
                 Var { .. } | Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => e,
-                Lambda {
-                    binder_type, body, ..
-                } => {
+                Lambda { binder_type, body } => {
                     let binder_type = self.restore_replace(
                         binder_type,
                         num_params,
@@ -233,9 +231,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     );
                     self.ctx.mk_lambda(binder_type, body)
                 }
-                Pi {
-                    binder_type, body, ..
-                } => {
+                Pi { binder_type, body } => {
                     let binder_type = self.restore_replace(
                         binder_type,
                         num_params,
@@ -253,14 +249,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     self.ctx.mk_pi(binder_type, body)
                 }
                 Let {
-                    data:
-                        &crate::term::expr::LetData {
-                            binder_type,
-                            val,
-                            body,
-                            nondep,
-                        },
-                    ..
+                    binder_type,
+                    val,
+                    body,
+                    nondep,
                 } => {
                     let binder_type = self.restore_replace(
                         binder_type,
@@ -289,7 +281,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     ty_name,
                     idx,
                     structure,
-                    ..
                 } => {
                     let structure = self.restore_replace(
                         structure,
@@ -300,7 +291,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     );
                     self.ctx.mk_proj(ty_name, idx, structure)
                 }
-                App { fun, arg, .. } => {
+                App { fun, arg } => {
                     let fun = self.restore_replace(
                         fun,
                         num_params,
@@ -331,23 +322,23 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// (`_nested.List_2.rec`, `Lean.Syntax.rec_2`)
     fn replace_f(
         &mut self,
-        e: ExprPtr<'t>,
+        e: ExprId,
         num_params: usize,
         depth: u16,
-        st: &InductiveCheckState<'t>,
-        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-    ) -> Option<ExprPtr<'t>> {
+        st: &InductiveCheckState,
+        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NameId, NameId>,
+    ) -> Option<ExprId> {
         // If it's a recursor application, update the recursor.
         // e.g.
         // replacing(1) const _nested.Lean.PersistentArrayNode_2.rec with Lean.Elab.InfoTree.rec_2
         // replacing(1) const _nested.List_6.rec with Lean.Elab.InfoTree.rec_6
-        if let Const { name, levels, .. } = *e {
+        if let Const { name, levels } = self.ctx.ex(e) {
             // If e was `Const(_nested.Array_1.rec)`, return `Const(Lean.Syntax.rec_1)`
             if let Some(rec_name) = specialized_rec_names_to_unspecialized_rec_names.get(&name) {
                 return Some(self.ctx.mk_const(*rec_name, levels));
             }
         }
-        let (_, c_name, _, e_args) = e.unfold_const_apps(self.arena)?;
+        let (_, c_name, _, e_args) = self.ctx.unfold_const_apps(e)?;
         // If it's an application of e.g. `_nested_Array1`, update
         // Replace one of the specialized types with the un-specialized version:
         // e.g.
@@ -370,16 +361,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
         debug_assert!(e_args.len() >= st.num_params as usize);
         let nested_inst = self.inst_params_at(nested_no_inst, num_params, depth);
-        let (nested_f, i_args) = nested_inst.unfold_apps(self.arena);
+        let (nested_f, i_args) = self.ctx.unfold_apps(nested_inst);
         // Replace one of the nested constructor applications with a regular ctor application.
         //
         // replacing(3) c := _nested.Array_3.mk, auxI_name := _nested.Array_3, I_c := Array, c' := Array.mk.{0}
         // replacing(3) c := _nested.List_4.nil, auxI_name := _nested.List_4, I_c := List, c' := List.nil.{0}
-        match *nested_f {
+        match self.ctx.ex(nested_f) {
             Const {
                 name: i_name,
                 levels,
-                ..
             } => {
                 let cprime_name = self.ctx.replace_pfx(c_name, aux_i_name, i_name);
                 let cprime = self.ctx.mk_const(cprime_name, levels);
@@ -395,26 +385,26 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// Restore a single expression (can be a type or value)
     fn restore_e(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        e: ExprPtr<'t>,
-        nested_rec_name_to_rec_name: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-    ) -> ExprPtr<'t> {
-        let is_pi = matches!(*e, Pi { .. });
+        st: &InductiveCheckState,
+        e: ExprId,
+        nested_rec_name_to_rec_name: &FxIndexMap<NameId, NameId>,
+    ) -> ExprId {
+        let is_pi = matches!(self.ctx.ex(e), Pi { .. });
         let num_params = st.local_params.len();
         let mut cur = self.value_of(e);
-        let mut binders: Vec<ExprPtr<'t>> = Vec::with_capacity(num_params);
+        let mut binders: Vec<ExprId> = Vec::with_capacity(num_params);
         for level in 0..num_params {
             let depth = u32::try_from(level).expect("parameter count exceeds u32");
             let f = cur;
-            let dom = match f {
-                Value::Pi { domain, .. } => *domain,
+            let dom = match self.val(f) {
+                Value::Pi { domain, .. } => domain,
                 // Also match on Lambda for restoring recursor rules.
                 Value::Lam { .. } => self.lam_domain(depth, f),
                 _ => reject!("malformed recursor"),
             };
             let dom_e = self.quote(depth, dom);
             let fresh = self.mk_bvar_hc(depth, dom);
-            cur = match f {
+            cur = match self.val(f) {
                 Value::Pi { body, .. } => self.apply_closure(depth + 1, body, fresh, Some(dom)),
                 Value::Lam { body, .. } => self.apply_closure(depth + 1, body, fresh, None),
                 _ => unreachable!(),
@@ -435,17 +425,17 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn restore_recursor1(
         &mut self,
-        st: &InductiveCheckState<'t>,
+        st: &InductiveCheckState,
         // The list of names in the mutual block, NOT including
         // the temporary nested declarations.
-        all_ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
+        all_ind_names_no_specialized: &Arc<[NameId]>,
         // This map holds the specialized nested elements' recursor names;
         // e.g. `_nested.Array_1.rec |-> Lean.Syntax.rec_1`,
-        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
+        specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NameId, NameId>,
         // `rec_name` This can be either an old/base inductive rec name, or a fresh/specialized name
         // Either `Syntax.rec`, or `_nested.Array_N.rec`
-        rec_name: NamePtr<'t>,
-    ) -> RecursorData<'t> {
+        rec_name: NameId,
+    ) -> RecursorData {
         // resolve e.g. `_nested.Array_1.rec` to `Lean.Syntax.rec_1`
         let resolved_rec_name = specialized_rec_names_to_unspecialized_rec_names
             .get(&rec_name)
@@ -459,7 +449,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             new_env_rec.info.ty,
             specialized_rec_names_to_unspecialized_rec_names,
         );
-        let rules: Arc<[RecRule<'t>]> = new_env_rec
+        let rules: Arc<[RecRule]> = new_env_rec
             .rec_rules
             .iter()
             .map(|&rule| {
@@ -493,12 +483,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn check_restored_recursor1(
         &mut self,
-        st: &InductiveCheckState<'t>,
+        st: &InductiveCheckState,
         // The list of names in the mutual block, NOT including
         // the temporary nested declarations.
-        ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
-        nested_rec_name_to_rec_name: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-        rec_name: NamePtr<'t>,
+        ind_names_no_specialized: &Arc<[NameId]>,
+        nested_rec_name_to_rec_name: &FxIndexMap<NameId, NameId>,
+        rec_name: NameId,
     ) {
         let restored = self.restore_recursor1(
             st,
@@ -527,14 +517,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn restore_recursors(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        specialized_rec_name_to_rec_name: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-        ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
+        st: &InductiveCheckState,
+        specialized_rec_name_to_rec_name: &FxIndexMap<NameId, NameId>,
+        ind_names_no_specialized: &Arc<[NameId]>,
     ) {
         // Check the recursors for the base inductives (NOT the specialized types)
         for old_ind_name in ind_names_no_specialized.iter().copied() {
             let rec_name = {
-                let rec_str_ptr = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+                let rec_str_ptr = self.ctx.alloc_string("rec");
                 self.ctx.str(old_ind_name, rec_str_ptr)
             };
             self.check_restored_recursor1(
@@ -558,9 +548,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn check_restored_ctor1(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        rec_name_map: &FxIndexMap<NamePtr<'t>, NamePtr<'t>>,
-        old_ctor: &ConstructorData<'t>,
+        st: &InductiveCheckState,
+        rec_name_map: &FxIndexMap<NameId, NameId>,
+        old_ctor: &ConstructorData,
     ) {
         let new_ctor @ ConstructorData { .. } =
             self.env.get_constructor(old_ctor.info.name).unwrap();
@@ -571,9 +561,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     pub(super) fn restore_and_check(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        unmodified_mutuals: &Vec<IndTyHeader<'t>>,
-        ind_names_no_specialized: &Arc<[NamePtr<'t>]>,
+        st: &InductiveCheckState,
+        unmodified_mutuals: &Vec<IndTyHeader>,
+        ind_names_no_specialized: &Arc<[NameId]>,
     ) {
         let specialized_to_unspecialized_rec_names =
             self.mk_specialized_rec_to_unspecialized_map(unmodified_mutuals);

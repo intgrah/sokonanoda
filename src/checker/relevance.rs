@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::checker::context::TcCtx;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{S, Value};
+use crate::checker::value::{S, Vals, Value};
 use crate::outcome::{ensure, reject};
-use crate::term::ptr::{LevelPtr, LevelsPtr, NamePtr};
+use crate::term::id::{LevelId, LevelsId, NameId};
 
 pub(crate) const MAX_TRACKED: u32 = 64;
 
@@ -49,13 +50,12 @@ impl Sig {
     }
 }
 
-pub(crate) fn app_prefix_len(spine: S<'_>) -> u32 {
-    if !spine.has_proj() {
-        return spine.len();
+pub(crate) fn app_prefix_len(vals: &Vals, spine: S) -> u32 {
+    if !vals.has_proj(spine) {
+        return vals.spine_len(spine);
     }
-    let len = spine.len();
-    spine
-        .elims_rev()
+    let len = vals.spine_len(spine);
+    vals.elims_rev(spine)
         .zip((0..len).rev())
         .filter(|(elim, _)| !elim.is_app())
         .last()
@@ -64,28 +64,28 @@ pub(crate) fn app_prefix_len(spine: S<'_>) -> u32 {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SigTemplate<'t> {
-    uparams: LevelsPtr<'t>,
-    dom: &'t [Option<LevelPtr<'t>>],
-    result: Option<LevelPtr<'t>>,
+    uparams: LevelsId,
+    dom: &'t [Option<LevelId>],
+    result: Option<LevelId>,
     arg_known: u64,
     absent_arg: u64,
     result_span: u64,
 }
 
-impl<'t> SigTemplate<'t> {
-    fn at(&self, levels: LevelsPtr<'t>) -> Sig {
-        let params = self.uparams.as_ref();
-        let args = levels.as_ref();
+impl SigTemplate<'_> {
+    fn at(&self, ctx: &TcCtx<'_>, levels: LevelsId) -> Sig {
+        let params = ctx.levels(self.uparams);
+        let args = ctx.levels(levels);
         let mut prop_arg = 0u64;
         for (i, l) in self.dom.iter().enumerate() {
             if let Some(l) = *l
-                && l.is_zero_under(params, args)
+                && ctx.is_zero_under(l, params, args)
             {
                 prop_arg |= 1u64 << i;
             }
         }
         let prop_result = match self.result {
-            Some(l) if l.is_zero_under(params, args) => self.result_span,
+            Some(l) if ctx.is_zero_under(l, params, args) => self.result_span,
             _ => 0,
         };
         Sig {
@@ -99,8 +99,8 @@ impl<'t> SigTemplate<'t> {
     }
 }
 
-impl<'t> TypeChecker<'_, 't, '_> {
-    pub(crate) fn sig_of(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> Sig {
+impl<'t> TypeChecker<'_, 't> {
+    pub(crate) fn sig_of(&mut self, name: NameId, levels: LevelsId) -> Sig {
         if self.env.has_temp_ext() {
             return Sig::ALL_RELEVANT;
         }
@@ -119,31 +119,32 @@ impl<'t> TypeChecker<'_, 't, '_> {
             t
         };
         ensure!(
-            template.uparams.len() == levels.len(),
-            "wrong number of universe levels for {name:?}"
+            self.ctx.levels(template.uparams).len() == self.ctx.levels(levels).len(),
+            "wrong number of universe levels for {}",
+            self.ctx.display(name)
         );
-        let s = template.at(levels);
+        let s = template.at(self.ctx, levels);
         self.ctx.sig_cache.insert((name, levels), s);
         s
     }
 
-    fn sig_template(&mut self, name: NamePtr<'t>) -> SigTemplate<'t> {
+    fn sig_template(&mut self, name: NameId) -> SigTemplate<'t> {
         let Some(d) = self.env.get_declar(name) else {
-            reject!("sig_template: unknown const {name:?}")
+            reject!("sig_template: unknown const {}", self.ctx.display(name))
         };
         let uparams = d.info().uparams;
-        let mut dom: Vec<Option<LevelPtr<'t>>> = Vec::new();
+        let mut dom: Vec<Option<LevelId>> = Vec::new();
         let mut cur = self.const_head_type(name, uparams);
         let mut depth = 0u32;
         let terminal = loop {
             let cur_f = self.force_all(depth, cur);
-            let Value::Pi { domain, body, .. } = cur_f else {
+            let Value::Pi { domain, body, .. } = self.val(cur_f) else {
                 break Some(cur_f);
             };
             if dom.len() >= MAX_TRACKED as usize {
                 break None;
             }
-            let d = *domain;
+            let d = domain;
             dom.push(self.level_of_type(depth, d));
             let fresh = self.mk_bvar_hc(depth, d);
             cur = self.apply_closure(depth + 1, body, fresh, Some(d));
@@ -180,7 +181,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    fn absent_args(&mut self, name: NamePtr<'t>) -> u64 {
+    fn absent_args(&mut self, name: NameId) -> u64 {
         let Some((_, val)) = self.env.get_declar_val(name) else {
             return 0;
         };
@@ -190,25 +191,25 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let ty = decl.info().ty;
         let mut body = val;
         let mut arity = 0u32;
-        while let crate::term::expr::Expr::Lambda { body: inner, .. } = *body {
+        while let crate::term::expr::Expr::Lambda { body: inner, .. } = self.ctx.ex(body) {
             if arity == MAX_TRACKED {
                 break;
             }
             body = inner;
             arity += 1;
         }
-        if arity == 0 || u32::from(body.num_loose_bvars()) > MAX_TRACKED {
+        if arity == 0 || u32::from(self.ctx.loose(body)) > MAX_TRACKED {
             return 0;
         }
-        let used = body.as_ref().fv_mask();
+        let used = self.ctx.mask(body);
         let mut absent = 0u64;
         let mut rest_ty = ty;
         for i in 0..arity {
-            let crate::term::expr::Expr::Pi { body: rest, .. } = *rest_ty else {
+            let crate::term::expr::Expr::Pi { body: rest, .. } = self.ctx.ex(rest_ty) else {
                 break;
             };
             let unused_in_value = (used >> (arity - 1 - i)) & 1 == 0;
-            if unused_in_value && crate::term::expr::ignores_binder(rest) {
+            if unused_in_value && self.ctx.ignores_binder(rest) {
                 absent |= 1u64 << i;
             }
             rest_ty = rest;

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use bumpalo::Bump;
 
 fn config() -> Config {
     Config {
@@ -13,14 +12,13 @@ fn config() -> Config {
 
 #[test]
 fn ignore_binder_metadata_in_both_parser_paths() {
-    let arena = Bump::new();
-    let mut parser = Parser::new(&arena, config());
+    let mut parser = Parser::new(config());
     parser.do_sort(BackRef::Ie(0), 0);
     parser.do_bvar(BackRef::Ie(1), 0).unwrap();
     parser.do_bvar(BackRef::Ie(2), 1).unwrap();
     let mut idxs = Vec::new();
     for kind in ["lam", "forallE", "letE"] {
-        let mut reference: Option<ExprPtr<'_>> = None;
+        let mut reference: Option<ExprId> = None;
         for (i, style) in ["default", "implicit", "strictImplicit", "instImplicit"]
             .iter()
             .enumerate()
@@ -40,14 +38,14 @@ fn ignore_binder_metadata_in_both_parser_paths() {
             assert!(
                 matches!(parser.fast_line(fast.as_bytes(), 0, &mut idxs), Ok(n) if n == fast.len())
             );
-            let parsed = parser.get_expr_ptr(3);
+            let parsed = parser.get_expr(3);
             let slow = format!("{{ \"ie\":4, \"{kind}\":{{{fields}}} }}");
             parser.go1_general(&slow).unwrap();
-            assert_eq!(parsed.as_ref(), parser.get_expr_ptr(4).as_ref());
-            assert_eq!(parsed.num_loose_bvars(), 1);
-            assert_eq!(crate::term::expr::child_mask(parsed), 1);
+            assert_eq!(parser.node(parsed).expr, parser.node(parser.get_expr(4)).expr);
+            assert_eq!(parser.node(parsed).loose, 1);
+            assert_eq!(parser.node(parsed).mask, 1);
             if let Some(reference) = reference {
-                assert_eq!(reference.as_ref(), parsed.as_ref());
+                assert_eq!(parser.node(reference).expr, parser.node(parsed).expr);
             } else {
                 reference = Some(parsed);
             }
@@ -58,12 +56,12 @@ fn ignore_binder_metadata_in_both_parser_paths() {
         } else {
             r#""body":2,"type":0"#
         };
-        let reference = parser.get_expr_ptr(3);
+        let reference = parser.get_expr(3);
         for metadata in ["", r#", "name":{"ignored":true}, "binderInfo":[null]"#] {
             parser
                 .go1_general(&format!("{{\"ie\":4,\"{kind}\":{{{fields}{metadata}}}}}"))
                 .unwrap();
-            assert_eq!(reference.as_ref(), parser.get_expr_ptr(4).as_ref());
+            assert_eq!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
         }
         // Domain and body references still distinguish expressions.
         parser
@@ -72,21 +70,20 @@ fn ignore_binder_metadata_in_both_parser_paths() {
                     .replace("\"body\":2", "\"body\":1"),
             )
             .unwrap();
-        assert_ne!(reference.as_ref(), parser.get_expr_ptr(4).as_ref());
+        assert_ne!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
         parser
             .go1_general(
                 &format!("{{\"ie\":4,\"{kind}\":{{{fields}}}}}")
                     .replace("\"type\":0", "\"type\":2"),
             )
             .unwrap();
-        assert_ne!(reference.as_ref(), parser.get_expr_ptr(4).as_ref());
+        assert_ne!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
     }
 }
 
 #[test]
 fn reject_undefined_binder_type() {
-    let arena = Bump::new();
-    let mut parser = Parser::new(&arena, config());
+    let mut parser = Parser::new(config());
     parser.do_sort(BackRef::Ie(0), 0);
     let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         parser

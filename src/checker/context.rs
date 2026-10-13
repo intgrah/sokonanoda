@@ -7,28 +7,24 @@ use crate::checker::env::{DeclarMap, Env, EnvLimit};
 use crate::checker::relevance::{Sig, SigTemplate};
 use crate::checker::tc::TypeChecker;
 use crate::config::Config;
-use crate::hash64;
-use crate::term::expr::{
-    APP_HASH, CONST_HASH, Expr, LAMBDA_HASH, LET_HASH, NAT_LIT_HASH, PI_HASH, PROJ_HASH, SORT_HASH,
-    STRING_LIT_HASH, VAR_HASH,
-};
-use crate::term::hash::{CowStr, FxHashMap, FxHashSet};
-use crate::term::intern::{Dag, NameCache};
-use crate::term::level::{IMAX_HASH, Level, MAX_HASH, PARAM_HASH, SUCC_HASH};
-use crate::term::name::{NUM_HASH, Name, STR_HASH};
-use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use crate::term::expr::{Expr, ExprNode};
+use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
+use crate::term::id::{ANON, BigId, ExprId, LevelId, LevelsId, NameId, StrId, ZERO};
+use crate::term::intern::{NameCache, Terms};
+use crate::term::level::Level;
+use crate::term::name::{Name, NameDisplay, NameSource, NatRed};
 use bumpalo::Bump;
 use num_bigint::BigUint;
 use rustc_hash::FxBuildHasher;
 
-pub struct ExprCache<'t> {
-    pub(crate) inst: PtrMap<(ExprPtr<'t>, u16), ExprPtr<'t>>,
-    pub(crate) subst: PtrMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-    pub(crate) dsubst: PtrMap<(ExprPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), ExprPtr<'t>>,
-    pub(crate) simplify: PtrMap<LevelPtr<'t>, LevelPtr<'t>>,
+pub struct ExprCache {
+    pub(crate) inst: PtrMap<(ExprId, u16), ExprId>,
+    pub(crate) subst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
+    pub(crate) dsubst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
+    pub(crate) simplify: PtrMap<LevelId, LevelId>,
 }
 
-impl ExprCache<'_> {
+impl ExprCache {
     fn new() -> Self {
         ExprCache {
             inst: Reset::with_cap(SMALL),
@@ -45,33 +41,60 @@ impl ExprCache<'_> {
     }
 }
 
-pub struct ExportFile<'p> {
-    pub(crate) dag: Dag<'p>,
-    pub(crate) anon: NamePtr<'p>,
-    pub(crate) zero: LevelPtr<'p>,
-    pub(crate) declars: DeclarMap<'p>,
-    pub(crate) name_cache: NameCache<'p>,
+pub struct ExportFile {
+    pub(crate) terms: Terms,
+    pub(crate) declars: DeclarMap,
+    pub(crate) decl_of: Vec<u32>,
+    pub(crate) nat_red: Vec<u8>,
+    pub(crate) name_cache: NameCache,
     pub(crate) config: Config,
-    pub(crate) mutual_block_sizes: FxHashMap<NamePtr<'p>, (usize, usize)>,
+    pub(crate) mutual_block_sizes: FxHashMap<NameId, (usize, usize)>,
 }
 
-impl<'p> ExportFile<'p> {
+impl NameSource for Terms {
+    fn name(&self, n: NameId) -> Name {
+        assert!(!n.is_local(), "local name outside of a type checker");
+        self.names.items[n.index()]
+    }
+
+    fn string(&self, s: StrId) -> &str {
+        assert!(!s.is_local(), "local string outside of a type checker");
+        &self.strings.items[s.index()]
+    }
+}
+
+impl ExportFile {
     pub fn num_declars(&self) -> usize {
         self.declars.len()
     }
 
-    pub(crate) fn new_env(&self, env_limit: EnvLimit<'p>) -> Env<'_, '_> {
-        Env::new(&self.declars, env_limit)
+    pub(crate) fn new_env(&self, env_limit: EnvLimit) -> Env<'_> {
+        Env::new(&self.declars, &self.decl_of, env_limit)
+    }
+
+    pub(crate) fn display(&self, n: NameId) -> NameDisplay<'_, Terms> {
+        NameDisplay {
+            src: &self.terms,
+            name: n,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn nat_red(&self, n: NameId) -> Option<NatRed> {
+        if n.is_local() {
+            return None;
+        }
+        NatRed::from_u8(*self.nat_red.get(n.index())?)
     }
 
     #[cfg(test)]
     pub(crate) fn with_ctx<F, A>(&self, f: F) -> A
     where
-        F: for<'t> FnOnce(&mut TcCtx<'t, 'p>, &mut TcCache<'t, 't>, &'t Bump) -> A,
+        F: for<'t> FnOnce(&mut TcCtx<'t>, &mut TcCache, &'t Bump) -> A,
     {
         let arena = Bump::new();
         let mut ctx = TcCtx::new(self, &arena);
-        let mut cache = TcCache::new(&arena);
+        let mut cache = TcCache::new();
         f(&mut ctx, &mut cache, &arena)
     }
 }
@@ -79,31 +102,42 @@ impl<'p> ExportFile<'p> {
 const LEAF_BITS: u32 = 12;
 const LEAF_SLOTS: usize = 1 << LEAF_BITS;
 
-pub struct TcCtx<'t, 'p> {
-    pub(crate) export_file: &'t ExportFile<'p>,
+pub struct TcCtx<'t> {
+    pub(crate) export_file: &'t ExportFile,
     pub(crate) arena: &'t Bump,
-    pub(crate) dag: Dag<'t>,
-    pub(crate) expr_cache: ExprCache<'t>,
-    pub(crate) sig_cache: PtrMap<(NamePtr<'t>, LevelsPtr<'t>), Sig>,
-    pub(crate) sig_templates: PtrMap<NamePtr<'t>, SigTemplate<'t>>,
-    pub(crate) sig_computing: FxHashSet<NamePtr<'t>>,
-    pub(crate) subst_level_cache:
-        PtrMap<(LevelPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelPtr<'t>>,
-    pub(crate) leq_cache: PtrMap<(LevelPtr<'t>, LevelPtr<'t>), bool>,
-    pub(crate) checked_closed: PtrSet<(ExprPtr<'t>, LevelsPtr<'t>)>,
-    leaf_checked: Box<[(usize, u32)]>,
+    global: &'t Terms,
+    global_exprs: &'t [ExprNode],
+    local: Terms,
+    pub(crate) expr_cache: ExprCache,
+    pub(crate) sig_cache: PtrMap<(NameId, LevelsId), Sig>,
+    pub(crate) sig_templates: PtrMap<NameId, SigTemplate<'t>>,
+    pub(crate) sig_computing: FxHashSet<NameId>,
+    pub(crate) subst_level_cache: PtrMap<(LevelId, LevelsId, LevelsId), LevelId>,
+    pub(crate) leq_cache: PtrMap<(LevelId, LevelId), bool>,
+    pub(crate) checked_closed: PtrSet<(ExprId, LevelsId)>,
+    leaf_checked: Box<[(u32, u32)]>,
     leaf_stamp: u32,
-    pub(crate) subst_levels_cache:
-        PtrMap<(LevelsPtr<'t>, LevelsPtr<'t>, LevelsPtr<'t>), LevelsPtr<'t>>,
+    pub(crate) subst_levels_cache: PtrMap<(LevelsId, LevelsId, LevelsId), LevelsId>,
 }
 
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    pub fn new(export_file: &'t ExportFile<'p>, arena: &'t Bump) -> Self {
-        let dag = Dag::new_local(&export_file.config);
+impl NameSource for TcCtx<'_> {
+    fn name(&self, n: NameId) -> Name {
+        TcCtx::name(self, n)
+    }
+
+    fn string(&self, s: StrId) -> &str {
+        TcCtx::string(self, s)
+    }
+}
+
+impl<'t> TcCtx<'t> {
+    pub fn new(export_file: &'t ExportFile, arena: &'t Bump) -> Self {
         Self {
             export_file,
             arena,
-            dag,
+            global: &export_file.terms,
+            global_exprs: &export_file.terms.exprs.items,
+            local: Terms::default(),
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
             sig_templates: Reset::with_cap(SMALL),
@@ -117,6 +151,66 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
+    #[inline(always)]
+    fn terms(&self, local: bool) -> &Terms {
+        if local { &self.local } else { self.global }
+    }
+
+    #[inline(always)]
+    pub(crate) fn node(&self, e: ExprId) -> &ExprNode {
+        let items: &[ExprNode] = if e.is_local() {
+            &self.local.exprs.items
+        } else {
+            self.global_exprs
+        };
+        debug_assert!(e.index() < items.len());
+        unsafe { items.get_unchecked(e.index()) }
+    }
+
+    #[inline(always)]
+    pub(crate) fn ex(&self, e: ExprId) -> Expr {
+        self.node(e).expr
+    }
+
+    #[inline(always)]
+    pub(crate) fn loose(&self, e: ExprId) -> u16 {
+        self.node(e).loose
+    }
+
+    #[inline(always)]
+    pub(crate) fn mask(&self, e: ExprId) -> u64 {
+        self.node(e).mask
+    }
+
+    #[inline(always)]
+    pub(crate) fn level(&self, l: LevelId) -> Level {
+        self.terms(l.is_local()).levels.items[l.index()]
+    }
+
+    #[inline(always)]
+    pub(crate) fn levels(&self, ls: LevelsId) -> &[LevelId] {
+        &self.terms(ls.is_local()).lists.items[ls.index()]
+    }
+
+    #[inline(always)]
+    pub(crate) fn name(&self, n: NameId) -> Name {
+        self.terms(n.is_local()).names.items[n.index()]
+    }
+
+    #[inline(always)]
+    pub(crate) fn string(&self, s: StrId) -> &str {
+        &self.terms(s.is_local()).strings.items[s.index()]
+    }
+
+    #[inline(always)]
+    pub(crate) fn bignum(&self, b: BigId) -> &BigUint {
+        &self.terms(b.is_local()).bignums.items[b.index()]
+    }
+
+    pub(crate) fn display(&self, n: NameId) -> NameDisplay<'_, Self> {
+        NameDisplay { src: self, name: n }
+    }
+
     pub(crate) fn next_declaration(&mut self) {
         self.leaf_stamp = self.leaf_stamp.wrapping_add(1);
         if self.leaf_stamp == 0 {
@@ -126,273 +220,209 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     #[inline]
-    fn leaf_slot(e: ExprPtr<'t>) -> usize {
-        (e.addr().wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - LEAF_BITS))
-            & (LEAF_SLOTS - 1)
+    fn leaf_slot(e: ExprId) -> usize {
+        let h = u64::from(e.raw()).wrapping_mul(GOLDEN) >> (u64::BITS - LEAF_BITS);
+        usize::try_from(h).expect("usize is 64 bits wide")
     }
 
     #[inline]
-    pub(crate) fn leaf_checked(&self, e: ExprPtr<'t>) -> bool {
-        self.leaf_checked[Self::leaf_slot(e)] == (e.addr(), self.leaf_stamp)
+    pub(crate) fn leaf_checked(&self, e: ExprId) -> bool {
+        self.leaf_checked[Self::leaf_slot(e)] == (e.raw(), self.leaf_stamp)
     }
 
     #[inline]
-    pub(crate) fn mark_leaf_checked(&mut self, e: ExprPtr<'t>) {
-        self.leaf_checked[Self::leaf_slot(e)] = (e.addr(), self.leaf_stamp);
+    pub(crate) fn mark_leaf_checked(&mut self, e: ExprId) {
+        self.leaf_checked[Self::leaf_slot(e)] = (e.raw(), self.leaf_stamp);
     }
 
     pub fn with_tc<F, A>(
         &mut self,
-        env_limit: EnvLimit<'p>,
-        arena: &'t Bump,
-        cache: &mut TcCache<'t, 't>,
+        env_limit: EnvLimit,
+        cache: &mut TcCache,
         f: F,
     ) -> A
     where
-        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A,
+        F: FnOnce(&mut TypeChecker<'_, 't>) -> A,
     {
         let env = self.export_file.new_env(env_limit);
-        let mut tc = TypeChecker::new(self, &env, arena, None, cache);
+        let mut tc = TypeChecker::new(self, &env, None, cache);
         f(&mut tc)
     }
 
     pub fn with_tc_and_env_ext<'x, F, A>(
         &mut self,
-        env_ext: &'x DeclarMap<'t>,
-        env_limit: EnvLimit<'p>,
-        arena: &'t Bump,
-        cache: &mut TcCache<'t, 't>,
+        env_ext: &'x DeclarMap,
+        env_limit: EnvLimit,
+        cache: &mut TcCache,
         f: F,
     ) -> A
     where
-        F: FnOnce(&mut TypeChecker<'_, 't, 'p>) -> A,
+        F: FnOnce(&mut TypeChecker<'_, 't>) -> A,
     {
-        let env = Env::new_w_temp_ext(&self.export_file.declars, Some(env_ext), env_limit);
-        let mut tc = TypeChecker::new(self, &env, arena, None, cache);
+        let export_file = self.export_file;
+        let env = Env::new_w_temp_ext(
+            &export_file.declars,
+            &export_file.decl_of,
+            Some(env_ext),
+            env_limit,
+        );
+        let mut tc = TypeChecker::new(self, &env, None, cache);
         f(&mut tc)
     }
 
-    pub fn alloc_name(&mut self, n: Name<'t>) -> NamePtr<'t> {
-        if let Some(r) = self.export_file.dag.names.get(&n) {
-            return NamePtr::global(r);
+    pub fn alloc_name(&mut self, n: Name) -> NameId {
+        if let Some(i) = self.global.names.find(&n) {
+            return NameId::new(i, false);
         }
-        NamePtr::local(self.dag.names.intern(self.arena, n))
+        NameId::new(self.local.names.intern(n), true)
     }
 
-    pub fn alloc_level(&mut self, l: Level<'t>) -> LevelPtr<'t> {
-        if let Some(r) = self.export_file.dag.levels.get(&l) {
-            return LevelPtr::global(r);
+    pub fn alloc_level(&mut self, l: Level) -> LevelId {
+        if let Some(i) = self.global.levels.find(&l) {
+            return LevelId::new(i, false);
         }
-        LevelPtr::local(self.dag.levels.intern(self.arena, l))
+        LevelId::new(self.local.levels.intern(l), true)
     }
 
-    pub fn alloc_expr(&mut self, e: Expr<'t>) -> ExprPtr<'t> {
-        if let Some(r) = self.dag.exprs.get(&e) {
-            return ExprPtr::local(r);
+    pub fn alloc_expr(&mut self, node: ExprNode) -> ExprId {
+        ExprId::new(self.local.exprs.intern(node), true)
+    }
+
+    pub(crate) fn alloc_string(&mut self, s: &str) -> StrId {
+        if let Some(i) = self.global.strings.find(s) {
+            return StrId::new(i, false);
         }
-        ExprPtr::local(self.dag.exprs.insert(self.arena, e))
+        StrId::new(self.local.strings.intern_ref(s), true)
     }
 
-    pub(crate) fn alloc_string(&mut self, s: CowStr<'t>) -> StringPtr<'t> {
-        if let Some(r) = self.export_file.dag.strings.get(&*s) {
-            return StringPtr::global(r);
-        }
-        StringPtr::local(self.dag.strings.intern(self.arena, s))
-    }
-
-    pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> Option<BigUintPtr<'t>> {
-        if let Some(global) = self.export_file.dag.bignums.as_ref()
-            && let Some(r) = global.get(&n)
-        {
-            return Some(BigUintPtr::global(r));
-        }
-        let local = self.dag.bignums.as_mut()?;
-        Some(BigUintPtr::local(local.intern(self.arena, n)))
-    }
-
-    pub fn alloc_levels(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> {
-        if let Some(r) = self.export_file.dag.uparams.get(ls) {
-            return LevelsPtr::global(r);
-        }
-        LevelsPtr::local(self.dag.uparams.intern(self.arena, ls))
-    }
-
-    pub fn alloc_levels_slice(&mut self, ls: &[LevelPtr<'t>]) -> LevelsPtr<'t> {
-        self.alloc_levels(ls)
-    }
-
-    pub fn anonymous(&self) -> NamePtr<'t> {
-        self.export_file.anon
-    }
-
-    pub fn str(&mut self, pfx: NamePtr<'t>, sfx: StringPtr<'t>) -> NamePtr<'t> {
-        let hash = hash64!(STR_HASH, pfx, sfx);
-        self.alloc_name(Name::Str(pfx, sfx, hash))
-    }
-
-    pub fn str1(&mut self, s: &'static str) -> NamePtr<'t> {
-        let anon = self.alloc_name(Name::Anon);
-        let s = self.alloc_string(CowStr::Borrowed(s));
-        self.str(anon, s)
-    }
-
-    pub fn str2(&mut self, s1: &'static str, s2: &'static str) -> NamePtr<'t> {
-        let s1 = self.alloc_string(CowStr::Borrowed(s1));
-        let s2 = self.alloc_string(CowStr::Borrowed(s2));
-        let n = self.anonymous();
-        let n = self.str(n, s1);
-        self.str(n, s2)
-    }
-
-    pub fn zero(&self) -> LevelPtr<'t> {
-        self.export_file.zero
-    }
-
-    pub fn num(&mut self, pfx: NamePtr<'t>, sfx: u64) -> NamePtr<'t> {
-        let hash = hash64!(NUM_HASH, pfx, sfx);
-        self.alloc_name(Name::Num(pfx, sfx, hash))
-    }
-
-    pub fn succ(&mut self, l: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(SUCC_HASH, l);
-        self.alloc_level(Level::Succ(l, hash))
-    }
-
-    pub fn max(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(MAX_HASH, l, r);
-        self.alloc_level(Level::Max(l, r, hash))
-    }
-    pub fn imax(&mut self, l: LevelPtr<'t>, r: LevelPtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(IMAX_HASH, l, r);
-        self.alloc_level(Level::IMax(l, r, hash))
-    }
-    pub fn param(&mut self, n: NamePtr<'t>) -> LevelPtr<'t> {
-        let hash = hash64!(PARAM_HASH, n);
-        self.alloc_level(Level::Param(n, hash))
-    }
-
-    pub fn mk_var(&mut self, dbj_idx: u16) -> ExprPtr<'t> {
-        let hash = hash64!(VAR_HASH, dbj_idx);
-        self.alloc_expr(Expr::Var { dbj_idx, hash })
-    }
-
-    pub fn mk_sort(&mut self, level: LevelPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(SORT_HASH, level);
-        self.alloc_expr(Expr::Sort { level, hash })
-    }
-
-    pub fn mk_const(&mut self, name: NamePtr<'t>, levels: LevelsPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(CONST_HASH, name, levels);
-        self.alloc_expr(Expr::Const { name, levels, hash })
-    }
-
-    pub fn mk_app(&mut self, fun: ExprPtr<'t>, arg: ExprPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(APP_HASH, fun, arg);
-        let fv_mask = crate::term::expr::child_mask(fun) | crate::term::expr::child_mask(arg);
-        self.alloc_expr(Expr::App {
-            fun,
-            arg,
-            fv_mask,
-            hash,
-        })
-    }
-
-    pub fn mk_lambda(&mut self, binder_type: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(LAMBDA_HASH, binder_type, body);
-        let fv_mask =
-            crate::term::expr::child_mask(binder_type) | crate::term::expr::body_mask(body);
-        self.alloc_expr(Expr::Lambda {
-            binder_type,
-            body,
-            fv_mask,
-            hash,
-        })
-    }
-
-    pub fn mk_pi(&mut self, binder_type: ExprPtr<'t>, body: ExprPtr<'t>) -> ExprPtr<'t> {
-        let hash = hash64!(PI_HASH, binder_type, body);
-        let fv_mask =
-            crate::term::expr::child_mask(binder_type) | crate::term::expr::body_mask(body);
-        self.alloc_expr(Expr::Pi {
-            binder_type,
-            body,
-            fv_mask,
-            hash,
-        })
-    }
-
-    pub fn mk_let(
-        &mut self,
-        binder_type: ExprPtr<'t>,
-        val: ExprPtr<'t>,
-        body: ExprPtr<'t>,
-        nondep: bool,
-    ) -> ExprPtr<'t> {
-        let hash = hash64!(LET_HASH, binder_type, val, body, nondep);
-        let fv_mask = crate::term::expr::child_mask(binder_type)
-            | crate::term::expr::child_mask(val)
-            | crate::term::expr::body_mask(body);
-        let data = self.arena.alloc(crate::term::expr::LetData {
-            binder_type,
-            val,
-            body,
-            nondep,
-        });
-        self.alloc_expr(Expr::Let {
-            data,
-            fv_mask,
-            hash,
-        })
-    }
-
-    pub fn mk_proj(
-        &mut self,
-        ty_name: NamePtr<'t>,
-        idx: u16,
-        structure: ExprPtr<'t>,
-    ) -> ExprPtr<'t> {
-        let hash = hash64!(PROJ_HASH, ty_name, idx, structure);
-        let fv_mask = crate::term::expr::child_mask(structure);
-        self.alloc_expr(Expr::Proj {
-            ty_name,
-            idx,
-            structure,
-            fv_mask,
-            hash,
-        })
-    }
-
-    pub fn mk_string_lit(&mut self, string_ptr: StringPtr<'t>) -> Option<ExprPtr<'t>> {
-        if !self.export_file.config.string_extension {
-            return None;
-        }
-        let hash = hash64!(STRING_LIT_HASH, string_ptr);
-        Some(self.alloc_expr(Expr::StringLit {
-            ptr: string_ptr,
-            hash,
-        }))
-    }
-
-    #[cfg(test)]
-    pub fn mk_string_lit_quick(&mut self, s: CowStr<'t>) -> Option<ExprPtr<'t>> {
-        if !self.export_file.config.string_extension {
-            return None;
-        }
-        let string_ptr = self.alloc_string(s);
-        self.mk_string_lit(string_ptr)
-    }
-
-    pub fn mk_nat_lit(&mut self, num_ptr: BigUintPtr<'t>) -> Option<ExprPtr<'t>> {
+    pub(crate) fn alloc_bignum(&mut self, n: BigUint) -> Option<BigId> {
         if !self.export_file.config.nat_extension {
             return None;
         }
-        let hash = hash64!(NAT_LIT_HASH, num_ptr);
-        Some(self.alloc_expr(Expr::NatLit { ptr: num_ptr, hash }))
+        if let Some(i) = self.global.bignums.find(&n) {
+            return Some(BigId::new(i, false));
+        }
+        Some(BigId::new(self.local.bignums.intern(n), true))
+    }
+
+    pub fn alloc_levels(&mut self, ls: &[LevelId]) -> LevelsId {
+        if let Some(i) = self.global.lists.find(ls) {
+            return LevelsId::new(i, false);
+        }
+        LevelsId::new(self.local.lists.intern_ref(ls), true)
+    }
+
+    pub fn str(&mut self, pfx: NameId, sfx: StrId) -> NameId {
+        self.alloc_name(Name::Str(pfx, sfx))
+    }
+
+    pub fn str1(&mut self, s: &'static str) -> NameId {
+        let s = self.alloc_string(s);
+        self.str(ANON, s)
+    }
+
+    pub fn str2(&mut self, s1: &'static str, s2: &'static str) -> NameId {
+        let s1 = self.alloc_string(s1);
+        let s2 = self.alloc_string(s2);
+        let n = self.str(ANON, s1);
+        self.str(n, s2)
+    }
+
+    pub fn zero(&self) -> LevelId {
+        ZERO
+    }
+
+    pub fn num(&mut self, pfx: NameId, sfx: u64) -> NameId {
+        self.alloc_name(Name::Num(pfx, sfx))
+    }
+
+    pub fn succ(&mut self, l: LevelId) -> LevelId {
+        self.alloc_level(Level::Succ(l))
+    }
+
+    pub fn max(&mut self, l: LevelId, r: LevelId) -> LevelId {
+        self.alloc_level(Level::Max(l, r))
+    }
+
+    pub fn imax(&mut self, l: LevelId, r: LevelId) -> LevelId {
+        self.alloc_level(Level::IMax(l, r))
+    }
+
+    pub fn param(&mut self, n: NameId) -> LevelId {
+        self.alloc_level(Level::Param(n))
+    }
+
+    pub fn mk_var(&mut self, dbj_idx: u16) -> ExprId {
+        self.alloc_expr(ExprNode::var(dbj_idx))
+    }
+
+    pub fn mk_sort(&mut self, level: LevelId) -> ExprId {
+        self.alloc_expr(ExprNode::leaf(Expr::Sort { level }))
+    }
+
+    pub fn mk_const(&mut self, name: NameId, levels: LevelsId) -> ExprId {
+        self.alloc_expr(ExprNode::leaf(Expr::Const { name, levels }))
+    }
+
+    pub fn mk_app(&mut self, fun: ExprId, arg: ExprId) -> ExprId {
+        let node = ExprNode::app(fun, self.node(fun), arg, self.node(arg));
+        self.alloc_expr(node)
+    }
+
+    pub fn mk_lambda(&mut self, binder_type: ExprId, body: ExprId) -> ExprId {
+        let node = ExprNode::lambda(binder_type, self.node(binder_type), body, self.node(body));
+        self.alloc_expr(node)
+    }
+
+    pub fn mk_pi(&mut self, binder_type: ExprId, body: ExprId) -> ExprId {
+        let node = ExprNode::pi(binder_type, self.node(binder_type), body, self.node(body));
+        self.alloc_expr(node)
+    }
+
+    pub fn mk_let(&mut self, binder_type: ExprId, val: ExprId, body: ExprId, nondep: bool) -> ExprId {
+        let node = ExprNode::let_(
+            binder_type,
+            self.node(binder_type),
+            val,
+            self.node(val),
+            body,
+            self.node(body),
+            nondep,
+        );
+        self.alloc_expr(node)
+    }
+
+    pub fn mk_proj(&mut self, ty_name: NameId, idx: u16, structure: ExprId) -> ExprId {
+        let node = ExprNode::proj(ty_name, idx, structure, self.node(structure));
+        self.alloc_expr(node)
+    }
+
+    pub fn mk_string_lit(&mut self, lit: StrId) -> Option<ExprId> {
+        if !self.export_file.config.string_extension {
+            return None;
+        }
+        Some(self.alloc_expr(ExprNode::leaf(Expr::StringLit { lit })))
     }
 
     #[cfg(test)]
-    pub fn mk_nat_lit_quick(&mut self, n: BigUint) -> Option<ExprPtr<'t>> {
-        let num_ptr = self.alloc_bignum(n)?;
-        self.mk_nat_lit(num_ptr)
+    pub fn mk_string_lit_quick(&mut self, s: &str) -> Option<ExprId> {
+        if !self.export_file.config.string_extension {
+            return None;
+        }
+        let lit = self.alloc_string(s);
+        self.mk_string_lit(lit)
+    }
+
+    pub fn mk_nat_lit(&mut self, lit: BigId) -> Option<ExprId> {
+        if !self.export_file.config.nat_extension {
+            return None;
+        }
+        Some(self.alloc_expr(ExprNode::leaf(Expr::NatLit { lit })))
+    }
+
+    #[cfg(test)]
+    pub fn mk_nat_lit_quick(&mut self, n: BigUint) -> Option<ExprId> {
+        let lit = self.alloc_bignum(n)?;
+        self.mk_nat_lit(lit)
     }
 }

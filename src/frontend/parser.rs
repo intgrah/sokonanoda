@@ -6,18 +6,13 @@ use crate::checker::env::{
     ConstructorData, Declar, DeclarInfo, InductiveData, RecursorData, ReducibilityHint,
 };
 use crate::config::{AxiomDecision, Config};
-use crate::hash64;
 use crate::outcome::{decline, ensure, reject, unsupported};
-use crate::term::expr::{
-    APP_HASH, CONST_HASH, Expr, LAMBDA_HASH, LET_HASH, LetData, NAT_LIT_HASH, PI_HASH, PROJ_HASH,
-    SORT_HASH, STRING_LIT_HASH, VAR_HASH, child_mask, under_binder, var_mask,
-};
+use crate::term::expr::{Expr, ExprNode};
 use crate::term::hash::{FxHashMap, FxIndexMap, new_fx_hash_map, new_fx_index_map};
-use crate::term::intern::Dag;
+use crate::term::id::{ANON, BigId, ExprId, LevelId, LevelsId, NameId, StrId, ZERO};
+use crate::term::intern::Terms;
 use crate::term::level::Level;
-use crate::term::name::Name;
-use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
-use bumpalo::Bump;
+use crate::term::name::{NO_DECL, NO_NAT_RED, Name, NameDisplay};
 use num_bigint::BigUint;
 use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -47,17 +42,15 @@ fn check_semver(meta: &FileMeta<'_>) -> Result<(), Box<dyn Error>> {
     }
 }
 
-pub struct Parser<'a> {
-    arena: &'a Bump,
-    dag: Dag<'a>,
-    anon: NamePtr<'a>,
-    zero: LevelPtr<'a>,
-    names_by_idx: Vec<Option<NamePtr<'a>>>,
-    levels_by_idx: Vec<Option<LevelPtr<'a>>>,
-    exprs_by_idx: Vec<ExprEntry<'a>>,
-    declars: FxIndexMap<NamePtr<'a>, Declar<'a>>,
+pub struct Parser {
+    terms: Terms,
+    names_by_idx: Vec<Option<NameId>>,
+    levels_by_idx: Vec<Option<LevelId>>,
+    exprs_by_idx: Vec<Option<ExprId>>,
+    declars: FxIndexMap<NameId, Declar>,
+    decl_of: Vec<u32>,
     config: Config,
-    mutual_block_sizes: FxHashMap<NamePtr<'a>, (usize, usize)>,
+    mutual_block_sizes: FxHashMap<NameId, (usize, usize)>,
     scratch_idxs: Vec<u32>,
 }
 
@@ -338,12 +331,8 @@ enum ExportJsonVal<'a> {
     },
 }
 
-pub(crate) fn parse_export_mapped<'p>(
-    arena: &'p Bump,
-    input: &[u8],
-    config: Config,
-) -> Result<ExportFile<'p>, Box<dyn Error>> {
-    let mut parser = Parser::with_input_len(arena, config, input.len());
+pub(crate) fn parse_export_mapped(input: &[u8], config: Config) -> Result<ExportFile, Box<dyn Error>> {
+    let mut parser = Parser::with_input_len(config, input.len());
     parser.run_over(input)?;
     Ok(parser.finish())
 }
@@ -407,11 +396,10 @@ fn read_blocks<R: Read>(
 }
 
 pub(crate) fn parse_export_file<R: Read + Send + 'static>(
-    arena: &Bump,
     reader: R,
     config: Config,
-) -> Result<ExportFile<'_>, Box<dyn Error>> {
-    let mut parser = Parser::new(arena, config);
+) -> Result<ExportFile, Box<dyn Error>> {
+    let mut parser = Parser::new(config);
     let (blocks_tx, blocks_rx) = sync_channel(READ_AHEAD);
     let (spent_tx, spent_rx) = channel();
     thread::Builder::new()
@@ -689,17 +677,6 @@ fn eol_slow(s: &[u8], mut i: usize) -> Result<usize, Fallback> {
     Ok(i)
 }
 
-#[derive(Clone, Copy)]
-struct ExprEntry<'a> {
-    ptr: Option<ExprPtr<'a>>,
-    child_mask: u64,
-}
-
-const NO_EXPR: ExprEntry<'static> = ExprEntry {
-    ptr: None,
-    child_mask: 0,
-};
-
 #[cold]
 #[inline(never)]
 fn undefined_index(kind: &str, idx: u32) -> ! {
@@ -729,127 +706,104 @@ impl From<Fallback> for FastError {
     }
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(arena: &'a Bump, config: Config) -> Self {
-        Self::with_input_len(arena, config, 0)
+impl Parser {
+    pub fn new(config: Config) -> Self {
+        Self::with_input_len(config, 0)
     }
 
-    pub fn with_input_len(arena: &'a Bump, config: Config, input_len: usize) -> Self {
-        let mut dag = Dag::new(&config, input_len);
-        let anon = NamePtr::global(dag.names.intern(arena, Name::Anon));
-        let zero = LevelPtr::global(dag.levels.intern(arena, Level::Zero));
+    pub fn with_input_len(config: Config, input_len: usize) -> Self {
+        let mut terms = Terms::with_input_len(input_len);
+        let anon = NameId::new(terms.names.insert_unique(Name::Anon), false);
+        let zero = LevelId::new(terms.levels.insert_unique(Level::Zero), false);
+        assert!(anon == ANON && zero == ZERO);
         let mut names_by_idx = Vec::with_capacity(input_len / 128 + 1);
         names_by_idx.push(Some(anon));
         let mut levels_by_idx = Vec::with_capacity(input_len / 1024 + 1);
         levels_by_idx.push(Some(zero));
+        terms.exprs.items.reserve(input_len / 48);
         Self {
-            arena,
-            dag,
-            anon,
-            zero,
+            terms,
             names_by_idx,
             levels_by_idx,
             exprs_by_idx: Vec::with_capacity(input_len / 48),
             declars: new_fx_index_map(),
+            decl_of: Vec::new(),
             config,
             mutual_block_sizes: new_fx_hash_map(),
             scratch_idxs: Vec::new(),
         }
     }
 
-    fn push_name(&mut self, expected: BackRef, n: Name<'a>) {
+    fn push_name(&mut self, expected: BackRef, n: Name) {
         ensure!(
-            self.dag.names.get(&n).is_none(),
+            self.terms.names.find(&n).is_none(),
             "Attempted to insert duplicate Name"
         );
-        let ptr = NamePtr::global(self.dag.names.insert(self.arena, n));
-        put_at(&mut self.names_by_idx, expected.index() as usize, ptr);
+        let id = NameId::new(self.terms.names.insert_unique(n), false);
+        put_at(&mut self.names_by_idx, expected.index() as usize, id);
     }
 
-    fn push_level(&mut self, expected: BackRef, l: Level<'a>) {
+    fn push_level(&mut self, expected: BackRef, l: Level) {
         ensure!(
-            self.dag.levels.get(&l).is_none(),
+            self.terms.levels.find(&l).is_none(),
             "Attempted to insert duplicate Level"
         );
-        let ptr = LevelPtr::global(self.dag.levels.insert(self.arena, l));
-        put_at(&mut self.levels_by_idx, expected.index() as usize, ptr);
+        let id = LevelId::new(self.terms.levels.insert_unique(l), false);
+        put_at(&mut self.levels_by_idx, expected.index() as usize, id);
     }
 
     #[inline(always)]
-    fn push_expr(&mut self, expected: BackRef, e: Expr<'a>, num_loose_bvars: u16, fv_mask: u64) {
-        let r: &'a Expr<'a> = self.arena.alloc(e);
-        let ptr = ExprPtr::global(r, num_loose_bvars);
-        let entry = ExprEntry {
-            ptr: Some(ptr),
-            child_mask: fv_mask,
-        };
-        debug_assert_eq!(entry.child_mask, child_mask(ptr));
-        let i = expected.index() as usize;
-        if i == self.exprs_by_idx.len() {
-            self.exprs_by_idx.push(entry);
-            return;
-        }
-        if i > self.exprs_by_idx.len() {
-            self.exprs_by_idx.resize(i + 1, NO_EXPR);
-        }
-        self.exprs_by_idx[i] = entry;
+    fn push_expr(&mut self, expected: BackRef, node: ExprNode) {
+        let id = ExprId::new(self.terms.exprs.push(node), false);
+        put_at(&mut self.exprs_by_idx, expected.index() as usize, id);
     }
 
-    fn get_name_ptr(&self, idx: u32) -> NamePtr<'a> {
+    fn get_name(&self, idx: u32) -> NameId {
         match self.names_by_idx.get(idx as usize).copied().flatten() {
             Some(p) => p,
             None => undefined_index("name", idx),
         }
     }
 
-    fn get_level_ptr(&self, idx: u32) -> LevelPtr<'a> {
+    fn get_level(&self, idx: u32) -> LevelId {
         match self.levels_by_idx.get(idx as usize).copied().flatten() {
             Some(p) => p,
             None => undefined_index("level", idx),
         }
     }
 
-    fn get_names(&self, idxs: &[u32]) -> Vec<NamePtr<'a>> {
-        idxs.iter().map(|&idx| self.get_name_ptr(idx)).collect()
+    fn get_names(&self, idxs: &[u32]) -> Vec<NameId> {
+        idxs.iter().map(|&idx| self.get_name(idx)).collect()
     }
 
-    fn get_uparams_ptr(&mut self, name_idxs: &[u32]) -> LevelsPtr<'a> {
+    fn get_uparams(&mut self, name_idxs: &[u32]) -> LevelsId {
         let mut levels = Vec::with_capacity(name_idxs.len());
         for name_idx in name_idxs.iter().copied() {
-            let name_ptr = self.get_name_ptr(name_idx);
-            let hash = hash64!(crate::term::level::PARAM_HASH, name_ptr);
-            let r = self.dag.levels.get(&Level::Param(name_ptr, hash)).unwrap();
-            levels.push(LevelPtr::global(r));
+            let name = self.get_name(name_idx);
+            let i = self.terms.levels.find(&Level::Param(name)).unwrap();
+            levels.push(LevelId::new(i, false));
         }
-        LevelsPtr::global(self.dag.uparams.intern(self.arena, &levels))
+        LevelsId::new(self.terms.lists.intern_ref(&levels[..]), false)
     }
 
-    fn get_levels_ptr(&mut self, idxs: &[u32]) -> LevelsPtr<'a> {
+    fn get_levels(&mut self, idxs: &[u32]) -> LevelsId {
         let levels = idxs
             .iter()
-            .map(|&idx| self.get_level_ptr(idx))
+            .map(|&idx| self.get_level(idx))
             .collect::<Vec<_>>();
-        LevelsPtr::global(self.dag.uparams.intern(self.arena, &levels))
+        LevelsId::new(self.terms.lists.intern_ref(&levels[..]), false)
     }
 
-    fn get_expr_ptr(&self, idx: u32) -> ExprPtr<'a> {
-        self.get_expr(idx).0
-    }
-
-    fn get_expr(&self, idx: u32) -> (ExprPtr<'a>, u64) {
-        match self.exprs_by_idx.get(idx as usize) {
-            Some(&ExprEntry {
-                ptr: Some(p),
-                child_mask,
-            }) => (p, child_mask),
-            _ => undefined_index("expression", idx),
+    fn get_expr(&self, idx: u32) -> ExprId {
+        match self.exprs_by_idx.get(idx as usize).copied().flatten() {
+            Some(p) => p,
+            None => undefined_index("expression", idx),
         }
     }
 
     #[inline(always)]
-    fn get_body(&self, idx: u32) -> (ExprPtr<'a>, u64) {
-        let (p, child_mask) = self.get_expr(idx);
-        (p, under_binder(child_mask, p.num_loose_bvars()))
+    fn node(&self, e: ExprId) -> &ExprNode {
+        &self.terms.exprs.items[e.index()]
     }
 
     #[inline(never)]
@@ -884,13 +838,17 @@ impl<'a> Parser<'a> {
         out
     }
 
-    fn finish(self) -> ExportFile<'a> {
-        let name_cache = self.dag.mk_name_cache(self.anon);
+    fn finish(self) -> ExportFile {
+        let num_names = self.terms.names.items.len();
+        let mut nat_red = vec![NO_NAT_RED; num_names];
+        let name_cache = self.terms.mk_name_cache(&mut nat_red);
+        let mut decl_of = self.decl_of;
+        decl_of.resize(num_names, NO_DECL);
         ExportFile {
-            dag: self.dag,
-            anon: self.anon,
-            zero: self.zero,
+            terms: self.terms,
             declars: self.declars,
+            decl_of,
+            nat_red,
             name_cache,
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,
@@ -1163,27 +1121,21 @@ impl<'a> Parser<'a> {
     }
 
     #[inline]
-    fn intern_str(&mut self, s: &str) -> StringPtr<'a> {
-        if let Some(r) = self.dag.strings.get(s) {
-            return StringPtr::global(r);
-        }
-        let owned = Cow::Borrowed(&*self.arena.alloc_str(s));
-        StringPtr::global(self.dag.strings.insert(self.arena, owned))
+    fn intern_str(&mut self, s: &str) -> StrId {
+        StrId::new(self.terms.strings.intern_ref(s), false)
     }
 
     #[inline]
     fn do_name_str(&mut self, idx: BackRef, pre: u32, s: &str) {
-        let pfx = self.get_name_ptr(pre);
+        let pfx = self.get_name(pre);
         let sfx = self.intern_str(s);
-        let hash = hash64!(crate::term::name::STR_HASH, pfx, sfx);
-        self.push_name(idx, Name::Str(pfx, sfx, hash));
+        self.push_name(idx, Name::Str(pfx, sfx));
     }
 
     #[inline]
     fn do_name_num(&mut self, idx: BackRef, pre: u32, sfx: u64) {
-        let pfx = self.get_name_ptr(pre);
-        let hash = hash64!(crate::term::name::NUM_HASH, pfx, sfx);
-        self.push_name(idx, Name::Num(pfx, sfx, hash));
+        let pfx = self.get_name(pre);
+        self.push_name(idx, Name::Num(pfx, sfx));
     }
 
     #[inline]
@@ -1193,15 +1145,8 @@ impl<'a> Parser<'a> {
                 "Nat lit extension disallowed by checker execution config, but export file contains a nat literal",
             );
         }
-        let num_ptr = BigUintPtr::global(
-            self.dag
-                .bignums
-                .as_mut()
-                .unwrap()
-                .intern(self.arena, big_uint),
-        );
-        let hash = hash64!(NAT_LIT_HASH, num_ptr);
-        self.push_expr(idx, Expr::NatLit { ptr: num_ptr, hash }, 0, 0);
+        let lit = BigId::new(self.terms.bignums.intern(big_uint), false);
+        self.push_expr(idx, ExprNode::leaf(Expr::NatLit { lit }));
         Ok(())
     }
 
@@ -1212,83 +1157,56 @@ impl<'a> Parser<'a> {
                 "String lit extension disallowed by checker execution config, but export file contains a string literal",
             );
         }
-        let string_ptr = self.intern_str(s);
-        let hash = hash64!(STRING_LIT_HASH, string_ptr);
-        self.push_expr(
-            idx,
-            Expr::StringLit {
-                ptr: string_ptr,
-                hash,
-            },
-            0,
-            0,
-        );
+        let lit = self.intern_str(s);
+        self.push_expr(idx, ExprNode::leaf(Expr::StringLit { lit }));
         Ok(())
     }
 
     #[inline]
     fn do_succ(&mut self, idx: BackRef, l: u32) {
-        let l = self.get_level_ptr(l);
-        let hash = hash64!(crate::term::level::SUCC_HASH, l);
-        self.push_level(idx, Level::Succ(l, hash));
+        let l = self.get_level(l);
+        self.push_level(idx, Level::Succ(l));
     }
 
     #[inline]
     fn do_max(&mut self, idx: BackRef, l: u32, r: u32) {
-        let l = self.get_level_ptr(l);
-        let r = self.get_level_ptr(r);
-        let hash = hash64!(crate::term::level::MAX_HASH, l, r);
-        self.push_level(idx, Level::Max(l, r, hash));
+        let l = self.get_level(l);
+        let r = self.get_level(r);
+        self.push_level(idx, Level::Max(l, r));
     }
 
     #[inline]
     fn do_imax(&mut self, idx: BackRef, l: u32, r: u32) {
-        let l = self.get_level_ptr(l);
-        let r = self.get_level_ptr(r);
-        let hash = hash64!(crate::term::level::IMAX_HASH, l, r);
-        self.push_level(idx, Level::IMax(l, r, hash));
+        let l = self.get_level(l);
+        let r = self.get_level(r);
+        self.push_level(idx, Level::IMax(l, r));
     }
 
     #[inline]
     fn do_level_param(&mut self, idx: BackRef, n: u32) {
-        let n = self.get_name_ptr(n);
-        let hash = hash64!(crate::term::level::PARAM_HASH, n);
-        self.push_level(idx, Level::Param(n, hash));
+        let n = self.get_name(n);
+        self.push_level(idx, Level::Param(n));
     }
 
     #[inline]
     fn do_sort(&mut self, idx: BackRef, level: u32) {
-        let level = self.get_level_ptr(level);
-        let hash = hash64!(SORT_HASH, level);
-        self.push_expr(idx, Expr::Sort { level, hash }, 0, 0);
+        let level = self.get_level(level);
+        self.push_expr(idx, ExprNode::leaf(Expr::Sort { level }));
     }
 
     #[inline]
     fn do_const(&mut self, idx: BackRef, name: u32, us: &[u32]) {
-        let name = self.get_name_ptr(name);
-        let levels = self.get_levels_ptr(us);
-        let hash = hash64!(CONST_HASH, name, levels);
-        self.push_expr(idx, Expr::Const { name, levels, hash }, 0, 0);
+        let name = self.get_name(name);
+        let levels = self.get_levels(us);
+        self.push_expr(idx, ExprNode::leaf(Expr::Const { name, levels }));
     }
 
     #[inline]
     fn do_app(&mut self, idx: BackRef, fun: u32, arg: u32) {
-        let (fun, fun_mask) = self.get_expr(fun);
-        let (arg, arg_mask) = self.get_expr(arg);
-        let hash = hash64!(APP_HASH, fun, arg);
-        let fv_mask = fun_mask | arg_mask;
-        let nlb = fun.num_loose_bvars().max(arg.num_loose_bvars());
-        self.push_expr(
-            idx,
-            Expr::App {
-                fun,
-                arg,
-                fv_mask,
-                hash,
-            },
-            nlb,
-            fv_mask,
-        );
+        let fun = self.get_expr(fun);
+        let arg = self.get_expr(arg);
+        let node = ExprNode::app(fun, self.node(fun), arg, self.node(arg));
+        self.push_expr(idx, node);
     }
 
     #[inline]
@@ -1296,119 +1214,70 @@ impl<'a> Parser<'a> {
         if dbj_idx == u16::MAX {
             return decline("bvar index exceeds implementation limit");
         }
-        let hash = hash64!(VAR_HASH, dbj_idx);
-        let fv_mask = var_mask(dbj_idx);
-        self.push_expr(idx, Expr::Var { dbj_idx, hash }, dbj_idx + 1, fv_mask);
+        self.push_expr(idx, ExprNode::var(dbj_idx));
         Ok(())
     }
 
     #[inline]
     fn do_lambda(&mut self, idx: BackRef, binder_type: u32, body: u32) {
-        let (binder_type, binder_type_mask) = self.get_expr(binder_type);
-        let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(LAMBDA_HASH, binder_type, body);
-        let fv_mask = binder_type_mask | body_mask;
-        let nlb = binder_type
-            .num_loose_bvars()
-            .max(body.num_loose_bvars().saturating_sub(1));
-        self.push_expr(
-            idx,
-            Expr::Lambda {
-                binder_type,
-                body,
-                fv_mask,
-                hash,
-            },
-            nlb,
-            fv_mask,
-        );
+        let binder_type = self.get_expr(binder_type);
+        let body = self.get_expr(body);
+        let node = ExprNode::lambda(binder_type, self.node(binder_type), body, self.node(body));
+        self.push_expr(idx, node);
     }
 
     #[inline]
     fn do_pi(&mut self, idx: BackRef, binder_type: u32, body: u32) {
-        let (binder_type, binder_type_mask) = self.get_expr(binder_type);
-        let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(PI_HASH, binder_type, body);
-        let fv_mask = binder_type_mask | body_mask;
-        let nlb = binder_type
-            .num_loose_bvars()
-            .max(body.num_loose_bvars().saturating_sub(1));
-        self.push_expr(
-            idx,
-            Expr::Pi {
-                binder_type,
-                body,
-                fv_mask,
-                hash,
-            },
-            nlb,
-            fv_mask,
-        );
+        let binder_type = self.get_expr(binder_type);
+        let body = self.get_expr(body);
+        let node = ExprNode::pi(binder_type, self.node(binder_type), body, self.node(body));
+        self.push_expr(idx, node);
     }
 
     #[inline]
     fn do_let(&mut self, idx: BackRef, ty: u32, value: u32, body: u32, nondep: bool) {
-        let (binder_type, binder_type_mask) = self.get_expr(ty);
-        let (val, val_mask) = self.get_expr(value);
-        let (body, body_mask) = self.get_body(body);
-        let hash = hash64!(LET_HASH, binder_type, val, body, nondep);
-        let fv_mask = binder_type_mask | val_mask | body_mask;
-        let nlb = binder_type.num_loose_bvars().max(
-            val.num_loose_bvars()
-                .max(body.num_loose_bvars().saturating_sub(1)),
+        let binder_type = self.get_expr(ty);
+        let val = self.get_expr(value);
+        let body = self.get_expr(body);
+        let node = ExprNode::let_(
+            binder_type,
+            self.node(binder_type),
+            val,
+            self.node(val),
+            body,
+            self.node(body),
+            nondep,
         );
-        self.push_expr(
-            idx,
-            Expr::Let {
-                data: self.arena.alloc(LetData {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                }),
-                fv_mask,
-                hash,
-            },
-            nlb,
-            fv_mask,
-        );
+        self.push_expr(idx, node);
     }
 
     #[inline]
     fn do_proj(&mut self, idx: BackRef, type_name: u32, proj_idx: usize, struct_: u32) {
         let proj_idx = u16::try_from(proj_idx).expect("projection index does not fit in u16");
-        let ty_name = self.get_name_ptr(type_name);
-        let (structure, fv_mask) = self.get_expr(struct_);
-        let hash = hash64!(PROJ_HASH, ty_name, proj_idx, structure);
-        self.push_expr(
-            idx,
-            Expr::Proj {
-                ty_name,
-                idx: proj_idx,
-                structure,
-                fv_mask,
-                hash,
-            },
-            structure.num_loose_bvars(),
-            fv_mask,
-        );
+        let ty_name = self.get_name(type_name);
+        let structure = self.get_expr(struct_);
+        let node = ExprNode::proj(ty_name, proj_idx, structure, self.node(structure));
+        self.push_expr(idx, node);
     }
 
-    fn add_declar(&mut self, name: NamePtr<'a>, d: Declar<'a>) {
+    fn add_declar(&mut self, name: NameId, d: Declar) {
         let idx = u32::try_from(self.declars.len()).expect("declaration count exceeds u32");
-        if idx == crate::term::name::NO_DECL {
+        if idx == NO_DECL {
             unsupported!("declaration count exceeds u32");
         }
         ensure!(self.declars.insert(name, d).is_none());
-        name.as_ref().set_decl_idx(idx);
+        if self.decl_of.len() <= name.index() {
+            self.decl_of.resize(name.index() + 1, NO_DECL);
+        }
+        self.decl_of[name.index()] = idx;
     }
 
     #[inline]
     fn do_def(&mut self, name: u32, ty: u32, value: u32, uparams: &[u32], hint: ReducibilityHint) {
-        let name = self.get_name_ptr(name);
-        let ty = self.get_expr_ptr(ty);
-        let val = self.get_expr_ptr(value);
-        let uparams = self.get_uparams_ptr(uparams);
+        let name = self.get_name(name);
+        let ty = self.get_expr(ty);
+        let val = self.get_expr(value);
+        let uparams = self.get_uparams(uparams);
         let info = DeclarInfo { name, uparams, ty };
         let definition = Declar::Definition { info, val, hint };
         self.add_declar(name, definition);
@@ -1416,10 +1285,10 @@ impl<'a> Parser<'a> {
 
     #[inline]
     fn do_thm(&mut self, name: u32, ty: u32, value: u32, uparams: &[u32]) {
-        let name = self.get_name_ptr(name);
-        let ty = self.get_expr_ptr(ty);
-        let val = self.get_expr_ptr(value);
-        let uparams = self.get_uparams_ptr(uparams);
+        let name = self.get_name(name);
+        let ty = self.get_expr(ty);
+        let val = self.get_expr(value);
+        let uparams = self.get_uparams(uparams);
         let info = DeclarInfo { name, uparams, ty };
         let theorem = Declar::Theorem { info, val };
         self.add_declar(name, theorem);
@@ -1476,12 +1345,16 @@ impl<'a> Parser<'a> {
                 if is_unsafe {
                     return decline("unsafe declarations are not supported");
                 }
-                let name = self.get_name_ptr(name);
-                let uparams = self.get_uparams_ptr(&uparams);
-                let ty = self.get_expr_ptr(ty);
+                let name = self.get_name(name);
+                let uparams = self.get_uparams(&uparams);
+                let ty = self.get_expr(ty);
                 let info = DeclarInfo { name, uparams, ty };
                 let axiom = Declar::Axiom { info };
-                let name_string = name.to_string();
+                let name_string = NameDisplay {
+                    src: &self.terms,
+                    name,
+                }
+                .to_string();
                 match self.config.axiom_policy.decision(&name_string) {
                     AxiomDecision::Allow | AxiomDecision::Warn => self.add_declar(name, axiom),
                     AxiomDecision::Reject => {
@@ -1521,10 +1394,10 @@ impl<'a> Parser<'a> {
                 if is_unsafe {
                     return decline("unsafe declarations are not supported");
                 }
-                let name = self.get_name_ptr(name);
-                let ty = self.get_expr_ptr(ty);
-                let val = self.get_expr_ptr(value);
-                let uparams = self.get_uparams_ptr(&uparams);
+                let name = self.get_name(name);
+                let ty = self.get_expr(ty);
+                let val = self.get_expr(value);
+                let uparams = self.get_uparams(&uparams);
                 let info = DeclarInfo { name, uparams, ty };
                 let definition = Declar::Opaque { info, val };
                 self.add_declar(name, definition);
@@ -1532,9 +1405,9 @@ impl<'a> Parser<'a> {
             Quot {
                 name, ty, uparams, ..
             } => {
-                let name = self.get_name_ptr(name);
-                let ty = self.get_expr_ptr(ty);
-                let uparams = self.get_uparams_ptr(&uparams);
+                let name = self.get_name(name);
+                let ty = self.get_expr(ty);
+                let uparams = self.get_uparams(&uparams);
                 let info = DeclarInfo { name, uparams, ty };
                 let quot = Declar::Quot { info };
                 self.add_declar(name, quot);
@@ -1567,11 +1440,11 @@ impl<'a> Parser<'a> {
                     if is_unsafe {
                         return decline("unsafe declarations are not supported");
                     }
-                    let name = self.get_name_ptr(name);
+                    let name = self.get_name(name);
                     self.mutual_block_sizes
                         .insert(name, (block_start, block_size));
-                    let uparams = self.get_uparams_ptr(&uparams);
-                    let ty = self.get_expr_ptr(ty);
+                    let uparams = self.get_uparams(&uparams);
+                    let ty = self.get_expr(ty);
                     let all_ind_names = Arc::from(self.get_names(&all));
                     let all_ctor_names = Arc::from(self.get_names(&ctors));
                     let inductive = Declar::Inductive(InductiveData {
@@ -1605,11 +1478,11 @@ impl<'a> Parser<'a> {
                             "constructor is not listed by its inductive type in this block".into(),
                         );
                     }
-                    let name = self.get_name_ptr(name);
-                    let ty = self.get_expr_ptr(ty);
-                    let uparams = self.get_uparams_ptr(&uparams);
+                    let name = self.get_name(name);
+                    let ty = self.get_expr(ty);
+                    let uparams = self.get_uparams(&uparams);
                     let info = DeclarInfo { name, uparams, ty };
-                    let parent_inductive = self.get_name_ptr(induct);
+                    let parent_inductive = self.get_name(induct);
                     let ctor_idx = cidx;
                     let ctor = Declar::Constructor(ConstructorData {
                         info,
@@ -1638,16 +1511,16 @@ impl<'a> Parser<'a> {
                     if is_unsafe {
                         return decline("unsafe declarations are not supported");
                     }
-                    let name = self.get_name_ptr(name);
-                    let ty = self.get_expr_ptr(ty);
-                    let uparams = self.get_uparams_ptr(&uparams);
+                    let name = self.get_name(name);
+                    let ty = self.get_expr(ty);
+                    let uparams = self.get_uparams(&uparams);
                     let info = DeclarInfo { name, uparams, ty };
                     let rules = rules
                         .into_iter()
                         .map(
                             |RecursorRule { rhs, ctor, nfields }| crate::checker::env::RecRule {
-                                val: self.get_expr_ptr(rhs),
-                                ctor_name: self.get_name_ptr(ctor),
+                                val: self.get_expr(rhs),
+                                ctor_name: self.get_name(ctor),
                                 ctor_telescope_size_wo_params: nfields,
                             },
                         )

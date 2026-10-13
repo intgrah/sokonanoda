@@ -3,18 +3,18 @@
 
 use super::{IndTyHeader, InductiveCheckState};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::Value;
+use crate::checker::value::{EMPTY_ENV, Value};
 use crate::outcome::{ensure, ensure_eq, reject};
-use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
+use crate::term::id::{ExprId, LevelsId, NameId};
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
     /// Check the 0th element of the list of inductive types; this one is different
     /// than the mutuals, because we need to determine the target for the block codom
     /// and some other stuff.
     fn check_inductive_spec_0th(
         &mut self,
-        uparams: LevelsPtr<'t>,
-        st: &mut InductiveCheckState<'t>,
+        uparams: LevelsId,
+        st: &mut InductiveCheckState,
     ) {
         self.tc_cache.clear();
         let (ind_name, ind_ty) = st
@@ -23,12 +23,12 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             .map(|x| (x.name, x.ty))
             .unwrap();
         let mut depth = 0u32;
-        let mut env = self.empty_env();
+        let mut env = EMPTY_ENV;
         let mut cur = self.value_of(ind_ty);
         let mut indices = Vec::new();
         let mut i = 0;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = *domain;
+            let domain = domain;
             if i < st.local_params.len() {
                 let stored = st.local_params[i];
                 self.tc_cache.clear();
@@ -46,7 +46,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let block_codom = self.ensure_sort_v(depth, cur);
         let is_nonzero = self.ctx.is_nonzero(block_codom);
-        let is_zero = block_codom.is_always_zero();
+        let is_zero = self.ctx.is_always_zero(block_codom);
         let ind_const = self.ctx.mk_const(ind_name, uparams);
 
         st.local_indices.push(indices);
@@ -58,9 +58,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// Check the rest of the types in a mutual block, ensuring they agree with the base type.
     fn check_inductive_specs_mutual1(
         &mut self,
-        st: &mut InductiveCheckState<'t>,
-        name: NamePtr<'t>,
-        ty: ExprPtr<'t>,
+        st: &mut InductiveCheckState,
+        name: NameId,
+        ty: ExprId,
     ) {
         self.tc_cache.clear();
         let mut depth = 0u32;
@@ -68,7 +68,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         let mut indices = Vec::new();
         let mut i = 0;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = *domain;
+            let domain = domain;
             if i >= st.local_params.len() {
                 let binder_type = self.quote(depth, domain);
                 indices.push(binder_type);
@@ -87,7 +87,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// file for the actual declaration being checked. It *ALSO* gets the `NestedInductiveState`,
     /// since the process of checking these also has to deal with the new types created
     /// during the nest procedure.
-    pub(super) fn check_inductive_specs(&mut self, st: &mut InductiveCheckState<'t>) {
+    pub(super) fn check_inductive_specs(&mut self, st: &mut InductiveCheckState) {
         let nbefore = st.all_inductives_incl_specialized.len();
         for i in 0..st.all_inductives_incl_specialized.len() {
             if i == 0 {
@@ -107,8 +107,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     pub(super) fn check_declared_metadata(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        unmodified: &[IndTyHeader<'t>],
+        st: &InductiveCheckState,
+        unmodified: &[IndTyHeader],
     ) {
         let num_params = usize::from(st.num_params());
         for (i, header) in unmodified.iter().enumerate() {
@@ -132,7 +132,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 "inductive declares the wrong number of constructors"
             );
             for (ctor_idx, ctor) in header.ctors.iter().enumerate() {
-                let telescope = ctor.ty.pi_telescope_size() as usize;
+                let telescope = self.ctx.pi_telescope_size(ctor.ty) as usize;
                 ensure!(
                     telescope >= num_params,
                     "constructor telescope is shorter than the parameters"
@@ -163,7 +163,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                 );
             }
             let rec_name = {
-                let rec_str_ptr = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+                let rec_str_ptr = self.ctx.alloc_string("rec");
                 self.ctx.str(header.name, rec_str_ptr)
             };
             if let Some(rd) = self.env.get_recursor(rec_name) {
@@ -187,15 +187,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn large_elim_test_aux(
         &mut self,
-        ctor_type_cursor: ExprPtr<'t>,
+        ctor_type_cursor: ExprId,
         mut rem_params: usize,
     ) -> bool {
         self.tc_cache.clear();
         let mut depth = 0u32;
         let mut cur = self.value_of(ctor_type_cursor);
         let mut non_prop_levels: Vec<u32> = Vec::new();
-        while let Value::Pi { domain, body, .. } = cur {
-            let domain = *domain;
+        while let Value::Pi { domain, body, .. } = self.val(cur) {
+            let domain = domain;
             let fresh = self.mk_bvar_hc(depth, domain);
             let level = depth;
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -207,7 +207,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             }
         }
 
-        let non_prop_ctor_telescope_elems: Vec<ExprPtr<'t>> = non_prop_levels
+        let non_prop_ctor_telescope_elems: Vec<ExprId> = non_prop_levels
             .iter()
             .map(|l| {
                 self.ctx
@@ -215,7 +215,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             })
             .collect();
         let end_of_telescope = self.quote(depth, cur);
-        let (_, ind_ty_params_and_indices) = end_of_telescope.unfold_apps(self.arena);
+        let (_, ind_ty_params_and_indices) = self.ctx.unfold_apps(end_of_telescope);
 
         // Check whether `non_prop_ctor_telescope_elems` is a subset of
         // `ind_ty params ++ ind_ty indices`
@@ -227,7 +227,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             .iter()
             .all(|arg| ind_ty_params_and_indices.contains(arg))
     }
-    fn large_elim_test(&mut self, st: &InductiveCheckState<'t>) -> bool {
+    fn large_elim_test(&mut self, st: &InductiveCheckState) -> bool {
         if st.is_nonzero.unwrap() {
             // If our inductive is in `Type <n>`, it's large eliminating
             return true;
@@ -251,32 +251,30 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             _ => false,
         }
     }
-    fn gen_elim_level(&mut self, st: &InductiveCheckState<'t>) -> NamePtr<'t> {
+    fn gen_elim_level(&mut self, st: &InductiveCheckState) -> NameId {
         let p = self.ctx.str1("u");
-        if !st.uparams.contains_param(p) {
+        if !self.ctx.contains_param(st.uparams, p) {
             return p;
         }
         // Lean's pretty printer starts at 1 for universes.
         let mut i = 1u64;
         loop {
             let candidate = self.ctx.append_index_after(p, i);
-            if st.uparams.contains_param(candidate) {
+            if self.ctx.contains_param(st.uparams, candidate) {
                 i += 1;
             } else {
                 return candidate;
             }
         }
     }
-    pub(super) fn mk_elim_level(&mut self, st: &mut InductiveCheckState<'t>) {
+    pub(super) fn mk_elim_level(&mut self, st: &mut InductiveCheckState) {
         if self.large_elim_test(st) {
             let elim_level = self.gen_elim_level(st);
             let elim_level = self.ctx.param(elim_level);
             // Extra work since you want the new thing at the front of the vector (in position 0)
             let rec_levels = {
                 let mut base = vec![elim_level];
-                for l in st.uparams.as_ref().iter().copied() {
-                    base.push(l);
-                }
+                base.extend_from_slice(self.ctx.levels(st.uparams));
                 self.ctx.alloc_levels(&base)
             };
             st.rec_uparams = Some(rec_levels);

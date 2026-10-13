@@ -3,65 +3,70 @@
 
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
-use crate::checker::value::{self, C, Closure, E, RigidHead, V, Value};
+use crate::checker::value::{
+    C, Closure, DUMMY, E, EMPTY_CTX, EMPTY_ENV, RigidHead, V, Vals, Value,
+};
 use crate::outcome::{ensure, reject};
-use crate::term::expr::{Expr, SPINE, ignores_binder};
-use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::expr::{Expr, ExprNode, SPINE};
+use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 use std::mem::MaybeUninit;
 
 use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use InferFlag::{Check, InferOnly};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckScope<'a> {
+pub(crate) enum CheckScope {
     Unchecked,
     NoUparams,
-    Under(LevelsPtr<'a>),
+    Under(LevelsId),
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct CachedType<'a> {
-    pub(crate) result: V<'a>,
-    pub(crate) checked_under: CheckScope<'a>,
+pub(crate) struct CachedType {
+    pub(crate) result: V,
+    pub(crate) checked_under: CheckScope,
 }
 
-fn atomic_type(v: V<'_>) -> bool {
-    match v {
+fn atomic_type(vals: &Vals, v: V) -> bool {
+    match vals.val(v) {
         Value::Sort { .. } | Value::NatLit { .. } | Value::StrLit { .. } => true,
-        Value::Rigid { spine, .. } => spine.is_empty(),
+        Value::Rigid { spine, .. } => vals.is_head(spine),
         _ => false,
     }
 }
 
-fn has_deep_bvar_prefix(mut env: E<'_>) -> bool {
+fn has_deep_bvar_prefix(vals: &Vals, mut env: E) -> bool {
     for _ in 0..64 {
-        match env {
-            value::Env::Cons {
-                v:
-                    Value::Rigid {
-                        head: RigidHead::BVar(..),
-                        ..
-                    },
-                parent,
-                ..
-            } => env = parent,
+        match vals.env_cons(env) {
+            Some((v, parent))
+                if v != DUMMY
+                    && matches!(
+                        vals.val(v),
+                        Value::Rigid {
+                            head: RigidHead::BVar(..),
+                            ..
+                        }
+                    ) =>
+            {
+                env = parent;
+            }
             _ => return false,
         }
     }
     true
 }
 
-impl<'t> TypeChecker<'_, 't, '_> {
-    fn uparam_scope(&self) -> CheckScope<'t> {
+impl<'t> TypeChecker<'_, 't> {
+    fn uparam_scope(&self) -> CheckScope {
         match self.declar_info {
             Some(info) => CheckScope::Under(info.uparams),
             None => CheckScope::NoUparams,
         }
     }
 
-    pub(crate) fn ensure_sort_v(&mut self, depth: u32, v: V<'t>) -> LevelPtr<'t> {
-        match self.force_all(depth, v) {
-            Value::Sort { level, .. } => *level,
+    pub(crate) fn ensure_sort_v(&mut self, depth: u32, v: V) -> LevelId {
+        match self.force_all_val(depth, v) {
+            Value::Sort { level, .. } => level,
             _ => reject!("expected a sort"),
         }
     }
@@ -70,21 +75,21 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         flag: InferFlag,
         depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        e: ExprPtr<'t>,
-    ) -> LevelPtr<'t> {
+        env: E,
+        ctx: C,
+        e: ExprId,
+    ) -> LevelId {
         let t = self.infer_value(flag, depth, env, ctx, e);
         self.ensure_sort_v(depth, t)
     }
 
-    pub(crate) fn arg_value(&mut self, depth: u32, env: E<'t>, a: ExprPtr<'t>) -> V<'t> {
+    pub(crate) fn arg_value(&mut self, depth: u32, env: E, a: ExprId) -> V {
         self.eval(depth, env, a)
     }
 
-    fn lit_inductive_type(&mut self, n: Option<NamePtr<'t>>) -> V<'t> {
+    fn lit_inductive_type(&mut self, n: Option<NameId>) -> V {
         let name = n.expect("infer: literal type name missing");
-        let levels = self.ctx.alloc_levels_slice(&[]);
+        let levels = self.ctx.alloc_levels(&[]);
         self.mk_head_hc(RigidHead::Inductive(name, levels))
     }
 
@@ -93,14 +98,15 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         flag: InferFlag,
         depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        e: ExprPtr<'t>,
-    ) -> V<'t> {
-        if let &Var { dbj_idx, .. } = e.as_ref() {
-            return ctx.lookup(dbj_idx).expect("loose bvar in infer");
+        env: E,
+        ctx: C,
+        e: ExprId,
+    ) -> V {
+        let node = *self.ctx.node(e);
+        if let Var { dbj_idx } = node.expr {
+            return self.vals().ctx_lookup(ctx, dbj_idx).expect("loose bvar in infer");
         }
-        self.infer_nonvar(flag, depth, env, ctx, e)
+        self.infer_nonvar(flag, depth, env, ctx, e, node)
     }
 
     #[inline(never)]
@@ -108,18 +114,19 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         flag: InferFlag,
         depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        e: ExprPtr<'t>,
-    ) -> V<'t> {
-        match *e {
-            Var { dbj_idx, .. } => return ctx.lookup(dbj_idx).expect("loose bvar in infer"),
-            Sort { level, .. } => {
+        env: E,
+        ctx: C,
+        e: ExprId,
+        node: ExprNode,
+    ) -> V {
+        match node.expr {
+            Var { dbj_idx } => return self.vals().ctx_lookup(ctx, dbj_idx).expect("loose bvar in infer"),
+            Sort { level } => {
                 if let (Check, Some(info)) = (flag, self.declar_info)
                     && !self.ctx.leaf_checked(e)
                 {
                     ensure!(
-                        level.all_uparams_defined(info.uparams),
+                        self.ctx.all_uparams_defined(level, info.uparams),
                         "universe parameter not declared by the current declaration"
                     );
                     self.ctx.mark_leaf_checked(e);
@@ -128,12 +135,12 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 let sc = self.ctx.simplify(sc);
                 return self.mk_sort_hc(sc);
             }
-            Const { name, levels, .. } => {
+            Const { name, levels } => {
                 if let (Check, Some(info)) = (flag, self.declar_info)
                     && !self.ctx.leaf_checked(e)
                 {
-                    for l in levels.as_ref().iter().copied() {
-                        ensure!(l.all_uparams_defined(info.uparams));
+                    for &l in self.ctx.levels(levels) {
+                        ensure!(self.ctx.all_uparams_defined(l, info.uparams));
                     }
                     self.ctx.mark_leaf_checked(e);
                 }
@@ -150,7 +157,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             App { .. } | Lambda { .. } | Pi { .. } | Let { .. } | Proj { .. } => {}
         }
 
-        let key = (Id::of(self.key_env(env, e)), e);
+        let key = (self.prune_env(env, node.mask), e);
         let scope = self.uparam_scope();
         if let Some(cached) = self.tc_cache.type_cache.get(&key)
             && (flag == InferOnly || cached.checked_under == scope)
@@ -162,7 +169,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
             Some(info)
                 if flag == Check
                     && self.ordered_declaration
-                    && e.num_loose_bvars() == 0
+                    && node.loose == 0
                     && !e.is_local() =>
             {
                 Some(info.uparams)
@@ -173,53 +180,50 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let requested = flag;
         let flag = if known { InferOnly } else { flag };
 
-        let r = match *e {
+        let r = match node.expr {
             App { .. } => self.infer_app_v(flag, depth, env, ctx, e),
-            Lambda {
-                binder_type, body, ..
-            } => {
+            Lambda { binder_type, body } => {
                 let dom = self.arg_value(depth, env, binder_type);
                 let mut body_ty = None;
                 if flag == Check {
                     self.infer_sort_of_v(flag, depth, env, ctx, binder_type);
                     let fresh = self.mk_bvar_hc(depth, dom);
                     let env2 = self.env_extend(env, fresh);
-                    let ctx2 = value::ctx_extend(self.arena, ctx, dom);
+                    let ctx2 = self.ctx_extend(ctx, dom);
                     body_ty = Some(self.infer_value(flag, depth + 1, env2, ctx2, body));
                 }
-                let clo = match body_ty.filter(|bt| {
-                    atomic_type(bt)
-                        && bt.is_closed()
-                        && std::ptr::eq(*bt, dom)
-                        && binder_type.num_loose_bvars() == 0
-                        && has_deep_bvar_prefix(env)
-                }) {
-                    Some(_) => Closure::mk_eval(self.empty_env(), binder_type),
-                    None => Closure::mk_infer(self.key_env(env, e), ctx, body),
+                let binder_loose = self.ctx.loose(binder_type);
+                let reuse = body_ty.is_some_and(|bt| {
+                    atomic_type(self.vals(), bt)
+                        && self.vals_mut().is_closed(bt)
+                        && bt == dom
+                        && binder_loose == 0
+                        && has_deep_bvar_prefix(self.vals(), env)
+                });
+                let clo = match reuse.then_some(()) {
+                    Some(_) => Closure::mk_eval(EMPTY_ENV, binder_type, binder_loose),
+                    None => {
+                        let body_loose = self.ctx.loose(body);
+                        Closure::mk_infer(self.key_env(env, e), ctx, body, body_loose)
+                    }
                 };
                 self.mk_pi_hc(dom, clo)
             }
-            Pi {
-                binder_type, body, ..
-            } => {
+            Pi { binder_type, body } => {
                 let l1 = self.infer_sort_of_v(flag, depth, env, ctx, binder_type);
                 let dom = self.arg_value(depth, env, binder_type);
                 let fresh = self.mk_bvar_hc(depth, dom);
                 let env2 = self.env_extend(env, fresh);
-                let ctx2 = value::ctx_extend(self.arena, ctx, dom);
+                let ctx2 = self.ctx_extend(ctx, dom);
                 let l2 = self.infer_sort_of_v(flag, depth + 1, env2, ctx2, body);
                 let im = self.ctx.imax(l1, l2);
                 let im = self.ctx.simplify(im);
                 self.mk_sort_hc(im)
             }
             Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
+                binder_type,
+                val,
+                body,
                 ..
             } => {
                 let dom = self.arg_value(depth, env, binder_type);
@@ -230,14 +234,13 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 }
                 let slot = self.arg_value(depth, env, val);
                 let env2 = self.env_extend(env, slot);
-                let ctx2 = value::ctx_extend(self.arena, ctx, dom);
+                let ctx2 = self.ctx_extend(ctx, dom);
                 self.infer_value(flag, depth, env2, ctx2, body)
             }
             Proj {
                 ty_name,
                 idx,
                 structure,
-                ..
             } => self.infer_proj_v(flag, depth, env, ctx, ty_name, idx, structure),
             _ => unreachable!(),
         };
@@ -264,25 +267,23 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         flag: InferFlag,
         depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        e: ExprPtr<'t>,
-    ) -> V<'t> {
+        env: E,
+        ctx: C,
+        e: ExprId,
+    ) -> V {
         let mut buf = [MaybeUninit::uninit(); SPINE];
         let spilled;
-        let (head, rev_args) = if let Some(peeled) = e.peel_apps(&mut buf) {
+        let (head, rev_args) = if let Some(peeled) = self.ctx.peel_apps(e, &mut buf) {
             peeled
         } else {
-            spilled = e.unfold_apps_rev();
+            spilled = self.ctx.unfold_apps_rev(e);
             (spilled.0, &spilled.1[..])
         };
         let mut fty = self.infer_value(flag, depth, env, ctx, head);
-        let mut telescope: Option<(E<'t>, ExprPtr<'t>)> = None;
+        let mut telescope: Option<(E, ExprId)> = None;
         for &arg in rev_args.iter().rev() {
             if let Some((tenv, t)) = telescope
-                && let &Pi {
-                    binder_type, body, ..
-                } = t.as_ref()
+                && let Pi { binder_type, body } = self.ctx.ex(t)
             {
                 if flag == Check {
                     let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
@@ -292,7 +293,7 @@ impl<'t> TypeChecker<'_, 't, '_> {
                         "app arg def_eq failed"
                     );
                 }
-                let av = if ignores_binder(body) {
+                let av = if self.ctx.ignores_binder(body) {
                     self.placeholder()
                 } else {
                     self.eval_arg(depth, env, arg)
@@ -304,8 +305,8 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 fty = self.eval(depth, tenv, t);
             }
             let fty_f = self.force_all(depth, fty);
-            let (domain, body) = match fty_f {
-                Value::Pi { domain, body, .. } => (*domain, body),
+            let (domain, body) = match self.val(fty_f) {
+                Value::Pi { domain, body, .. } => (domain, body),
                 _ => reject!("expected a pi type"),
             };
             if flag == Check {
@@ -316,16 +317,16 @@ impl<'t> TypeChecker<'_, 't, '_> {
                 );
             }
             if body.ctx.is_some() {
-                if ignores_binder(body.body) {
+                if self.ctx.ignores_binder(body.body) {
                     fty = self.apply_closure(depth, body, domain, Some(domain));
                 } else {
                     let av = self.eval_arg(depth, env, arg);
                     fty = self.apply_closure(depth, body, av, Some(domain));
                 }
-            } else if body.body.num_loose_bvars() == 0 {
+            } else if body.loose == 0 {
                 telescope = Some((body.env, body.body));
             } else {
-                let av = if ignores_binder(body.body) {
+                let av = if self.ctx.ignores_binder(body.body) {
                     self.placeholder()
                 } else {
                     self.eval_arg(depth, env, arg)
@@ -343,29 +344,30 @@ impl<'t> TypeChecker<'_, 't, '_> {
         &mut self,
         flag: InferFlag,
         depth: u32,
-        env: E<'t>,
-        ctx: C<'t>,
-        ty_name: NamePtr<'t>,
+        env: E,
+        ctx: C,
+        ty_name: NameId,
         idx: u16,
-        structure: ExprPtr<'t>,
-    ) -> V<'t> {
+        structure: ExprId,
+    ) -> V {
         let struct_ty = self.infer_value(flag, depth, env, ctx, structure);
         let struct_ty_f = self.force_all(depth, struct_ty);
         let struct_ty_is_prop = self.is_prop_type(depth, struct_ty_f);
-        let (ind_name, ind_levels, spine) = match struct_ty_f {
+        let (ind_name, ind_levels, spine) = match self.val(struct_ty_f) {
             Value::Rigid {
                 head: RigidHead::Inductive(n, ls),
                 spine,
                 ..
-            } => (*n, *ls, *spine),
+            } => (n, ls, spine),
             _ => reject!("projection structure type is not an inductive"),
         };
         ensure!(
             ind_name == ty_name,
             "projection type name does not match the structure's inductive"
         );
-        let params = spine
-            .apps()
+        let params = self
+            .vals()
+            .spine_apps(spine)
             .expect("projection structure type has a non-applicative spine");
         let (num_params, num_indices, ctor_name) = {
             let ind = self
@@ -390,29 +392,29 @@ impl<'t> TypeChecker<'_, 't, '_> {
         let struct_v = self.arg_value(depth, env, structure);
         let mut cur = self.const_head_type(ctor_name, ind_levels);
         for p in params.iter().take(num_params).copied() {
-            match self.force_all(depth, cur) {
+            match self.force_all_val(depth, cur) {
                 Value::Pi { domain, body, .. } => {
-                    cur = self.apply_closure(depth, body, p, Some(*domain));
+                    cur = self.apply_closure(depth, body, p, Some(domain));
                 }
                 _ => reject!("ran out of param telescope in projection"),
             }
         }
         for i in 0..idx {
-            match self.force_all(depth, cur) {
+            match self.force_all_val(depth, cur) {
                 Value::Pi { domain, body, .. } => {
-                    if body.body.has_loose_bvar(0)
+                    if self.ctx.has_loose_bvar(body.body, 0)
                         && struct_ty_is_prop
                         && !self.is_prop_type(depth, domain)
                     {
                         reject!("projection of a non-proof field from a Prop structure")
                     }
                     let prior = self.do_proj(depth, ind_name, i, struct_v);
-                    cur = self.apply_closure(depth, body, prior, Some(*domain));
+                    cur = self.apply_closure(depth, body, prior, Some(domain));
                 }
                 _ => reject!("ran out of constructor telescope in projection"),
             }
         }
-        match self.force_all(depth, cur) {
+        match self.force_all_val(depth, cur) {
             Value::Pi { domain, .. } => {
                 ensure!(
                     !struct_ty_is_prop || self.is_prop_type(depth, domain),
@@ -424,25 +426,28 @@ impl<'t> TypeChecker<'_, 't, '_> {
         }
     }
 
-    pub(crate) fn check_declar_info_v(&mut self, d: &Declar<'t>) {
+    pub(crate) fn check_declar_info_v(&mut self, d: &Declar) {
         let info = d.info();
         ensure!(
-            info.uparams.no_dupes_all_params(),
+            self.ctx.no_dupes_all_params(info.uparams),
             "duplicate universe parameters in declaration"
         );
-        let empty_env = self.empty_env();
-        let empty_ctx = self.empty_ctx();
+        let empty_env = EMPTY_ENV;
+        let empty_ctx = EMPTY_CTX;
         let ty_ty = self.infer_value(Check, 0, empty_env, empty_ctx, info.ty);
         let sort = self.ensure_sort_v(0, ty_ty);
         if let Declar::Theorem { .. } = d {
-            ensure!(sort.is_always_zero(), "theorem type must be Prop (sort 0)");
+            ensure!(
+                self.ctx.is_always_zero(sort),
+                "theorem type must be Prop (sort 0)"
+            );
         }
     }
 
-    pub(crate) fn check_def_like_v(&mut self, d: &Declar<'t>, val: ExprPtr<'t>) {
+    pub(crate) fn check_def_like_v(&mut self, d: &Declar, val: ExprId) {
         self.check_declar_info_v(d);
-        let empty_env = self.empty_env();
-        let empty_ctx = self.empty_ctx();
+        let empty_env = EMPTY_ENV;
+        let empty_ctx = EMPTY_CTX;
         let val_ty = self.infer_value(Check, 0, empty_env, empty_ctx, val);
         let declared = self.eval(0, empty_env, d.info().ty);
         ensure!(self.def_eq_at(0, val_ty, declared), "def_eq failed");

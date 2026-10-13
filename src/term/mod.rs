@@ -3,7 +3,7 @@
 
 pub(crate) mod expr;
 pub(crate) mod hash;
+pub(crate) mod id;
 pub(crate) mod intern;
 pub(crate) mod level;
 pub(crate) mod name;
-pub(crate) mod ptr;

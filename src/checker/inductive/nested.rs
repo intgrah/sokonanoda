@@ -6,14 +6,14 @@ use crate::checker::env::{ConstructorData, InductiveData};
 use crate::checker::tc::TypeChecker;
 use crate::outcome::{ensure, ensure_eq};
 use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
-use crate::term::ptr::ExprPtr;
+use crate::term::id::ExprId;
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
     pub(super) fn specialize_nested(
         &mut self,
-        t_from_file: &InductiveData<'t>,
-        unmodified_tys_ctors: Vec<IndTyHeader<'t>>,
-    ) -> InductiveCheckState<'t> {
+        t_from_file: &InductiveData,
+        unmodified_tys_ctors: Vec<IndTyHeader>,
+    ) -> InductiveCheckState {
         let (local_params, _instd) =
             self.get_local_params(unmodified_tys_ctors[0].ty, t_from_file.num_params);
 
@@ -27,9 +27,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         self.specialize_nested_aux(&mut st);
 
         for ind in &st.all_inductives_incl_specialized {
-            ensure_eq!(ind.ty.num_loose_bvars(), 0);
+            ensure_eq!(self.ctx.loose(ind.ty), 0);
             for c in &ind.ctors {
-                ensure_eq!(c.ty.num_loose_bvars(), 0);
+                ensure_eq!(self.ctx.loose(c.ty), 0);
             }
         }
         st
@@ -44,7 +44,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     ///    ones, and finds instances of nested types, replacing them in with instances of the specialized types.
     ///    For example, replacing the occurrence of `Array Syntax` in the `Lean.Syntax.node` constructor
     ///    with `_nested.Array_N`.
-    fn specialize_nested_aux(&mut self, st: &mut InductiveCheckState<'t>) {
+    fn specialize_nested_aux(&mut self, st: &mut InductiveCheckState) {
         let mut i = 0usize;
         // `all_inductives_incl_specialized` begins as just the unmodified `IndTyHeader`
         // elements.
@@ -76,14 +76,14 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn is_nested_ind_app(
         &mut self,
-        st: &InductiveCheckState<'t>,
-        e: ExprPtr<'t>,
+        st: &InductiveCheckState,
+        e: ExprId,
         offset: u16,
-    ) -> Option<InductiveData<'t>> {
-        if !matches!(*e, App { .. }) {
+    ) -> Option<InductiveData> {
+        if !matches!(self.ctx.ex(e), App { .. }) {
             return None;
         }
-        let (_f, name, _levels, args) = e.unfold_const_apps(self.arena)?;
+        let (_f, name, _levels, args) = self.ctx.unfold_const_apps(e)?;
         // If this is an application of an inductive, like `Array A`
         let ind_ty_declar @ InductiveData { num_params, .. } = self.env.get_inductive(name)?;
         if (*num_params as usize) > args.len() {
@@ -91,7 +91,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         }
         let params = &args[..usize::from(*num_params)];
         let is_nested = params.iter().any(|&p| {
-            p.find_const(|n| {
+            self.ctx.find_const(p, |n| {
                 st.all_inductives_incl_specialized
                     .iter()
                     .any(|new_ty| new_ty.name == n)
@@ -101,7 +101,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             return None;
         }
         ensure!(
-            !params.iter().any(|&p| p.has_loose_bvar_below(offset)),
+            !params
+                .iter()
+                .any(|&p| self.ctx.has_loose_bvar_below(p, offset)),
             "a nested type may only be applied to the block's parameters"
         );
         Some(ind_ty_declar.clone())
@@ -116,15 +118,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// the `Lean.Syntax.node` constructor, replace `Array Syntax` with `_nested.Array_X`.
     fn replace_if_nested(
         &mut self,
-        e: ExprPtr<'t>,
-        st: &mut InductiveCheckState<'t>,
+        e: ExprId,
+        st: &mut InductiveCheckState,
         offset: u16,
-    ) -> Option<ExprPtr<'t>> {
+    ) -> Option<ExprId> {
         // Using the `Lean.Syntax.node` constructor as an example, if `e` is the application of
         // `Array Lean.Syntax`, this variable will be the base declaration for `Array`.
         let nested_container_ty = self.is_nested_ind_app(st, e, offset)?;
         // Get the `Array` from `Array Syntax`
-        let (f, i_name, i_levels, args) = e.unfold_const_apps(self.arena).unwrap();
+        let (f, i_name, i_levels, args) = self.ctx.unfold_const_apps(e).unwrap();
         assert!(nested_container_ty.num_params as usize <= args.len());
         // Reapply the portion of the unfolded applications that is the parameters.
         let i_as = self.ctx.foldl_apps(
@@ -151,7 +153,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             );
             Some(f)
         } else {
-            let mut result: Option<ExprPtr> = None;
+            let mut result: Option<ExprId> = None;
             // `Array`, `List`, and any mutuals in the appropriate block etc.
             for nested_container_name in nested_container_ty.all_ind_names.iter().copied() {
                 // The inductive declaration for the container type, like `Array`
@@ -243,46 +245,38 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     }
     fn replace_all_nested(
         &mut self,
-        e: ExprPtr<'t>,
-        st: &mut InductiveCheckState<'t>,
+        e: ExprId,
+        st: &mut InductiveCheckState,
         offset: u16,
-    ) -> ExprPtr<'t> {
+    ) -> ExprId {
         // Try to replace locally before traversing into the lower parts.
         if let Some(eprime) = self.replace_if_nested(e, st, offset) {
             eprime
         } else {
-            match *e {
+            match self.ctx.ex(e) {
                 Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => e,
-                Pi {
-                    binder_type, body, ..
-                } => {
+                Pi { binder_type, body } => {
                     let binder_type = self.replace_all_nested(binder_type, st, offset);
                     let body = self.replace_all_nested(body, st, offset + 1);
                     self.ctx.mk_pi(binder_type, body)
                 }
-                Lambda {
-                    binder_type, body, ..
-                } => {
+                Lambda { binder_type, body } => {
                     let binder_type = self.replace_all_nested(binder_type, st, offset);
                     let body = self.replace_all_nested(body, st, offset + 1);
                     self.ctx.mk_lambda(binder_type, body)
                 }
                 Let {
-                    data:
-                        &crate::term::expr::LetData {
-                            binder_type,
-                            val,
-                            body,
-                            nondep,
-                        },
-                    ..
+                    binder_type,
+                    val,
+                    body,
+                    nondep,
                 } => {
                     let binder_type = self.replace_all_nested(binder_type, st, offset);
                     let val = self.replace_all_nested(val, st, offset);
                     let body = self.replace_all_nested(body, st, offset + 1);
                     self.ctx.mk_let(binder_type, val, body, nondep)
                 }
-                App { fun, arg, .. } => {
+                App { fun, arg } => {
                     let fun = self.replace_all_nested(fun, st, offset);
                     let arg = self.replace_all_nested(arg, st, offset);
                     self.ctx.mk_app(fun, arg)
@@ -291,7 +285,6 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
                     ty_name,
                     idx,
                     structure,
-                    ..
                 } => {
                     let structure = self.replace_all_nested(structure, st, offset);
                     self.ctx.mk_proj(ty_name, idx, structure)

@@ -8,7 +8,7 @@ use crate::checker::value::Value;
 use crate::outcome::{ensure, ensure_eq, reject};
 use crate::term::expr::Expr::Pi;
 use crate::term::hash::{FxHashSet, FxIndexMap};
-use crate::term::ptr::{ExprPtr, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 use std::sync::Arc;
 
 mod nested;
@@ -19,13 +19,12 @@ mod spec;
 
 use positivity::check_uniform_inductive_occurrences;
 
-impl<'t, 'p: 't> ExportFile<'p> {
-    pub(crate) fn check_inductive_declar(
+impl ExportFile {
+    pub(crate) fn check_inductive_declar<'t>(
         &'t self,
-        ctx: &mut TcCtx<'t, 'p>,
-        cache: &mut crate::checker::cache::TcCache<'t, 't>,
-        arena: &'t bumpalo::Bump,
-        d: &Declar<'t>,
+        ctx: &mut TcCtx<'t>,
+        cache: &mut crate::checker::cache::TcCache,
+        d: &Declar,
     ) {
         let (ind, env_limit) = match d {
             Declar::Inductive(ind) => {
@@ -60,6 +59,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
 
                 for ty in physical_ctor_types.iter().copied() {
                     check_uniform_inductive_occurrences(
+                        ctx,
                         ty,
                         physical_ind_names.as_slice(),
                         ind.info.uparams,
@@ -75,11 +75,8 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 }
                 let is_recursive = 'found: {
                     for mut ctor_ty in physical_ctor_types.iter().copied() {
-                        while let Pi {
-                            binder_type, body, ..
-                        } = *ctor_ty
-                        {
-                            if binder_type.find_const(|name| physical_ind_names.contains(&name)) {
+                        while let Pi { binder_type, body } = ctx.ex(ctor_ty) {
+                            if ctx.find_const(binder_type, |name| physical_ind_names.contains(&name)) {
                                 break 'found true;
                             }
                             ctor_ty = body;
@@ -94,19 +91,19 @@ impl<'t, 'p: 't> ExportFile<'p> {
         };
         {
             // The **unmodified** types and constructors for all of the types in this mutual block.
-            let unmodified_tys_ctors = ctx.with_tc(env_limit, arena, cache, |tc| {
+            let unmodified_tys_ctors = ctx.with_tc(env_limit, cache, |tc| {
                 tc.check_declar_info_v(d);
                 tc.collect_unmodified_mutuals(ind)
             });
 
             // Initialize the big chunk of state used throughout the process of checking
             // this inductive declaration.
-            let mut st = ctx.with_tc(env_limit, arena, cache, |tc| {
+            let mut st = ctx.with_tc(env_limit, cache, |tc| {
                 tc.specialize_nested(ind, unmodified_tys_ctors.clone())
             });
 
             // Check the (potentially modified) inductive specs against the base environment.
-            ctx.with_tc(env_limit, arena, cache, |tc| {
+            ctx.with_tc(env_limit, cache, |tc| {
                 tc.check_inductive_specs(&mut st);
             });
 
@@ -115,7 +112,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
             let ind_ty_ext1 = st.ind_tys_env_ext();
 
             // Check the constructors against the environment with the base extension.
-            ctx.with_tc_and_env_ext(&ind_ty_ext1, env_limit, arena, cache, |tc| {
+            ctx.with_tc_and_env_ext(&ind_ty_ext1, env_limit, cache, |tc| {
                 for ind in &st.all_inductives_incl_specialized {
                     for ctor in &ind.ctors {
                         tc.check_ctor(&st, ind.name, ctor.ty);
@@ -124,13 +121,13 @@ impl<'t, 'p: 't> ExportFile<'p> {
             });
 
             // The second temporary environment extension, which also includes the constructors.
-            let ctor_extension = st.ctors_env_ext(ind_ty_ext1);
+            let ctor_extension = st.ctors_env_ext(ctx, ind_ty_ext1);
 
             // The constructed recursors and rec rules
             let recursors =
-                ctx.with_tc_and_env_ext(&ctor_extension, env_limit, arena, cache, |tc| {
+                ctx.with_tc_and_env_ext(&ctor_extension, env_limit, cache, |tc| {
                     tc.mk_elim_level(&mut st);
-                    st.init_k_target();
+                    st.init_k_target(tc.ctx);
                     tc.check_declared_metadata(&st, &unmodified_tys_ctors);
                     tc.mk_majors(&mut st);
                     tc.mk_motives(&mut st);
@@ -147,7 +144,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
                 out
             };
 
-            ctx.with_tc_and_env_ext(&recursor_extension, env_limit, arena, cache, |tc| {
+            ctx.with_tc_and_env_ext(&recursor_extension, env_limit, cache, |tc| {
                 tc.check_generated_recursors(&st, &recursors);
                 if st.is_nested() {
                     tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names);
@@ -166,7 +163,7 @@ impl<'t, 'p: 't> ExportFile<'p> {
     }
 }
 
-pub(crate) struct InductiveCheckState<'a> {
+pub(crate) struct InductiveCheckState {
     /// Maps the specialized type's fresh name to its "actual"/unspecialized type,
     /// where the type uses bound variables instead of free variables.
     ///
@@ -180,8 +177,8 @@ pub(crate) struct InductiveCheckState<'a> {
     /// (_nested.Array_1, (Array.[0] Lean.Syntax.[]))
     /// (_nested.List_2, (List.[0] Lean.Syntax.[]))
     /// ```
-    nested_to_unspecialized_ty: FxIndexMap<NamePtr<'a>, ExprPtr<'a>>,
-    uparams: LevelsPtr<'a>,
+    nested_to_unspecialized_ty: FxIndexMap<NameId, ExprId>,
+    uparams: LevelsId,
     // NOTE: All of the inductives in a mutual block have to be declared with the same
     // number of parameters, and after specialization, the mutuals that are specialized
     // nested types will also have the same number of params as the block. This means that
@@ -190,34 +187,36 @@ pub(crate) struct InductiveCheckState<'a> {
     num_params: u16,
     /// This is all of the inductive types in the current mutual block, PLUS any temoprary extensions
     /// generated by nested inductives.
-    all_inductives_incl_specialized: Vec<IndTyHeader<'a>>,
+    all_inductives_incl_specialized: Vec<IndTyHeader>,
     /// Used for generating fresh names when specializing nested inductives.
     /// Needs to be incrementing because you may have more than one specialized
     /// version of a given container type.
     next_ngen_idx: u64,
-    local_params: Vec<ExprPtr<'a>>,
-    local_indices: Vec<Vec<ExprPtr<'a>>>,
-    block_codom: Option<LevelPtr<'a>>,
+    local_params: Vec<ExprId>,
+    local_indices: Vec<Vec<ExprId>>,
+    block_codom: Option<LevelId>,
     is_zero: Option<bool>,
     is_nonzero: Option<bool>,
-    ind_consts: Vec<ExprPtr<'a>>,
-    rec_uparams: Option<LevelsPtr<'a>>,
-    elim_level: Option<LevelPtr<'a>>,
+    ind_consts: Vec<ExprId>,
+    rec_uparams: Option<LevelsId>,
+    elim_level: Option<LevelId>,
     k_target: Option<bool>,
-    majors: Vec<ExprPtr<'a>>,
-    motives: Vec<ExprPtr<'a>>,
-    minors: Vec<Vec<ExprPtr<'a>>>,
+    majors: Vec<ExprId>,
+    motives: Vec<ExprId>,
+    minors: Vec<Vec<ExprId>>,
 }
 
-impl<'a> InductiveCheckState<'a> {
+impl<'a> InductiveCheckState {
     /// To be a target for k-like reduction, a type cannot be mutual or nested, must be an inductive
     /// prop, must have only one constructor, and the constructor can take only the type's parameters
     /// as arguments.
-    fn init_k_target(&mut self) {
+    fn init_k_target(&mut self, ctx: &TcCtx<'_>) {
         let is_k_target = self.is_zero.unwrap()
             && self.all_inductives_incl_specialized.len() == 1
             && match self.all_inductives_incl_specialized[0].ctors.as_slice() {
-                [only_ctor] => only_ctor.ty.pi_telescope_size() as usize == self.local_params.len(),
+                [only_ctor] => {
+                    ctx.pi_telescope_size(only_ctor.ty) as usize == self.local_params.len()
+                }
                 _ => false,
             };
         self.k_target = Some(is_k_target);
@@ -225,7 +224,7 @@ impl<'a> InductiveCheckState<'a> {
 
     /// Extend the current environment with new constructors, including modifications
     /// to accommodate any temporary declarations that come from nested inductives.
-    fn ctors_env_ext(&self, mut env_ext: DeclarMap<'a>) -> DeclarMap<'a> {
+    fn ctors_env_ext(&self, ctx: &TcCtx<'_>, mut env_ext: DeclarMap) -> DeclarMap {
         // This will be different from the export file's list if this is a nested.
         for inductive in &self.all_inductives_incl_specialized {
             for (idx, ctor) in inductive.ctors.iter().copied().enumerate() {
@@ -235,7 +234,7 @@ impl<'a> InductiveCheckState<'a> {
                     uparams: self.uparams,
                 };
                 let num_params = u16::try_from(self.local_params.len()).unwrap();
-                let num_fields = ctor.ty.pi_telescope_size() - num_params;
+                let num_fields = ctx.pi_telescope_size(ctor.ty) - num_params;
                 let d = Declar::Constructor(ConstructorData {
                     info,
                     inductive_name: inductive.name,
@@ -255,10 +254,10 @@ impl<'a> InductiveCheckState<'a> {
     ///
     /// Then assert that any of the inductive types in the temporary extension
     /// which are also in the export file are `def_eq` to those in the export file.
-    fn ind_tys_env_ext(&self) -> DeclarMap<'a> {
+    fn ind_tys_env_ext(&self) -> DeclarMap {
         // This will be different from the export file's list if this is a nested.
         let is_nested = !self.nested_to_unspecialized_ty.is_empty();
-        let all_ind_names: Arc<[NamePtr]> = self
+        let all_ind_names: Arc<[NameId]> = self
             .all_inductives_incl_specialized
             .iter()
             .map(|x| x.name)
@@ -284,10 +283,10 @@ impl<'a> InductiveCheckState<'a> {
     }
 
     fn new(
-        info_uparams: LevelsPtr<'a>,
+        info_uparams: LevelsId,
         num_params: u16,
-        new_tys: Vec<IndTyHeader<'a>>,
-        local_params: Vec<ExprPtr<'a>>,
+        new_tys: Vec<IndTyHeader>,
+        local_params: Vec<ExprId>,
     ) -> Self {
         Self {
             nested_to_unspecialized_ty: crate::term::hash::new_fx_index_map(),
@@ -325,29 +324,29 @@ impl<'a> InductiveCheckState<'a> {
         self.num_params() + self.num_motives()
     }
 
-    fn flat_minors(&self) -> Vec<ExprPtr<'a>> {
+    fn flat_minors(&self) -> Vec<ExprId> {
         self.minors.iter().flat_map(|v| v.iter().copied()).collect()
     }
 }
 
 #[derive(Debug, Clone)]
-struct IndTyHeader<'a> {
-    name: NamePtr<'a>,
-    ty: ExprPtr<'a>,
-    ctors: Vec<CtorHeader<'a>>,
+struct IndTyHeader {
+    name: NameId,
+    ty: ExprId,
+    ctors: Vec<CtorHeader>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CtorHeader<'a> {
-    name: NamePtr<'a>,
-    ty: ExprPtr<'a>,
+struct CtorHeader {
+    name: NameId,
+    ty: ExprId,
 }
 
-impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
+impl<'x, 't: 'x> TypeChecker<'x, 't> {
     fn assert_block_recursor_names(
         &mut self,
-        ind_name: NamePtr<'t>,
-        expected: impl IntoIterator<Item = NamePtr<'t>>,
+        ind_name: NameId,
+        expected: impl IntoIterator<Item = NameId>,
     ) {
         let expected: FxHashSet<_> = expected.into_iter().collect();
         let &(start, size) = self
@@ -370,15 +369,15 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         );
     }
 
-    fn base_recursor_names(&mut self, ind_names: &[NamePtr<'t>]) -> FxHashSet<NamePtr<'t>> {
-        let rec = self.ctx.alloc_string(std::borrow::Cow::Borrowed("rec"));
+    fn base_recursor_names(&mut self, ind_names: &[NameId]) -> FxHashSet<NameId> {
+        let rec = self.ctx.alloc_string("rec");
         ind_names
             .iter()
             .map(|name| self.ctx.str(*name, rec))
             .collect()
     }
 
-    fn assert_imported_expr_matches(&mut self, imported: ExprPtr<'t>, reconstructed: ExprPtr<'t>) {
+    fn assert_imported_expr_matches(&mut self, imported: ExprId, reconstructed: ExprId) {
         self.tc_cache.clear();
         ensure!(
             self.def_eq_core(imported, reconstructed),
@@ -388,9 +387,9 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn get_local_params(
         &mut self,
-        e: ExprPtr<'t>,
+        e: ExprId,
         num_params: u16,
-    ) -> (Vec<ExprPtr<'t>>, ExprPtr<'t>) {
+    ) -> (Vec<ExprId>, ExprId) {
         let mut depth = 0u32;
         let mut params = Vec::with_capacity(num_params as usize);
         let mut cur = self.value_of(e);
@@ -398,7 +397,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) else {
                 reject!("exhausted telescope early")
             };
-            let domain = *domain;
+            let domain = domain;
             let binder_type = self.quote(depth, domain);
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -409,11 +408,11 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         (params, rest)
     }
 
-    fn param_var(&mut self, st: &InductiveCheckState<'t>, offset: u16, i: u16) -> ExprPtr<'t> {
+    fn param_var(&mut self, st: &InductiveCheckState, offset: u16, i: u16) -> ExprId {
         self.ctx.mk_var(offset + st.num_params() - 1 - i)
     }
 
-    fn param_vars(&mut self, st: &InductiveCheckState<'t>, offset: u16) -> Vec<ExprPtr<'t>> {
+    fn param_vars(&mut self, st: &InductiveCheckState, offset: u16) -> Vec<ExprId> {
         (0..st.num_params())
             .map(|i| self.param_var(st, offset, i))
             .collect()
@@ -421,10 +420,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn mk_pis_dep(
         &mut self,
-        binders: &[ExprPtr<'t>],
+        binders: &[ExprId],
         gap: u16,
-        mut body: ExprPtr<'t>,
-    ) -> ExprPtr<'t> {
+        mut body: ExprId,
+    ) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx
@@ -434,7 +433,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         body
     }
 
-    fn mk_pis_flat(&mut self, binders: &[ExprPtr<'t>], mut body: ExprPtr<'t>) -> ExprPtr<'t> {
+    fn mk_pis_flat(&mut self, binders: &[ExprId], mut body: ExprId) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx
@@ -446,10 +445,10 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
 
     fn mk_lambdas_dep(
         &mut self,
-        binders: &[ExprPtr<'t>],
+        binders: &[ExprId],
         gap: u16,
-        mut body: ExprPtr<'t>,
-    ) -> ExprPtr<'t> {
+        mut body: ExprId,
+    ) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx
@@ -459,7 +458,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         body
     }
 
-    fn mk_lambdas_flat(&mut self, binders: &[ExprPtr<'t>], mut body: ExprPtr<'t>) -> ExprPtr<'t> {
+    fn mk_lambdas_flat(&mut self, binders: &[ExprId], mut body: ExprId) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx
@@ -469,8 +468,8 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
         body
     }
 
-    fn header_of_ty(&self, t: &InductiveData<'t>) -> IndTyHeader<'t> {
-        fn header_of_ctor<'t>(t: &ConstructorData<'t>) -> CtorHeader<'t> {
+    fn header_of_ty(&self, t: &InductiveData) -> IndTyHeader {
+        fn header_of_ctor<'t>(t: &ConstructorData) -> CtorHeader {
             CtorHeader {
                 name: t.info.name,
                 ty: t.info.ty,
@@ -491,7 +490,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
     /// For some exported inductive declaration `T` that has a list of mutual names
     /// `[T, U, .., Z]`, return the `IndTyHeader` elements for `[T, U, .., Z]`, without
     /// any specializations/modifications.
-    fn collect_unmodified_mutuals(&self, t_from_file: &InductiveData<'t>) -> Vec<IndTyHeader<'t>> {
+    fn collect_unmodified_mutuals(&self, t_from_file: &InductiveData) -> Vec<IndTyHeader> {
         // Get all of the mutual inductives, but don't re-insert the base type.
         t_from_file
             .all_ind_names
@@ -500,7 +499,7 @@ impl<'x, 't: 'x, 'p: 't> TypeChecker<'x, 't, 'p> {
             .collect()
     }
 
-    fn mk_unique_name(&mut self, n: NamePtr<'t>, st: &mut InductiveCheckState<'t>) -> NamePtr<'t> {
+    fn mk_unique_name(&mut self, n: NameId, st: &mut InductiveCheckState) -> NameId {
         for idx in st.next_ngen_idx..u64::MAX {
             let tester = self.ctx.append_index_after(n, idx);
             if self.env.get_old_declar(tester).is_none() {

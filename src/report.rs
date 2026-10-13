@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::checker::context::ExportFile;
 use crate::checker::env::Declar;
-use crate::config::{AxiomDecision, AxiomPolicy, Config, Output};
+use crate::config::{AxiomDecision, Output};
 use crate::outcome::{Decline, Rejection};
 use std::any::Any;
 use std::io::{self, BufWriter, Stdout, Write};
@@ -74,9 +75,9 @@ impl Screen {
     }
 }
 
-pub(crate) struct Reporter {
+pub(crate) struct Reporter<'e> {
+    export: &'e ExportFile,
     output: Output,
-    axiom_policy: AxiomPolicy,
     live_width: Option<usize>,
     total: usize,
     width: usize,
@@ -85,12 +86,13 @@ pub(crate) struct Reporter {
     stopped: AtomicBool,
 }
 
-impl Reporter {
-    pub(crate) fn new(config: &Config, total: usize) -> Self {
-        let output = config.output;
+impl<'e> Reporter<'e> {
+    pub(crate) fn new(export: &'e ExportFile) -> Self {
+        let output = export.config.output;
+        let total = export.declars.len();
         Reporter {
+            export,
             output,
-            axiom_policy: config.axiom_policy.clone(),
             live_width: if output.live { terminal_width() } else { None },
             total,
             width: total.to_string().len(),
@@ -108,7 +110,7 @@ impl Reporter {
         self.stopped.load(Relaxed)
     }
 
-    pub(crate) fn check(&self, d: &Declar<'_>, f: impl FnOnce()) {
+    pub(crate) fn check(&self, d: &Declar, f: impl FnOnce()) {
         let start = Instant::now();
         let result = panic::catch_unwind(AssertUnwindSafe(f));
         let status = match &result {
@@ -121,16 +123,21 @@ impl Reporter {
         self.record(d, status, start.elapsed());
         if let Err(payload) = result {
             self.stopped.store(true, Relaxed);
-            panic::resume_unwind(locate(d, payload));
+            panic::resume_unwind(self.locate(d, payload));
         }
     }
 
-    fn warned(&self, d: &Declar<'_>) -> bool {
+    fn warned(&self, d: &Declar) -> bool {
         matches!(d, Declar::Axiom { .. })
-            && self.axiom_policy.decision(&d.info().name.to_string()) == AxiomDecision::Warn
+            && self
+                .export
+                .config
+                .axiom_policy
+                .decision(&self.export.display(d.info().name).to_string())
+                == AxiomDecision::Warn
     }
 
-    fn record(&self, d: &Declar<'_>, status: Status, elapsed: Duration) {
+    fn record(&self, d: &Declar, status: Status, elapsed: Duration) {
         let persist = self.output.verbose || status != Status::Ok;
         if !persist && self.live_width.is_none() {
             self.done.fetch_add(1, Relaxed);
@@ -148,7 +155,7 @@ impl Reporter {
             "{:<9}  {:>9.3}ms  {}",
             d.kind(),
             elapsed.as_secs_f64() * 1e3,
-            d.info().name
+            self.export.display(d.info().name)
         );
         let label = status.label();
         let pad = " ".repeat(LABEL_WIDTH - label.len());
@@ -179,15 +186,15 @@ impl Reporter {
         screen.live_shown = false;
         screen.emit(clear, true);
     }
-}
 
-fn locate(d: &Declar<'_>, payload: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
-    let at = format!("{} {}", d.kind(), d.info().name);
-    match payload.downcast::<Rejection>() {
-        Ok(r) => Box::new(Rejection(format!("{at}: {}", r.0))),
-        Err(payload) => match payload.downcast::<Decline>() {
-            Ok(r) => Box::new(Decline(format!("{at}: {}", r.0))),
-            Err(payload) => payload,
-        },
+    fn locate(&self, d: &Declar, payload: Box<dyn Any + Send>) -> Box<dyn Any + Send> {
+        let at = format!("{} {}", d.kind(), self.export.display(d.info().name));
+        match payload.downcast::<Rejection>() {
+            Ok(r) => Box::new(Rejection(format!("{at}: {}", r.0))),
+            Err(payload) => match payload.downcast::<Decline>() {
+                Ok(r) => Box::new(Decline(format!("{at}: {}", r.0))),
+                Err(payload) => payload,
+            },
+        }
     }
 }

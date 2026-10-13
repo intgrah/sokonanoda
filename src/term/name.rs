@@ -3,58 +3,15 @@
 
 //! Implementaiton of the `Name` type (hierarchical names)
 use crate::checker::context::TcCtx;
-use crate::term::hash::CowStr;
-use crate::term::ptr::{NamePtr, StringPtr};
+use crate::term::id::{ANON, NameId, StrId};
 use Name::{Anon, Num, Str};
 use std::fmt;
 
-pub(crate) const ANON_HASH: u64 = 43;
-pub(crate) const STR_HASH: u64 = 911;
-pub(crate) const NUM_HASH: u64 = 103;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Name<'a> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Name {
     Anon,
-    Str(NamePtr<'a>, StringPtr<'a>, u64),
-    Num(NamePtr<'a>, u64, u64),
-}
-
-impl std::hash::Hash for Name<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.get_hash());
-    }
-}
-
-impl Name<'_> {
-    pub(crate) fn get_hash(&self) -> u64 {
-        match self {
-            Anon => ANON_HASH,
-            Str(.., hash) | Num(.., hash) => *hash,
-        }
-    }
-}
-
-impl fmt::Display for NamePtr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.as_ref().kind {
-            Anon => Ok(()),
-            Str(pfx, sfx, _) => {
-                write_prefix(f, pfx)?;
-                f.write_str(sfx.as_ref())
-            }
-            Num(pfx, sfx, _) => {
-                write_prefix(f, pfx)?;
-                write!(f, "{sfx}")
-            }
-        }
-    }
-}
-
-fn write_prefix(f: &mut fmt::Formatter<'_>, pfx: NamePtr<'_>) -> fmt::Result {
-    match pfx.as_ref().kind {
-        Anon => Ok(()),
-        Str(..) | Num(..) => write!(f, "{pfx}."),
-    }
+    Str(NameId, StrId),
+    Num(NameId, u64),
 }
 
 pub(crate) const NO_DECL: u32 = u32::MAX;
@@ -112,78 +69,52 @@ impl NatRed {
     }
 }
 
-pub struct NameNode<'a> {
-    pub(crate) kind: Name<'a>,
-    decl_idx: std::sync::atomic::AtomicU32,
-    nat_red: std::sync::atomic::AtomicU8,
+pub(crate) trait NameSource {
+    fn name(&self, n: NameId) -> Name;
+    fn string(&self, s: StrId) -> &str;
 }
 
-impl<'a> NameNode<'a> {
-    pub(crate) fn new(kind: Name<'a>) -> Self {
-        Self {
-            kind,
-            decl_idx: std::sync::atomic::AtomicU32::new(NO_DECL),
-            nat_red: std::sync::atomic::AtomicU8::new(NO_NAT_RED),
+pub(crate) struct NameDisplay<'a, S: NameSource> {
+    pub(crate) src: &'a S,
+    pub(crate) name: NameId,
+}
+
+impl<S: NameSource> fmt::Display for NameDisplay<'_, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.src.name(self.name) {
+            Anon => Ok(()),
+            Str(pfx, sfx) => {
+                self.write_prefix(f, pfx)?;
+                f.write_str(self.src.string(sfx))
+            }
+            Num(pfx, sfx) => {
+                self.write_prefix(f, pfx)?;
+                write!(f, "{sfx}")
+            }
         }
     }
+}
 
-    #[inline]
-    pub(crate) fn decl_idx(&self) -> u32 {
-        self.decl_idx.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub(crate) fn set_decl_idx(&self, idx: u32) {
-        self.decl_idx
-            .store(idx, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub(crate) fn is_nat_red(&self) -> bool {
-        self.nat_red.load(std::sync::atomic::Ordering::Relaxed) != NO_NAT_RED
-    }
-
-    #[inline]
-    pub(crate) fn nat_red(&self) -> Option<NatRed> {
-        NatRed::from_u8(self.nat_red.load(std::sync::atomic::Ordering::Relaxed))
-    }
-
-    #[inline]
-    pub(crate) fn set_nat_red(&self, k: NatRed) {
-        self.nat_red
-            .store(k as u8, std::sync::atomic::Ordering::Relaxed);
+impl<S: NameSource> NameDisplay<'_, S> {
+    fn write_prefix(&self, f: &mut fmt::Formatter<'_>, pfx: NameId) -> fmt::Result {
+        if pfx == ANON {
+            return Ok(());
+        }
+        let prefix = NameDisplay {
+            src: self.src,
+            name: pfx,
+        };
+        write!(f, "{prefix}.")
     }
 }
 
-impl PartialEq for NameNode<'_> {
-    #[inline]
-    fn eq(&self, o: &Self) -> bool {
-        self.kind == o.kind
-    }
-}
-impl Eq for NameNode<'_> {}
-
-impl crate::term::hash::RawHash for NameNode<'_> {
-    #[inline]
-    fn raw_hash(&self) -> u64 {
-        self.kind.get_hash()
-    }
-}
-
-impl std::fmt::Debug for NameNode<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.kind.fmt(f)
-    }
-}
-
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
-    pub(crate) fn get_pfx(&self, mut n: NamePtr<'t>) -> NamePtr<'t> {
-        let anonymous = self.anonymous();
+impl<'t> TcCtx<'t> {
+    pub(crate) fn get_pfx(&self, mut n: NameId) -> NameId {
         loop {
-            match n.as_ref().kind {
+            match self.name(n) {
                 Anon => return n,
                 Str(pfx, ..) | Num(pfx, ..) => {
-                    if pfx == anonymous {
+                    if pfx == ANON {
                         return n;
                     }
                     n = pfx;
@@ -192,48 +123,43 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn concat_name(&mut self, n1: NamePtr<'t>, n2: NamePtr<'t>) -> NamePtr<'t> {
-        match n2.as_ref().kind {
+    pub(crate) fn concat_name(&mut self, n1: NameId, n2: NameId) -> NameId {
+        match self.name(n2) {
             Anon => n1,
-            Str(pfx, sfx, ..) => {
+            Str(pfx, sfx) => {
                 let pfx = self.concat_name(n1, pfx);
                 self.str(pfx, sfx)
             }
-            Num(pfx, sfx, ..) => {
+            Num(pfx, sfx) => {
                 let pfx = self.concat_name(n1, pfx);
                 self.num(pfx, sfx)
             }
         }
     }
 
-    pub(crate) fn append_index_after(&mut self, n: NamePtr<'t>, idx: u64) -> NamePtr<'t> {
-        if let Str(pfx, sfx, ..) = n.as_ref().kind {
-            let s = sfx.as_ref();
-            let s = self.alloc_string(CowStr::Owned(format!("{s}_{idx}")));
+    pub(crate) fn append_index_after(&mut self, n: NameId, idx: u64) -> NameId {
+        if let Str(pfx, sfx) = self.name(n) {
+            let s = format!("{}_{idx}", self.string(sfx));
+            let s = self.alloc_string(&s);
             self.str(pfx, s)
         } else {
-            let s = self.alloc_string(CowStr::Owned(format!("_{idx}")));
+            let s = self.alloc_string(&format!("_{idx}"));
             self.str(n, s)
         }
     }
 
-    pub(crate) fn replace_pfx(
-        &mut self,
-        n: NamePtr<'t>,
-        outgoing: NamePtr<'t>,
-        incoming: NamePtr<'t>,
-    ) -> NamePtr<'t> {
-        match n.as_ref().kind {
-            Anon => match outgoing.as_ref().kind {
+    pub(crate) fn replace_pfx(&mut self, n: NameId, outgoing: NameId, incoming: NameId) -> NameId {
+        match self.name(n) {
+            Anon => match self.name(outgoing) {
                 Anon => incoming,
-                _ => self.anonymous(),
+                _ => ANON,
             },
             Str(..) | Num(..) if n == outgoing => incoming,
-            Str(pfx, sfx, ..) => {
+            Str(pfx, sfx) => {
                 let pfx = self.replace_pfx(pfx, outgoing, incoming);
                 self.str(pfx, sfx)
             }
-            Num(pfx, sfx, ..) => {
+            Num(pfx, sfx) => {
                 let pfx = self.replace_pfx(pfx, outgoing, incoming);
                 self.num(pfx, sfx)
             }

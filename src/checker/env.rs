@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::checker::context::TcCtx;
 use crate::term::expr::Expr;
 use crate::term::hash::FxIndexMap;
-use crate::term::ptr::{ExprPtr, LevelsPtr, NamePtr};
+use crate::term::id::{ExprId, LevelsId, NameId};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -37,53 +38,53 @@ impl ReducibilityHint {
 /// Convenience declaration for the elements common across all kinds
 /// of declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeclarInfo<'a> {
-    pub name: NamePtr<'a>,
-    pub uparams: LevelsPtr<'a>,
-    pub ty: ExprPtr<'a>,
+pub struct DeclarInfo {
+    pub name: NameId,
+    pub uparams: LevelsId,
+    pub ty: ExprId,
 }
 
 /// Computation rules for iota-reduction (pattern matching).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecRule<'a> {
-    pub ctor_name: NamePtr<'a>,
+pub struct RecRule {
+    pub ctor_name: NameId,
     /// the constructor's telescope size minus the params (but including indices).
     /// So a constructor with 2 params, 1 index, and 4 args is (1 + 4) = 5.
     pub ctor_telescope_size_wo_params: u16,
-    pub val: ExprPtr<'a>,
+    pub val: ExprId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Declar<'a> {
+pub enum Declar {
     Axiom {
-        info: DeclarInfo<'a>,
+        info: DeclarInfo,
     },
     Quot {
-        info: DeclarInfo<'a>,
+        info: DeclarInfo,
     },
     Theorem {
-        info: DeclarInfo<'a>,
-        val: ExprPtr<'a>,
+        info: DeclarInfo,
+        val: ExprId,
     },
     Definition {
-        info: DeclarInfo<'a>,
-        val: ExprPtr<'a>,
+        info: DeclarInfo,
+        val: ExprId,
         hint: ReducibilityHint,
     },
     Opaque {
-        info: DeclarInfo<'a>,
-        val: ExprPtr<'a>,
+        info: DeclarInfo,
+        val: ExprId,
     },
-    Inductive(InductiveData<'a>),
-    Constructor(ConstructorData<'a>),
-    Recursor(RecursorData<'a>),
+    Inductive(InductiveData),
+    Constructor(ConstructorData),
+    Recursor(RecursorData),
 }
 
 /// This structure is what's taken from the export file; it contains enough
 /// information to begin the process of checking an inductive declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InductiveData<'a> {
-    pub(crate) info: DeclarInfo<'a>,
+pub struct InductiveData {
+    pub(crate) info: DeclarInfo,
     /// `true` when recursive (that is, the inductive type appears as an argument in a constructor).
     pub(crate) is_recursive: bool,
     /// `true` when this typs is a nested inductive
@@ -94,14 +95,14 @@ pub struct InductiveData<'a> {
     pub(crate) num_indices: u16,
     /// The names of this type, and any other inductive types in a `mutual..end`
     /// block. No nested inductive info is conveyed here.
-    pub(crate) all_ind_names: Arc<[NamePtr<'a>]>,
+    pub(crate) all_ind_names: Arc<[NameId]>,
     /// The constructor names for THIS type only. No constructors
     /// from other elements in a mutual block, nothing from any nested
     /// construction.
-    pub(crate) all_ctor_names: Arc<[NamePtr<'a>]>,
+    pub(crate) all_ctor_names: Arc<[NameId]>,
 }
 
-impl InductiveData<'_> {
+impl InductiveData {
     pub fn aux_data_ck(&self, other: &Self) -> bool {
         self.info.name == other.info.name
             && self.num_params == other.num_params
@@ -136,9 +137,9 @@ impl InductiveData<'_> {
 ///
 /// `Syntax.node (num_params := 0) (num_fields := 3)`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConstructorData<'a> {
-    pub info: DeclarInfo<'a>,
-    pub inductive_name: NamePtr<'a>,
+pub struct ConstructorData {
+    pub info: DeclarInfo,
+    pub inductive_name: NameId,
     pub ctor_idx: u16,
     /// The number of parameters, not including ctor args
     pub num_params: u16,
@@ -146,7 +147,7 @@ pub struct ConstructorData<'a> {
     pub num_fields: u16,
 }
 
-impl ConstructorData<'_> {
+impl ConstructorData {
     pub fn aux_data_ck(&self, other: &Self) -> bool {
         self.info.name == other.info.name
             && self.inductive_name == other.inductive_name
@@ -158,18 +159,18 @@ impl ConstructorData<'_> {
 
 /// Information received from the export file regarding a recursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecursorData<'a> {
-    pub info: DeclarInfo<'a>,
-    pub all_inductives: Arc<[NamePtr<'a>]>,
+pub struct RecursorData {
+    pub info: DeclarInfo,
+    pub all_inductives: Arc<[NameId]>,
     pub num_params: u16,
     pub num_indices: u16,
     pub num_motives: u16,
     pub num_minors: u16,
-    pub rec_rules: Arc<[RecRule<'a>]>,
+    pub rec_rules: Arc<[RecRule]>,
     pub is_k: bool,
 }
 
-impl RecursorData<'_> {
+impl RecursorData {
     /// Compute the index in the recursor's type (in the telescope) where the major premise is located.
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
@@ -187,7 +188,7 @@ impl RecursorData<'_> {
     }
 }
 
-impl<'a> Declar<'a> {
+impl Declar {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Declar::Axiom { .. } => "axiom",
@@ -201,7 +202,7 @@ impl<'a> Declar<'a> {
         }
     }
 
-    pub fn info(&self) -> &DeclarInfo<'a> {
+    pub fn info(&self) -> &DeclarInfo {
         use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         match self {
             Axiom { info, .. }
@@ -217,9 +218,9 @@ impl<'a> Declar<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum EnvLimit<'a> {
+pub enum EnvLimit {
     ByIndex(usize),
-    ByName(NamePtr<'a>),
+    ByName(NameId),
 }
 
 /// A Lean environment, which consists of a set of declarations that my have a temporary
@@ -228,48 +229,62 @@ pub enum EnvLimit<'a> {
 ///
 /// When a tyep checker looks up a declaration in the environment, it will check the temporary
 /// extension first if there is one, then fall back to the persistent map.
-pub struct Env<'x, 'a: 'x> {
-    declars: &'a FxIndexMap<NamePtr<'a>, Declar<'a>>,
+pub struct Env<'x> {
+    declars: &'x DeclarMap,
+    decl_of: &'x [u32],
     /// Used for checking nested inductives.
-    temp_declars: Option<&'x FxIndexMap<NamePtr<'a>, Declar<'a>>>,
+    temp_declars: Option<&'x DeclarMap>,
     /// `cutoff` is used to mark the end of what should be the "visible" environment.
     /// This allows us to make the complete environment at parse time, and then control visibility
     /// between threads by only making a particular slice of that environment available to a thread.
     cutoff: usize,
 }
 
-pub(crate) type DeclarMap<'a> = FxIndexMap<NamePtr<'a>, Declar<'a>>;
+pub(crate) type DeclarMap = FxIndexMap<NameId, Declar>;
 
-impl<'x, 'a: 'x> Env<'x, 'a> {
+impl<'x> Env<'x> {
     /// Create a new environment (without any temporary extension)
-    pub fn new(declars: &'a DeclarMap<'a>, limit: EnvLimit<'a>) -> Self {
-        Self::new_w_temp_ext(declars, None, limit)
+    pub fn new(declars: &'x DeclarMap, decl_of: &'x [u32], limit: EnvLimit) -> Self {
+        Self::new_w_temp_ext(declars, decl_of, None, limit)
     }
 
     /// Create a new environment that includes some temporary extension; the temporary
     /// extension is used for checking nested inductives.
     pub fn new_w_temp_ext(
-        declars: &'a DeclarMap<'a>,
-        temp_declars: Option<&'x DeclarMap<'a>>,
-        limit: EnvLimit<'a>,
+        declars: &'x DeclarMap,
+        decl_of: &'x [u32],
+        temp_declars: Option<&'x DeclarMap>,
+        limit: EnvLimit,
     ) -> Self {
         let cutoff = match limit {
             EnvLimit::ByIndex(idx) => idx,
-            EnvLimit::ByName(n) => match n.as_ref().decl_idx() {
+            EnvLimit::ByName(n) => match Self::lookup_idx(decl_of, n) {
                 crate::term::name::NO_DECL => 0,
                 idx => idx as usize,
             },
         };
         Self {
             declars,
+            decl_of,
             temp_declars,
             cutoff,
         }
     }
 
+    #[inline]
+    fn lookup_idx(decl_of: &[u32], n: NameId) -> u32 {
+        if n.is_local() {
+            return crate::term::name::NO_DECL;
+        }
+        decl_of
+            .get(n.index())
+            .copied()
+            .unwrap_or(crate::term::name::NO_DECL)
+    }
+
     /// Retrieve a declaration by first checking the contents of any temporary extension,
     /// then checking the persistent environment.
-    pub fn get_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
+    pub fn get_declar(&self, n: NameId) -> Option<&Declar> {
         self.temp_declars
             .as_ref()
             .and_then(|ext| ext.get(&n))
@@ -281,14 +296,14 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 
     /// Get a declaration, only looking in the temporary extension.
-    pub fn get_temp_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
+    pub fn get_temp_declar(&self, n: NameId) -> Option<&Declar> {
         self.temp_declars.as_ref().and_then(|ext| ext.get(&n))
     }
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
-    pub fn get_old_declar(&self, n: NamePtr<'a>) -> Option<&Declar<'a>> {
-        let idx = n.as_ref().decl_idx() as usize;
+    pub fn get_old_declar(&self, n: NameId) -> Option<&Declar> {
+        let idx = Self::lookup_idx(self.decl_of, n) as usize;
         if idx < self.cutoff {
             Some(&self.declars[idx])
         } else {
@@ -296,14 +311,14 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
         }
     }
 
-    pub fn get_inductive(&self, n: NamePtr<'a>) -> Option<&InductiveData<'a>> {
+    pub fn get_inductive(&self, n: NameId) -> Option<&InductiveData> {
         match self.get_declar(n) {
             Some(Declar::Inductive(i)) => Some(i),
             _ => None,
         }
     }
 
-    pub fn get_recursor(&self, n: NamePtr<'a>) -> Option<&RecursorData<'a>> {
+    pub fn get_recursor(&self, n: NameId) -> Option<&RecursorData> {
         match self.get_declar(n) {
             Some(Declar::Recursor(r)) => Some(r),
             _ => None,
@@ -311,7 +326,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 
     #[inline]
-    pub fn get_constructor(&self, n: NamePtr<'a>) -> Option<&ConstructorData<'a>> {
+    pub fn get_constructor(&self, n: NameId) -> Option<&ConstructorData> {
         match self.get_declar(n) {
             Some(Declar::Constructor(c)) => Some(c),
             _ => None,
@@ -322,11 +337,11 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     /// characteristics required of a structure. The requirements to be a structure are
     /// (1) the inductive declaration is not recursive, (2) the declaration has only one
     /// constructor, and (3) the type is declared with no indices.
-    pub(crate) fn can_be_struct(&self, n: NamePtr<'a>) -> bool {
+    pub(crate) fn can_be_struct(&self, n: NameId) -> bool {
         self.get_structure(n, false).is_some()
     }
 
-    pub(crate) fn get_structure(&self, n: NamePtr<'a>, rec_ok: bool) -> Option<&InductiveData<'a>> {
+    pub(crate) fn get_structure(&self, n: NameId, rec_ok: bool) -> Option<&InductiveData> {
         match self.get_inductive(n) {
             Some(
                 i @ InductiveData {
@@ -347,7 +362,7 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
 
     /// Get the value of a declaration, if that declaration has an associated value (only
     /// definitions and theorems have values). Also returns the declaration's universe parameters.
-    pub fn get_declar_val(&self, n: NamePtr<'a>) -> Option<(LevelsPtr<'a>, ExprPtr<'a>)> {
+    pub fn get_declar_val(&self, n: NameId) -> Option<(LevelsId, ExprId)> {
         match self.get_declar(n)? {
             Declar::Definition { info, val, .. } | Declar::Theorem { info, val, .. } => {
                 Some((info.uparams, *val))
@@ -357,17 +372,13 @@ impl<'x, 'a: 'x> Env<'x, 'a> {
     }
 }
 
-impl<'t> RecursorData<'t> {
+impl RecursorData {
     /// Get the name of the inductive type which is the major premise for this recursor
     /// by finding the correct binder in the recursor's type.
-    pub fn get_major_induct(&self) -> Option<NamePtr<'t>> {
-        match self
-            .info
-            .ty
-            .get_nth_pi_binder(self.major_idx())
-            .map(|x| *x.unfold_apps_fun())
-        {
-            Some(Expr::Const { name, .. }) => Some(name),
+    pub fn get_major_induct(&self, ctx: &TcCtx<'_>) -> Option<NameId> {
+        let binder = ctx.get_nth_pi_binder(self.info.ty, self.major_idx())?;
+        match ctx.ex(ctx.unfold_apps_fun(binder)) {
+            Expr::Const { name, .. } => Some(name),
             _ => None,
         }
     }

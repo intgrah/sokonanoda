@@ -3,139 +3,196 @@
 
 //! Implementation of Lean expressions
 use crate::checker::context::TcCtx;
+use crate::outcome::{ensure_eq, reject};
 use crate::term::hash::FxHashMap;
-use crate::term::ptr::{BigUintPtr, ExprPtr, LevelPtr, LevelsPtr, NamePtr, StringPtr};
+use crate::term::id::{BigId, ExprId, LevelId, LevelsId, NameId, StrId, ZERO};
 use Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
 use num_bigint::BigUint;
+use std::borrow::Borrow;
+use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::slice;
 
 pub(crate) const SPINE: usize = 16;
-pub(crate) type SpineArgs<'t> = smallvec::SmallVec<[ExprPtr<'t>; SPINE]>;
-pub(crate) type SpineBuf<'t> = [MaybeUninit<ExprPtr<'t>>; SPINE];
+pub(crate) type SpineArgs = smallvec::SmallVec<[ExprId; SPINE]>;
+pub(crate) type SpineBuf = [MaybeUninit<ExprId>; SPINE];
 
-use crate::outcome::{ensure_eq, reject};
-pub(crate) const VAR_HASH: u64 = 281;
-pub(crate) const SORT_HASH: u64 = 563;
-pub(crate) const CONST_HASH: u64 = 1129;
-pub(crate) const PROJ_HASH: u64 = 17;
-pub(crate) const LAMBDA_HASH: u64 = 431;
-pub(crate) const LET_HASH: u64 = 241;
-pub(crate) const PI_HASH: u64 = 719;
-pub(crate) const APP_HASH: u64 = 233;
-pub(crate) const STRING_LIT_HASH: u64 = 1493;
-pub(crate) const NAT_LIT_HASH: u64 = 1583;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Expr<'a> {
-    /// A string literal with a pointer to a utf-8 string.
-    StringLit {
-        hash: u64,
-        ptr: StringPtr<'a>,
-    },
-    /// A nat literal, holds a pointer to an arbitrary precision bignum.
-    NatLit {
-        hash: u64,
-        ptr: BigUintPtr<'a>,
-    },
+/// Binder names and plicity are presentation metadata and are deliberately omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Expr {
+    /// A string literal.
+    StringLit { lit: StrId },
+    /// A nat literal, an arbitrary precision bignum.
+    NatLit { lit: BigId },
     Proj {
-        hash: u64,
         /// The name of the structure being projected. E.g. `Prod` if this is
         /// projection 0 of `Prod.mk ..`
-        ty_name: NamePtr<'a>,
+        ty_name: NameId,
         /// The 0-based position of the constructor argument, not considering the
         /// parameters. For some struct Foo A B, and a constructor Foo.mk A B p q r s,
         /// `q` will have idx 1.
         idx: u16,
-        structure: ExprPtr<'a>,
-        fv_mask: u64,
+        structure: ExprId,
     },
     /// A bound variable represented by a deBruijn index.
-    Var {
-        hash: u64,
-        dbj_idx: u16,
-    },
-    Sort {
-        hash: u64,
-        level: LevelPtr<'a>,
-    },
-    Const {
-        hash: u64,
-        name: NamePtr<'a>,
-        levels: LevelsPtr<'a>,
-    },
-    App {
-        hash: u64,
-        fun: ExprPtr<'a>,
-        arg: ExprPtr<'a>,
-        fv_mask: u64,
-    },
-    /// Binder names and plicity are presentation metadata and are deliberately omitted.
-    Pi {
-        hash: u64,
-        binder_type: ExprPtr<'a>,
-        body: ExprPtr<'a>,
-        fv_mask: u64,
-    },
-    Lambda {
-        hash: u64,
-        binder_type: ExprPtr<'a>,
-        body: ExprPtr<'a>,
-        fv_mask: u64,
-    },
+    Var { dbj_idx: u16 },
+    Sort { level: LevelId },
+    Const { name: NameId, levels: LevelsId },
+    App { fun: ExprId, arg: ExprId },
+    Pi { binder_type: ExprId, body: ExprId },
+    Lambda { binder_type: ExprId, body: ExprId },
     Let {
-        hash: u64,
-        data: &'a LetData<'a>,
-        fv_mask: u64,
+        binder_type: ExprId,
+        val: ExprId,
+        body: ExprId,
+        nondep: bool,
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LetData<'a> {
-    pub binder_type: ExprPtr<'a>,
-    pub val: ExprPtr<'a>,
-    pub body: ExprPtr<'a>,
-    pub nondep: bool,
+#[derive(Debug, Clone, Copy)]
+pub struct ExprNode {
+    pub(crate) expr: Expr,
+    /// The number of "loose" bound variables, which is the number of bound variables
+    /// in an expression which are bound by something above it.
+    pub(crate) loose: u16,
+    pub(crate) mask: u64,
 }
 
-impl Expr<'_> {
-    pub(crate) fn get_hash(&self) -> u64 {
-        match self {
-            Var { hash, .. }
-            | Sort { hash, .. }
-            | Const { hash, .. }
-            | App { hash, .. }
-            | Pi { hash, .. }
-            | Lambda { hash, .. }
-            | Let { hash, .. }
-            | StringLit { hash, .. }
-            | NatLit { hash, .. }
-            | Proj { hash, .. } => *hash,
+const _: () = assert!(size_of::<ExprNode>() == 32);
+
+impl PartialEq for ExprNode {
+    fn eq(&self, o: &Self) -> bool {
+        self.expr == o.expr
+    }
+}
+impl Eq for ExprNode {}
+
+impl Hash for ExprNode {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.expr.hash(state);
+    }
+}
+
+impl Borrow<Expr> for ExprNode {
+    fn borrow(&self) -> &Expr {
+        &self.expr
+    }
+}
+
+pub(crate) const NEAR_VARS: u16 = 63;
+pub(crate) const FAR_VARS: u64 = 1 << NEAR_VARS;
+
+#[inline]
+pub(crate) fn var_mask(dbj_idx: u16) -> u64 {
+    1u64 << dbj_idx.min(NEAR_VARS)
+}
+
+#[inline]
+pub(crate) fn under_binder(mask: u64, num_loose_bvars: u16) -> u64 {
+    let far = if num_loose_bvars > NEAR_VARS + 1 {
+        FAR_VARS
+    } else {
+        0
+    };
+    (mask >> 1) | far
+}
+
+impl ExprNode {
+    #[inline]
+    fn body_mask(&self) -> u64 {
+        under_binder(self.mask, self.loose)
+    }
+
+    #[inline]
+    pub(crate) fn leaf(expr: Expr) -> Self {
+        Self {
+            expr,
+            loose: 0,
+            mask: 0,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn var(dbj_idx: u16) -> Self {
+        Self {
+            expr: Var { dbj_idx },
+            loose: dbj_idx + 1,
+            mask: var_mask(dbj_idx),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn app(fun: ExprId, f: &Self, arg: ExprId, a: &Self) -> Self {
+        Self {
+            expr: App { fun, arg },
+            loose: f.loose.max(a.loose),
+            mask: f.mask | a.mask,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn pi(binder_type: ExprId, t: &Self, body: ExprId, b: &Self) -> Self {
+        Self {
+            expr: Pi { binder_type, body },
+            loose: t.loose.max(b.loose.saturating_sub(1)),
+            mask: t.mask | b.body_mask(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn lambda(binder_type: ExprId, t: &Self, body: ExprId, b: &Self) -> Self {
+        Self {
+            expr: Lambda { binder_type, body },
+            loose: t.loose.max(b.loose.saturating_sub(1)),
+            mask: t.mask | b.body_mask(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn let_(
+        binder_type: ExprId,
+        t: &Self,
+        val: ExprId,
+        v: &Self,
+        body: ExprId,
+        b: &Self,
+        nondep: bool,
+    ) -> Self {
+        Self {
+            expr: Let {
+                binder_type,
+                val,
+                body,
+                nondep,
+            },
+            loose: t.loose.max(v.loose.max(b.loose.saturating_sub(1))),
+            mask: t.mask | v.mask | b.body_mask(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn proj(ty_name: NameId, idx: u16, structure: ExprId, s: &Self) -> Self {
+        Self {
+            expr: Proj {
+                ty_name,
+                idx,
+                structure,
+            },
+            loose: s.loose,
+            mask: s.mask,
         }
     }
 }
-impl std::hash::Hash for Expr<'_> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.get_hash());
-    }
-}
 
-impl crate::term::hash::RawHash for Expr<'_> {
-    #[inline]
-    fn raw_hash(&self) -> u64 {
-        self.get_hash()
-    }
-}
-
-impl<'t, 'p: 't> TcCtx<'t, 'p> {
+impl TcCtx<'_> {
     pub(crate) fn inst_forall_params(
         &mut self,
-        mut e: ExprPtr<'t>,
+        mut e: ExprId,
         n: usize,
-        all_args: &[ExprPtr<'t>],
-    ) -> ExprPtr<'t> {
+        all_args: &[ExprId],
+    ) -> ExprId {
         for _ in 0..n {
-            if let Pi { body, .. } = *e {
+            if let Pi { body, .. } = self.ex(e) {
                 e = body;
             } else {
                 reject!("type has fewer binders than arguments")
@@ -144,44 +201,39 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         self.inst_open(e, &all_args[0..n])
     }
 
-    pub(crate) fn lift(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        if amount == 0 || e.num_loose_bvars() <= cutoff {
+    pub(crate) fn lift(&mut self, e: ExprId, cutoff: u16, amount: u16) -> ExprId {
+        if amount == 0 || self.loose(e) <= cutoff {
             return e;
         }
-        match *e {
-            Var { dbj_idx, .. } => {
+        match self.ex(e) {
+            Var { dbj_idx } => {
                 if dbj_idx >= cutoff {
                     self.mk_var(dbj_idx + amount)
                 } else {
                     e
                 }
             }
-            App { fun, arg, .. } => {
+            App { fun, arg } => {
                 let fun = self.lift(fun, cutoff, amount);
                 let arg = self.lift(arg, cutoff, amount);
                 self.mk_app(fun, arg)
             }
-            Pi {
-                binder_type, body, ..
-            } => {
+            Pi { binder_type, body } => {
                 let binder_type = self.lift(binder_type, cutoff, amount);
                 let body = self.lift(body, cutoff + 1, amount);
                 self.mk_pi(binder_type, body)
             }
-            Lambda {
-                binder_type, body, ..
-            } => {
+            Lambda { binder_type, body } => {
                 let binder_type = self.lift(binder_type, cutoff, amount);
                 let body = self.lift(body, cutoff + 1, amount);
                 self.mk_lambda(binder_type, body)
             }
-            Let { data, .. } => {
-                let crate::term::expr::LetData {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                } = *data;
+            Let {
+                binder_type,
+                val,
+                body,
+                nondep,
+            } => {
                 let binder_type = self.lift(binder_type, cutoff, amount);
                 let val = self.lift(val, cutoff, amount);
                 let body = self.lift(body, cutoff + 1, amount);
@@ -191,7 +243,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 ty_name,
                 idx,
                 structure,
-                ..
             } => {
                 let structure = self.lift(structure, cutoff, amount);
                 self.mk_proj(ty_name, idx, structure)
@@ -200,12 +251,12 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn lower(&mut self, e: ExprPtr<'t>, cutoff: u16, amount: u16) -> ExprPtr<'t> {
-        if amount == 0 || e.num_loose_bvars() <= cutoff {
+    pub(crate) fn lower(&mut self, e: ExprId, cutoff: u16, amount: u16) -> ExprId {
+        if amount == 0 || self.loose(e) <= cutoff {
             return e;
         }
-        match *e {
-            Var { dbj_idx, .. } => {
+        match self.ex(e) {
+            Var { dbj_idx } => {
                 if dbj_idx >= cutoff {
                     assert!(
                         dbj_idx >= cutoff + amount,
@@ -216,32 +267,27 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     e
                 }
             }
-            App { fun, arg, .. } => {
+            App { fun, arg } => {
                 let fun = self.lower(fun, cutoff, amount);
                 let arg = self.lower(arg, cutoff, amount);
                 self.mk_app(fun, arg)
             }
-            Pi {
-                binder_type, body, ..
-            } => {
+            Pi { binder_type, body } => {
                 let binder_type = self.lower(binder_type, cutoff, amount);
                 let body = self.lower(body, cutoff + 1, amount);
                 self.mk_pi(binder_type, body)
             }
-            Lambda {
-                binder_type, body, ..
-            } => {
+            Lambda { binder_type, body } => {
                 let binder_type = self.lower(binder_type, cutoff, amount);
                 let body = self.lower(body, cutoff + 1, amount);
                 self.mk_lambda(binder_type, body)
             }
-            Let { data, .. } => {
-                let crate::term::expr::LetData {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                } = *data;
+            Let {
+                binder_type,
+                val,
+                body,
+                nondep,
+            } => {
                 let binder_type = self.lower(binder_type, cutoff, amount);
                 let val = self.lower(val, cutoff, amount);
                 let body = self.lower(body, cutoff + 1, amount);
@@ -251,7 +297,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 ty_name,
                 idx,
                 structure,
-                ..
             } => {
                 let structure = self.lower(structure, cutoff, amount);
                 self.mk_proj(ty_name, idx, structure)
@@ -261,21 +306,21 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// Instantiate `e` with the substitutions in `substs`
-    pub fn inst(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
+    pub fn inst(&mut self, e: ExprId, substs: &[ExprId]) -> ExprId {
         self.expr_cache.inst.clear();
         self.inst_aux(e, substs, 0)
     }
 
-    fn inst_aux(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>], offset: u16) -> ExprPtr<'t> {
-        if e.num_loose_bvars() <= offset {
+    fn inst_aux(&mut self, e: ExprId, substs: &[ExprId], offset: u16) -> ExprId {
+        if self.loose(e) <= offset {
             e
         } else if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             cached
         } else {
-            let calcd = match *e {
+            let calcd = match self.ex(e) {
                 // These expressions should be unreachable since they return `n_loose_bvars() == 0`
                 Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
-                Var { dbj_idx, .. } => {
+                Var { dbj_idx } => {
                     debug_assert!(dbj_idx >= offset);
                     substs
                         .iter()
@@ -284,32 +329,27 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                         .copied()
                         .unwrap_or(e)
                 }
-                App { fun, arg, .. } => {
+                App { fun, arg } => {
                     let fun = self.inst_aux(fun, substs, offset);
                     let arg = self.inst_aux(arg, substs, offset);
                     self.mk_app(fun, arg)
                 }
-                Pi {
-                    binder_type, body, ..
-                } => {
+                Pi { binder_type, body } => {
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_pi(binder_type, body)
                 }
-                Lambda {
-                    binder_type, body, ..
-                } => {
+                Lambda { binder_type, body } => {
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
                     self.mk_lambda(binder_type, body)
                 }
-                Let { data, .. } => {
-                    let crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        nondep,
-                    } = *data;
+                Let {
+                    binder_type,
+                    val,
+                    body,
+                    nondep,
+                } => {
                     let binder_type = self.inst_aux(binder_type, substs, offset);
                     let val = self.inst_aux(val, substs, offset);
                     let body = self.inst_aux(body, substs, offset + 1);
@@ -319,7 +359,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     ty_name,
                     idx,
                     structure,
-                    ..
                 } => {
                     let structure = self.inst_aux(structure, substs, offset);
                     self.mk_proj(ty_name, idx, structure)
@@ -330,29 +369,24 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub(crate) fn inst_open(&mut self, e: ExprPtr<'t>, substs: &[ExprPtr<'t>]) -> ExprPtr<'t> {
-        if substs.iter().all(|s| s.num_loose_bvars() == 0) {
+    pub(crate) fn inst_open(&mut self, e: ExprId, substs: &[ExprId]) -> ExprId {
+        if substs.iter().all(|&s| self.loose(s) == 0) {
             return self.inst(e, substs);
         }
         self.expr_cache.inst.clear();
         self.inst_open_aux(e, substs, 0)
     }
 
-    fn inst_open_aux(
-        &mut self,
-        e: ExprPtr<'t>,
-        substs: &[ExprPtr<'t>],
-        offset: u16,
-    ) -> ExprPtr<'t> {
-        if e.num_loose_bvars() <= offset {
+    fn inst_open_aux(&mut self, e: ExprId, substs: &[ExprId], offset: u16) -> ExprId {
+        if self.loose(e) <= offset {
             return e;
         }
         if let Some(cached) = self.expr_cache.inst.get(&(e, offset)) {
             return cached;
         }
-        let calcd = match *e {
+        let calcd = match self.ex(e) {
             Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => panic!(),
-            Var { dbj_idx, .. } => match substs
+            Var { dbj_idx } => match substs
                 .iter()
                 .rev()
                 .nth((dbj_idx - offset) as usize)
@@ -361,32 +395,27 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 Some(s) => self.lift(s, 0, offset),
                 None => e,
             },
-            App { fun, arg, .. } => {
+            App { fun, arg } => {
                 let fun = self.inst_open_aux(fun, substs, offset);
                 let arg = self.inst_open_aux(arg, substs, offset);
                 self.mk_app(fun, arg)
             }
-            Pi {
-                binder_type, body, ..
-            } => {
+            Pi { binder_type, body } => {
                 let binder_type = self.inst_open_aux(binder_type, substs, offset);
                 let body = self.inst_open_aux(body, substs, offset + 1);
                 self.mk_pi(binder_type, body)
             }
-            Lambda {
-                binder_type, body, ..
-            } => {
+            Lambda { binder_type, body } => {
                 let binder_type = self.inst_open_aux(binder_type, substs, offset);
                 let body = self.inst_open_aux(body, substs, offset + 1);
                 self.mk_lambda(binder_type, body)
             }
-            Let { data, .. } => {
-                let crate::term::expr::LetData {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                } = *data;
+            Let {
+                binder_type,
+                val,
+                body,
+                nondep,
+            } => {
                 let binder_type = self.inst_open_aux(binder_type, substs, offset);
                 let val = self.inst_open_aux(val, substs, offset);
                 let body = self.inst_open_aux(body, substs, offset + 1);
@@ -396,7 +425,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                 ty_name,
                 idx,
                 structure,
-                ..
             } => {
                 let structure = self.inst_open_aux(structure, substs, offset);
                 self.mk_proj(ty_name, idx, structure)
@@ -406,46 +434,41 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         calcd
     }
 
-    fn subst_aux(&mut self, e: ExprPtr<'t>, ks: LevelsPtr<'t>, vs: LevelsPtr<'t>) -> ExprPtr<'t> {
+    fn subst_aux(&mut self, e: ExprId, ks: LevelsId, vs: LevelsId) -> ExprId {
         if let Some(cached) = self.expr_cache.subst.get(&(e, ks, vs)) {
             cached
         } else {
-            let r = match *e {
+            let r = match self.ex(e) {
                 Var { .. } | NatLit { .. } | StringLit { .. } => e,
-                Sort { level, .. } => {
+                Sort { level } => {
                     let level = self.subst_level(level, ks, vs);
                     self.mk_sort(level)
                 }
-                Const { name, levels, .. } => {
+                Const { name, levels } => {
                     let levels = self.subst_levels(levels, ks, vs);
                     self.mk_const(name, levels)
                 }
-                App { fun, arg, .. } => {
+                App { fun, arg } => {
                     let fun = self.subst_aux(fun, ks, vs);
                     let arg = self.subst_aux(arg, ks, vs);
                     self.mk_app(fun, arg)
                 }
-                Pi {
-                    binder_type, body, ..
-                } => {
+                Pi { binder_type, body } => {
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_pi(binder_type, body)
                 }
-                Lambda {
-                    binder_type, body, ..
-                } => {
+                Lambda { binder_type, body } => {
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
                     self.mk_lambda(binder_type, body)
                 }
-                Let { data, .. } => {
-                    let crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        nondep,
-                    } = *data;
+                Let {
+                    binder_type,
+                    val,
+                    body,
+                    nondep,
+                } => {
                     let binder_type = self.subst_aux(binder_type, ks, vs);
                     let val = self.subst_aux(val, ks, vs);
                     let body = self.subst_aux(body, ks, vs);
@@ -455,7 +478,6 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
                     ty_name,
                     idx,
                     structure,
-                    ..
                 } => {
                     let structure = self.subst_aux(structure, ks, vs);
                     self.mk_proj(ty_name, idx, structure)
@@ -466,31 +488,22 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
         }
     }
 
-    pub fn subst_expr_levels(
-        &mut self,
-        e: ExprPtr<'t>,
-        ks: LevelsPtr<'t>,
-        vs: LevelsPtr<'t>,
-    ) -> ExprPtr<'t> {
-        if ks == vs || ks.as_ref().is_empty() {
-            ensure_eq!(ks.as_ref().len(), vs.as_ref().len());
+    pub fn subst_expr_levels(&mut self, e: ExprId, ks: LevelsId, vs: LevelsId) -> ExprId {
+        if ks == vs || self.levels(ks).is_empty() {
+            ensure_eq!(self.levels(ks).len(), self.levels(vs).len());
             return e;
         }
         if let Some(cached) = self.expr_cache.dsubst.get(&(e, ks, vs)) {
             return cached;
         }
         self.expr_cache.subst.clear();
-        ensure_eq!(ks.as_ref().len(), vs.as_ref().len());
+        ensure_eq!(self.levels(ks).len(), self.levels(vs).len());
         let out = self.subst_aux(e, ks, vs);
         self.expr_cache.dsubst.insert((e, ks, vs), out);
         out
     }
 
-    pub fn foldl_apps(
-        &mut self,
-        mut fun: ExprPtr<'t>,
-        args: impl Iterator<Item = ExprPtr<'t>>,
-    ) -> ExprPtr<'t> {
+    pub fn foldl_apps(&mut self, mut fun: ExprId, args: impl Iterator<Item = ExprId>) -> ExprId {
         for arg in args {
             fun = self.mk_app(fun, arg);
         }
@@ -498,29 +511,30 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// Convert a string literal to `String.ofList <| List.cons (Char.ofNat _) .. List.nil`
-    pub(crate) fn str_lit_to_constructor(&mut self, s: StringPtr<'t>) -> Option<ExprPtr<'t>> {
+    pub(crate) fn str_lit_to_constructor(&mut self, s: StrId) -> Option<ExprId> {
         if (!self.export_file.config.string_extension) || (!self.export_file.config.nat_extension) {
             return None;
         }
-        let zero = self.zero();
-        let empty_levels = self.alloc_levels_slice(&[]);
-        let tyzero_levels = self.alloc_levels_slice(&[zero]);
+        let names = self.export_file.name_cache;
+        let empty_levels = self.alloc_levels(&[]);
+        let tyzero_levels = self.alloc_levels(&[ZERO]);
         // Const(Char, [])
-        let c_char = self.mk_const(self.export_file.name_cache.char?, empty_levels);
+        let c_char = self.mk_const(names.char?, empty_levels);
         // Const(Char.ofNat, [])
-        let c_char_of_nat = self.mk_const(self.export_file.name_cache.char_of_nat?, empty_levels);
+        let c_char_of_nat = self.mk_const(names.char_of_nat?, empty_levels);
         // @List.nil.{0} Char
         let c_list_nil_char = {
-            let f = self.mk_const(self.export_file.name_cache.list_nil?, tyzero_levels);
+            let f = self.mk_const(names.list_nil?, tyzero_levels);
             self.mk_app(f, c_char)
         };
         // @List.cons.{0} Char
         let c_list_cons_char = {
-            let f = self.mk_const(self.export_file.name_cache.list_cons?, tyzero_levels);
+            let f = self.mk_const(names.list_cons?, tyzero_levels);
             self.mk_app(f, c_char)
         };
         let mut out = c_list_nil_char;
-        for c in s.as_ref().clone().chars().rev() {
+        let chars: Vec<char> = self.string(s).chars().rev().collect();
+        for c in chars {
             let bignum = self.alloc_bignum(BigUint::from(c as u32)).unwrap();
             let bignum = self.mk_nat_lit(bignum).unwrap();
             // Char.ofNat (c as u32)
@@ -530,49 +544,39 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
             // (List.cons (Char.ofNat u32)) xs
             out = self.mk_app(y, out);
         }
-        let string_of_list_const =
-            self.mk_const(self.export_file.name_cache.string_of_list?, empty_levels);
+        let string_of_list_const = self.mk_const(names.string_of_list?, empty_levels);
         Some(self.mk_app(string_of_list_const, out))
     }
 
-    pub(crate) fn has_nested_name(&self, e: ExprPtr<'t>, nested: NamePtr<'t>) -> bool {
+    pub(crate) fn has_nested_name(&self, e: ExprId, nested: NameId) -> bool {
         let mut cache = crate::term::hash::new_fx_hash_map();
         self.has_nested_name_aux(e, nested, &mut cache)
     }
 
     fn has_nested_name_aux(
         &self,
-        e: ExprPtr<'t>,
-        nested: NamePtr<'t>,
-        cache: &mut FxHashMap<ExprPtr<'t>, bool>,
+        e: ExprId,
+        nested: NameId,
+        cache: &mut FxHashMap<ExprId, bool>,
     ) -> bool {
         if let Some(cached) = cache.get(&e) {
             return *cached;
         }
-        let result = match *e {
+        let result = match self.ex(e) {
             Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
             Const { name, .. } => self.get_pfx(name) == nested,
-            App { fun, arg, .. } => {
+            App { fun, arg } => {
                 self.has_nested_name_aux(fun, nested, cache)
                     || self.has_nested_name_aux(arg, nested, cache)
             }
-            Pi {
-                binder_type, body, ..
-            }
-            | Lambda {
-                binder_type, body, ..
-            } => {
+            Pi { binder_type, body } | Lambda { binder_type, body } => {
                 self.has_nested_name_aux(binder_type, nested, cache)
                     || self.has_nested_name_aux(body, nested, cache)
             }
             Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
+                binder_type,
+                val,
+                body,
                 ..
             } => {
                 self.has_nested_name_aux(binder_type, nested, cache)
@@ -591,295 +595,195 @@ impl<'t, 'p: 't> TcCtx<'t, 'p> {
     }
 
     /// Is this expression `Sort(Level::Zero)`?
-    pub(crate) fn prop(&mut self) -> ExprPtr<'t> {
-        self.mk_sort(self.zero())
-    }
-}
-
-#[inline]
-pub(crate) fn ignores_binder(body: ExprPtr<'_>) -> bool {
-    body.as_ref().fv_mask() & 1 == 0
-}
-
-pub(crate) const NEAR_VARS: u16 = 63;
-pub(crate) const FAR_VARS: u64 = 1 << NEAR_VARS;
-
-#[inline]
-pub(crate) fn var_mask(dbj_idx: u16) -> u64 {
-    1u64 << dbj_idx.min(NEAR_VARS)
-}
-
-#[inline]
-pub(crate) fn child_mask(e: ExprPtr<'_>) -> u64 {
-    e.as_ref().fv_mask()
-}
-
-#[inline]
-pub(crate) fn under_binder(mask: u64, num_loose_bvars: u16) -> u64 {
-    let far = if num_loose_bvars > NEAR_VARS + 1 {
-        FAR_VARS
-    } else {
-        0
-    };
-    (mask >> 1) | far
-}
-
-#[inline]
-pub(crate) fn body_mask(body: ExprPtr<'_>) -> u64 {
-    under_binder(body.as_ref().fv_mask(), body.num_loose_bvars())
-}
-
-impl Expr<'_> {
-    /// The number of "loose" bound variables, which is the number of bound variables
-    /// in an expression which are boudn by something above it.
-    pub(crate) fn num_loose_bvars(&self) -> u16 {
-        match self {
-            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => 0,
-            Var { dbj_idx, .. } => dbj_idx + 1,
-            App { fun, arg, .. } => fun.num_loose_bvars().max(arg.num_loose_bvars()),
-            Pi {
-                binder_type, body, ..
-            }
-            | Lambda {
-                binder_type, body, ..
-            } => binder_type
-                .num_loose_bvars()
-                .max(body.num_loose_bvars().saturating_sub(1)),
-            Let { data, .. } => data.binder_type.num_loose_bvars().max(
-                data.val
-                    .num_loose_bvars()
-                    .max(data.body.num_loose_bvars().saturating_sub(1)),
-            ),
-            Proj { structure, .. } => structure.num_loose_bvars(),
-        }
+    pub(crate) fn prop(&mut self) -> ExprId {
+        self.mk_sort(ZERO)
     }
 
     #[inline]
-    pub(crate) fn fv_mask(&self) -> u64 {
-        match self {
-            Var { dbj_idx, .. } => var_mask(*dbj_idx),
-            App { fv_mask, .. }
-            | Pi { fv_mask, .. }
-            | Lambda { fv_mask, .. }
-            | Let { fv_mask, .. }
-            | Proj { fv_mask, .. } => *fv_mask,
-            Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => 0,
-        }
+    pub(crate) fn ignores_binder(&self, body: ExprId) -> bool {
+        self.mask(body) & 1 == 0
     }
-}
 
-const _: () = assert!(std::mem::size_of::<Expr<'static>>() == 40);
-
-impl<'t> ExprPtr<'t> {
     /// From `f a_0 .. a_N`, return `f`
-    pub fn unfold_apps_fun(mut self) -> ExprPtr<'t> {
-        while let App { fun, .. } = *self {
-            self = fun;
+    pub fn unfold_apps_fun(&self, mut e: ExprId) -> ExprId {
+        while let App { fun, .. } = self.ex(e) {
+            e = fun;
         }
-        self
+        e
     }
 
     /// From `f a_0 .. a_N`, return `(f, [a_0, ..a_N])`
-    pub fn unfold_apps<'b>(
-        mut self,
-        arena: &'b bumpalo::Bump,
-    ) -> (ExprPtr<'t>, bumpalo::collections::Vec<'b, ExprPtr<'t>>) {
-        let mut args = bumpalo::collections::Vec::new_in(arena);
-        while let App { fun, arg, .. } = *self {
-            self = fun;
+    pub fn unfold_apps(&self, mut e: ExprId) -> (ExprId, Vec<ExprId>) {
+        let mut args = Vec::new();
+        while let App { fun, arg } = self.ex(e) {
+            e = fun;
             args.push(arg);
         }
         args.reverse();
-        (self, args)
+        (e, args)
     }
 
     /// If this is a const application, return (Const {..}, name, levels, args)
-    pub fn unfold_const_apps<'b>(
-        self,
-        arena: &'b bumpalo::Bump,
-    ) -> Option<(
-        ExprPtr<'t>,
-        NamePtr<'t>,
-        LevelsPtr<'t>,
-        bumpalo::collections::Vec<'b, ExprPtr<'t>>,
-    )> {
-        let (f, args) = self.unfold_apps(arena);
-        match *f {
-            Const { name, levels, .. } => Some((f, name, levels, args)),
+    pub fn unfold_const_apps(&self, e: ExprId) -> Option<(ExprId, NameId, LevelsId, Vec<ExprId>)> {
+        let (f, args) = self.unfold_apps(e);
+        match self.ex(f) {
+            Const { name, levels } => Some((f, name, levels, args)),
             _ => None,
         }
     }
 
     /// If this is an application of `Const(name, levels)`, return `(name, levels)`
-    pub fn try_const_info(self) -> Option<(NamePtr<'t>, LevelsPtr<'t>)> {
-        match *self {
-            Const { name, levels, .. } => Some((name, levels)),
+    pub fn try_const_info(&self, e: ExprId) -> Option<(NameId, LevelsId)> {
+        match self.ex(e) {
+            Const { name, levels } => Some((name, levels)),
             _ => None,
         }
     }
 
-    pub(crate) fn unfold_apps_rev(mut self) -> (ExprPtr<'t>, SpineArgs<'t>) {
+    pub(crate) fn unfold_apps_rev(&self, mut e: ExprId) -> (ExprId, SpineArgs) {
         let mut args = SpineArgs::new();
-        while let App { fun, arg, .. } = *self {
+        while let App { fun, arg } = self.ex(e) {
             args.push(arg);
-            self = fun;
+            e = fun;
         }
-        (self, args)
+        (e, args)
     }
 
     #[inline(always)]
     pub(crate) fn peel_apps<'b>(
-        mut self,
-        buf: &'b mut SpineBuf<'t>,
-    ) -> Option<(ExprPtr<'t>, &'b [ExprPtr<'t>])> {
+        &self,
+        mut e: ExprId,
+        buf: &'b mut SpineBuf,
+    ) -> Option<(ExprId, &'b [ExprId])> {
         let mut n = 0;
-        while let App { fun, arg, .. } = *self {
+        while let App { fun, arg } = self.ex(e) {
             if n == SPINE {
                 return None;
             }
             buf[n].write(arg);
             n += 1;
-            self = fun;
+            e = fun;
         }
-        let args = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<ExprPtr<'t>>(), n) };
-        Some((self, args))
+        let args = unsafe { slice::from_raw_parts(buf.as_ptr().cast::<ExprId>(), n) };
+        Some((e, args))
     }
 
-    pub(crate) fn find_const<F>(self, pred: F) -> bool
+    pub(crate) fn find_const<F>(&self, e: ExprId, pred: F) -> bool
     where
-        F: FnOnce(NamePtr<'t>) -> bool + Copy,
+        F: FnOnce(NameId) -> bool + Copy,
     {
         let mut cache = crate::term::hash::new_fx_hash_map();
-        self.find_const_aux(pred, &mut cache)
+        self.find_const_aux(e, pred, &mut cache)
     }
 
-    fn find_const_aux<F>(self, pred: F, cache: &mut FxHashMap<ExprPtr<'t>, bool>) -> bool
+    fn find_const_aux<F>(&self, e: ExprId, pred: F, cache: &mut FxHashMap<ExprId, bool>) -> bool
     where
-        F: FnOnce(NamePtr<'t>) -> bool + Copy,
+        F: FnOnce(NameId) -> bool + Copy,
     {
-        if let Some(cached) = cache.get(&self) {
+        if let Some(cached) = cache.get(&e) {
             *cached
         } else {
-            let r = match *self {
+            let r = match self.ex(e) {
                 Var { .. } | Sort { .. } | NatLit { .. } | StringLit { .. } => false,
                 Const { name, .. } => pred(name),
-                App { fun, arg, .. } => {
-                    fun.find_const_aux(pred, cache) || arg.find_const_aux(pred, cache)
+                App { fun, arg } => {
+                    self.find_const_aux(fun, pred, cache) || self.find_const_aux(arg, pred, cache)
                 }
-                Pi {
-                    binder_type, body, ..
+                Pi { binder_type, body } | Lambda { binder_type, body } => {
+                    self.find_const_aux(binder_type, pred, cache)
+                        || self.find_const_aux(body, pred, cache)
                 }
-                | Lambda {
-                    binder_type, body, ..
-                } => binder_type.find_const_aux(pred, cache) || body.find_const_aux(pred, cache),
                 Let {
-                    data:
-                        &crate::term::expr::LetData {
-                            binder_type,
-                            val,
-                            body,
-                            ..
-                        },
+                    binder_type,
+                    val,
+                    body,
                     ..
                 } => {
-                    binder_type.find_const_aux(pred, cache)
-                        || val.find_const_aux(pred, cache)
-                        || body.find_const_aux(pred, cache)
+                    self.find_const_aux(binder_type, pred, cache)
+                        || self.find_const_aux(val, pred, cache)
+                        || self.find_const_aux(body, pred, cache)
                 }
-                Proj { structure, .. } => structure.find_const_aux(pred, cache),
+                Proj { structure, .. } => self.find_const_aux(structure, pred, cache),
             };
-            cache.insert(self, r);
+            cache.insert(e, r);
             r
         }
     }
 
     /// Return the number of leading `Pi` binders on this expression.
-    pub(crate) fn pi_telescope_size(mut self) -> u16 {
+    pub(crate) fn pi_telescope_size(&self, mut e: ExprId) -> u16 {
         let mut size = 0u16;
-        while let Pi { body, .. } = *self {
+        while let Pi { body, .. } = self.ex(e) {
             size += 1;
-            self = body;
+            e = body;
         }
         size
     }
 
-    pub fn get_nth_pi_binder(mut self, n: usize) -> Option<ExprPtr<'t>> {
+    pub fn get_nth_pi_binder(&self, mut e: ExprId, n: usize) -> Option<ExprId> {
         for _ in 0..n {
-            match *self {
+            match self.ex(e) {
                 Pi { body, .. } => {
-                    self = body;
+                    e = body;
                 }
                 _ => return None,
             }
         }
-        match *self {
+        match self.ex(e) {
             Pi { binder_type, .. } => Some(binder_type),
             _ => None,
         }
     }
 
-    pub(crate) fn has_loose_bvar(self, idx: u16) -> bool {
-        if self.num_loose_bvars() <= idx {
+    pub(crate) fn has_loose_bvar(&self, e: ExprId, idx: u16) -> bool {
+        if self.loose(e) <= idx {
             return false;
         }
-        match *self {
-            Var { dbj_idx, .. } => dbj_idx == idx,
-            App { fun, arg, .. } => fun.has_loose_bvar(idx) || arg.has_loose_bvar(idx),
-            Pi {
-                binder_type, body, ..
+        match self.ex(e) {
+            Var { dbj_idx } => dbj_idx == idx,
+            App { fun, arg } => self.has_loose_bvar(fun, idx) || self.has_loose_bvar(arg, idx),
+            Pi { binder_type, body } | Lambda { binder_type, body } => {
+                self.has_loose_bvar(binder_type, idx) || self.has_loose_bvar(body, idx + 1)
             }
-            | Lambda {
-                binder_type, body, ..
-            } => binder_type.has_loose_bvar(idx) || body.has_loose_bvar(idx + 1),
             Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
+                binder_type,
+                val,
+                body,
                 ..
             } => {
-                binder_type.has_loose_bvar(idx)
-                    || val.has_loose_bvar(idx)
-                    || body.has_loose_bvar(idx + 1)
+                self.has_loose_bvar(binder_type, idx)
+                    || self.has_loose_bvar(val, idx)
+                    || self.has_loose_bvar(body, idx + 1)
             }
-            Proj { structure, .. } => structure.has_loose_bvar(idx),
+            Proj { structure, .. } => self.has_loose_bvar(structure, idx),
             Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
         }
     }
 
-    pub(crate) fn has_loose_bvar_below(self, cutoff: u16) -> bool {
-        if cutoff == 0 || self.num_loose_bvars() == 0 {
+    pub(crate) fn has_loose_bvar_below(&self, e: ExprId, cutoff: u16) -> bool {
+        if cutoff == 0 || self.loose(e) == 0 {
             return false;
         }
-        match *self {
-            Var { dbj_idx, .. } => dbj_idx < cutoff,
-            App { fun, arg, .. } => {
-                fun.has_loose_bvar_below(cutoff) || arg.has_loose_bvar_below(cutoff)
+        match self.ex(e) {
+            Var { dbj_idx } => dbj_idx < cutoff,
+            App { fun, arg } => {
+                self.has_loose_bvar_below(fun, cutoff) || self.has_loose_bvar_below(arg, cutoff)
             }
-            Pi {
-                binder_type, body, ..
+            Pi { binder_type, body } | Lambda { binder_type, body } => {
+                self.has_loose_bvar_below(binder_type, cutoff)
+                    || self.has_loose_bvar_below(body, cutoff + 1)
             }
-            | Lambda {
-                binder_type, body, ..
-            } => binder_type.has_loose_bvar_below(cutoff) || body.has_loose_bvar_below(cutoff + 1),
             Let {
-                data:
-                    &crate::term::expr::LetData {
-                        binder_type,
-                        val,
-                        body,
-                        ..
-                    },
+                binder_type,
+                val,
+                body,
                 ..
             } => {
-                binder_type.has_loose_bvar_below(cutoff)
-                    || val.has_loose_bvar_below(cutoff)
-                    || body.has_loose_bvar_below(cutoff + 1)
+                self.has_loose_bvar_below(binder_type, cutoff)
+                    || self.has_loose_bvar_below(val, cutoff)
+                    || self.has_loose_bvar_below(body, cutoff + 1)
             }
-            Proj { structure, .. } => structure.has_loose_bvar_below(cutoff),
+            Proj { structure, .. } => self.has_loose_bvar_below(structure, cutoff),
             Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => false,
         }
     }

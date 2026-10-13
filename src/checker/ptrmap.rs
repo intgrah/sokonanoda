@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::checker::cache::Reset;
-use crate::checker::value::KeyTag;
+use crate::checker::value::{C, E, KeyTag, LsubId, V};
 use crate::term::hash::GOLDEN;
-use crate::term::ptr::{ExprPtr, Id, LevelPtr, LevelsPtr, NamePtr};
+use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
@@ -12,45 +12,25 @@ pub(crate) trait Word: Copy {
     fn word(self) -> u64;
 }
 
-impl<T> Word for Id<'_, T> {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.addr() as u64
-    }
+macro_rules! id_words {
+    ($($t:ty),*) => {
+        $(
+            impl Word for $t {
+                #[inline(always)]
+                fn word(self) -> u64 {
+                    u64::from(self.raw())
+                }
+            }
+        )*
+    };
 }
 
-impl<T> Word for Option<Id<'_, T>> {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.map_or(0, |id| id.addr() as u64)
-    }
-}
+id_words!(ExprId, NameId, LevelId, LevelsId, V, E, C, LsubId);
 
-impl Word for ExprPtr<'_> {
+impl Word for Option<C> {
     #[inline(always)]
     fn word(self) -> u64 {
-        self.addr() as u64
-    }
-}
-
-impl Word for NamePtr<'_> {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.get_hash()
-    }
-}
-
-impl Word for LevelPtr<'_> {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.get_hash()
-    }
-}
-
-impl Word for LevelsPtr<'_> {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.get_hash()
+        self.map_or(0, |c| u64::from(c.raw()) + 1)
     }
 }
 
