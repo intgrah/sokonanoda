@@ -7,7 +7,7 @@ use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
 use crate::checker::tc::{NatBinOp, TypeChecker};
-use crate::checker::value::{EMPTY_ENV, Elim, ElimView, RigidHead, Spine, SpineArgs, V, Value};
+use crate::checker::value::{EMPTY_ENV, Elim, ElimView, RigidHead, Spine, V, VT, Value};
 use crate::outcome::reject;
 use crate::term::id::{BigId, LevelsId, NameId, StrId};
 use num_bigint::BigUint;
@@ -142,21 +142,15 @@ impl<'t> TypeChecker<'_, 't> {
 
     #[inline(always)]
     pub(crate) fn force_all(&mut self, depth: u32, v: V) -> V {
-        match self.val(v) {
-            Value::Unfold { .. }
-            | Value::Rigid {
-                head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
-                ..
-            } => {
-                if let Some(w) = self.vals().whnf(v) {
-                    return w;
-                }
-                let w = self.force_reducible(depth, v);
-                self.vals_mut().set_whnf(v, w);
-                w
-            }
-            _ => v,
+        if !matches!(self.vals().kind(v), VT::Unfold | VT::Recursor | VT::QuotConst) {
+            return v;
         }
+        if let Some(w) = self.vals().whnf(v) {
+            return w;
+        }
+        let w = self.force_reducible(depth, v);
+        self.vals_mut().set_whnf(v, w);
+        w
     }
 
     #[inline(always)]
@@ -407,22 +401,18 @@ impl<'t> TypeChecker<'_, 't> {
             if v == head_value_node {
                 return head_value;
             }
+            let (args, projs) = self.vals().spine_split(spine);
             let mut cur = head_value;
-            let mut run: SpineArgs = SpineArgs::new();
-            for e in self.vals().spine_to_vec(spine) {
-                match e.view() {
-                    ElimView::App(a) => run.push(a),
-                    ElimView::Proj { ty_name, idx } => {
-                        if !run.is_empty() {
-                            cur = self.apply_many(depth, cur, &run);
-                            run.clear();
-                        }
-                        cur = self.do_proj(depth, ty_name, idx, cur);
-                    }
+            let mut from = 0;
+            for (at, ty_name, idx) in projs {
+                if at > from {
+                    cur = self.apply_many(depth, cur, &args[from..at]);
+                    from = at;
                 }
+                cur = self.do_proj(depth, ty_name, idx, cur);
             }
-            if !run.is_empty() {
-                cur = self.apply_many(depth, cur, &run);
+            if from < args.len() {
+                cur = self.apply_many(depth, cur, &args[from..]);
             }
             self.vals_mut().set_step(v, cur);
             return cur;
@@ -592,10 +582,10 @@ impl<'t> TypeChecker<'_, 't> {
         major: V,
         rec: &RecursorData,
     ) -> Option<V> {
-        if !matches!(self.val(major), Value::Rigid { .. } | Value::Unfold { .. }) {
+        if !self.vals().is_neutral(major) {
             return None;
         }
-        let rec_induct = rec.get_major_induct(self.ctx)?;
+        let rec_induct = rec.get_major_induct(&self.ctx)?;
         if !self.can_be_struct_memo(rec_induct) {
             return None;
         }
@@ -639,13 +629,13 @@ impl<'t> TypeChecker<'_, 't> {
         if !rec.is_k {
             return None;
         }
-        if !matches!(self.val(major), Value::Rigid { .. } | Value::Unfold { .. }) {
+        if !self.vals().is_neutral(major) {
             return None;
         }
         let major_ty = self.value_type(depth, major);
         let major_ty_f = self.force_all(depth, major_ty);
         let (ty_name, ty_levels, ty_args) = self.vals().as_inductive_app(major_ty_f)?;
-        let rec_induct = rec.get_major_induct(self.ctx)?;
+        let rec_induct = rec.get_major_induct(&self.ctx)?;
         if ty_name != rec_induct {
             return None;
         }

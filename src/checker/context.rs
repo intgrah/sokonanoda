@@ -9,7 +9,7 @@ use crate::checker::tc::TypeChecker;
 use crate::config::Config;
 use crate::term::expr::{Expr, ExprNode};
 use crate::term::hash::{FxHashMap, FxHashSet, GOLDEN};
-use crate::term::id::{ANON, BigId, ExprId, LevelId, LevelsId, NameId, StrId, ZERO};
+use crate::term::id::{ANON, BigId, ExprId, LOCAL, LevelId, LevelsId, NameId, StrId, ZERO};
 use crate::term::intern::{NameCache, Terms};
 use crate::term::level::Level;
 use crate::term::name::{Name, NameDisplay, NameSource, NatRed};
@@ -107,6 +107,7 @@ pub struct TcCtx<'t> {
     pub(crate) arena: &'t Bump,
     global: &'t Terms,
     global_exprs: &'t [ExprNode],
+    expr_bases: [*const ExprNode; 2],
     local: Terms,
     pub(crate) expr_cache: ExprCache,
     pub(crate) sig_cache: PtrMap<(NameId, LevelsId), Sig>,
@@ -137,6 +138,10 @@ impl<'t> TcCtx<'t> {
             arena,
             global: &export_file.terms,
             global_exprs: &export_file.terms.exprs.items,
+            expr_bases: [
+                export_file.terms.exprs.items.as_ptr(),
+                local_expr_base(&[]),
+            ],
             local: Terms::default(),
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
@@ -158,13 +163,16 @@ impl<'t> TcCtx<'t> {
 
     #[inline(always)]
     pub(crate) fn node(&self, e: ExprId) -> &ExprNode {
-        let items: &[ExprNode] = if e.is_local() {
-            &self.local.exprs.items
-        } else {
-            self.global_exprs
-        };
-        debug_assert!(e.index() < items.len());
-        unsafe { items.get_unchecked(e.index()) }
+        debug_assert!(
+            e.index()
+                < if e.is_local() {
+                    self.local.exprs.items.len()
+                } else {
+                    self.global_exprs.len()
+                }
+        );
+        let raw = e.raw();
+        unsafe { &*self.expr_bases[(raw >> 31) as usize].wrapping_add(raw as usize) }
     }
 
     #[inline(always)]
@@ -285,7 +293,9 @@ impl<'t> TcCtx<'t> {
     }
 
     pub fn alloc_expr(&mut self, node: ExprNode) -> ExprId {
-        ExprId::new(self.local.exprs.intern(node), true)
+        let i = self.local.exprs.intern(node);
+        self.expr_bases[1] = local_expr_base(&self.local.exprs.items);
+        ExprId::new(i, true)
     }
 
     pub(crate) fn alloc_string(&mut self, s: &str) -> StrId {
@@ -425,4 +435,8 @@ impl<'t> TcCtx<'t> {
         let lit = self.alloc_bignum(n)?;
         self.mk_nat_lit(lit)
     }
+}
+
+fn local_expr_base(items: &[ExprNode]) -> *const ExprNode {
+    items.as_ptr().wrapping_sub(LOCAL as usize)
 }

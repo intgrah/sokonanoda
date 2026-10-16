@@ -398,8 +398,9 @@ fn read_blocks<R: Read>(
 pub(crate) fn parse_export_file<R: Read + Send + 'static>(
     reader: R,
     config: Config,
+    input_len: usize,
 ) -> Result<ExportFile, Box<dyn Error>> {
-    let mut parser = Parser::new(config);
+    let mut parser = Parser::with_input_len(config, input_len);
     let (blocks_tx, blocks_rx) = sync_channel(READ_AHEAD);
     let (spent_tx, spent_rx) = channel();
     thread::Builder::new()
@@ -707,10 +708,6 @@ impl From<Fallback> for FastError {
 }
 
 impl Parser {
-    pub fn new(config: Config) -> Self {
-        Self::with_input_len(config, 0)
-    }
-
     pub fn with_input_len(config: Config, input_len: usize) -> Self {
         let mut terms = Terms::with_input_len(input_len);
         let anon = NameId::new(terms.names.insert_unique(Name::Anon), false);

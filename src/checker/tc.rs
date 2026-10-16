@@ -10,7 +10,7 @@ use crate::report::Reporter;
 use crate::term::id::ExprId;
 use std::panic::{self, AssertUnwindSafe};
 
-const SESSION_BUDGET: usize = 16 * 1024 * 1024;
+const SESSION_BUDGET: usize = 9 * 1024 * 1024;
 const ARENA_KEEP: usize = 4 * SESSION_BUDGET;
 
 const CHUNK_SIZE: usize = 64;
@@ -47,7 +47,7 @@ pub(crate) enum InferFlag {
 }
 
 pub struct TypeChecker<'x, 't> {
-    pub(crate) ctx: &'x mut TcCtx<'t>,
+    pub(crate) ctx: Held<'x, TcCtx<'t>>,
     /// An immutable reference to an environment, which contains declarations and notation.
     /// To accommodate the temporary declarations created while checking nested inductives,
     /// the environment may have a temporary extension which also holds declarations, and
@@ -60,7 +60,7 @@ pub struct TypeChecker<'x, 't> {
     /// field's type are being exclusively borrowed.
     pub(crate) env: &'x Env<'x>,
     /// The caches for things like inference, reduction, and equality checking.
-    pub(crate) tc_cache: &'x mut TcCache,
+    pub(crate) tc_cache: Held<'x, TcCache>,
     /// If this type checker is being used to check a simple declaration, this field will
     /// contain the universe parameters of that declaration. This is used in a couple of places
     /// to make sure that all of the universe paramters actually used in a declaration `d` are
@@ -268,9 +268,9 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let nat_extension = dag.export_file.config.nat_extension;
         dag.next_declaration();
         Self {
-            ctx: dag,
+            ctx: Held::new(dag),
             env,
-            tc_cache,
+            tc_cache: Held::new(tc_cache),
             declar_info,
             nat_extension,
             ordered_declaration: false,
@@ -294,5 +294,40 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
 
     pub fn assert_def_eq(&mut self, u: ExprId, v: ExprId) {
         ensure!(self.def_eq_core(u, v), "def_eq failed");
+    }
+}
+
+pub(crate) struct Held<'x, T> {
+    value: std::mem::ManuallyDrop<T>,
+    home: &'x mut T,
+}
+
+impl<'x, T> Held<'x, T> {
+    fn new(home: &'x mut T) -> Self {
+        Self {
+            value: std::mem::ManuallyDrop::new(unsafe { std::ptr::read(home) }),
+            home,
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Held<'_, T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> std::ops::DerefMut for Held<'_, T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<T> Drop for Held<'_, T> {
+    fn drop(&mut self) {
+        unsafe { std::ptr::write(self.home, std::mem::ManuallyDrop::take(&mut self.value)) }
     }
 }

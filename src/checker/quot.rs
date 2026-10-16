@@ -86,8 +86,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let a0 = ctx.mk_var(0);
     let inner = ctx.mk_pi(a0, inner);
     let expected = ctx.mk_pi(uparam, inner);
-    let mut tc = TypeChecker::new(ctx, &env, Some(info), cache);
-    tc.assert_def_eq(info.ty, expected);
+    TypeChecker::new(ctx, &env, Some(info), cache).assert_def_eq(info.ty, expected);
     let &[ctor_name] = all_ctor_names.as_ref() else {
         reject!(
             "cannot add Quot; `Eq` type improperly formed; expected one constructor, found {}",

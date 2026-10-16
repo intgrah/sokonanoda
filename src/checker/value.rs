@@ -3,14 +3,14 @@
 
 use crate::checker::cache::{Reset, SESSION, SMALL};
 use crate::checker::ptrmap::PtrMap;
-use crate::term::expr::FAR_VARS;
+use crate::term::expr::{FAR_VARS, NEAR_VARS};
 use crate::term::hash::GOLDEN;
 use crate::term::id::{BigId, ExprId, LevelId, LevelsId, NameId, StrId};
 
 macro_rules! store_ids {
     ($($name:ident),*) => {
         $(
-            #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+            #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
             pub struct $name(u32);
 
             impl $name {
@@ -28,7 +28,17 @@ macro_rules! store_ids {
     };
 }
 
-store_ids!(VId, EnvId, CtxId, LsubId);
+store_ids!(VId, EnvId, LsubId);
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CtxId(u32);
+
+impl CtxId {
+    #[inline(always)]
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[inline(always)]
 fn at<T>(items: &[T], i: usize) -> &T {
@@ -43,8 +53,18 @@ fn at_mut<T>(items: &mut [T], i: usize) -> &mut T {
 }
 
 #[inline(always)]
+pub(crate) fn pair(a: u32, b: u32) -> u64 {
+    (u64::from(a) << 32) | u64::from(b)
+}
+
+const APP_ACTIVE: u32 = 1 << 31;
+
+#[inline(always)]
 fn next_id(len: usize) -> u32 {
-    u32::try_from(len).expect("value store exceeds u32")
+    u32::try_from(len)
+        .ok()
+        .filter(|&i| i < APP_ACTIVE)
+        .expect("value store exceeds 2^31 entries")
 }
 
 pub type V = VId;
@@ -194,7 +214,7 @@ pub enum Value {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
-enum VT {
+pub(crate) enum VT {
     Dummy,
     Sort,
     NatLit,
@@ -206,8 +226,6 @@ enum VT {
     QuotConst,
     Inductive,
     Unfold,
-    App,
-    Proj,
     Lam,
     Pi,
 }
@@ -215,36 +233,54 @@ enum VT {
 const SPINE_PROJ: u8 = 1;
 const HAS_BVAR: u8 = 2;
 const HEAD_ACTIVE: u8 = 4;
+const IS_APP: u8 = 8;
+const IS_PROJ: u8 = 16;
+const SPINE_FLAGS: u8 = SPINE_PROJ | HAS_BVAR | HEAD_ACTIVE;
 
 #[derive(Clone, Copy)]
 struct VNode {
-    t: VT,
+    kind: VT,
     flags: u8,
     loose: u16,
     a: u32,
     b: u32,
     c: u32,
     d: u32,
-    h: V,
-    n: u32,
     step: u32,
     whnf: u32,
     ty: u32,
+    key: u64,
+}
+
+const _: () = assert!(size_of::<VNode>() == 40);
+
+#[inline(always)]
+fn is_spine(n: &VNode) -> bool {
+    n.flags & (IS_APP | IS_PROJ) != 0
+}
+
+#[inline(always)]
+fn spine_head(v: V, n: &VNode) -> V {
+    if is_spine(n) { VId(n.c) } else { v }
+}
+
+#[inline(always)]
+fn spine_len(n: &VNode) -> u32 {
+    if is_spine(n) { n.d } else { 0 }
 }
 
 const BLANK: VNode = VNode {
-    t: VT::Dummy,
+    kind: VT::Dummy,
     flags: 0,
     loose: 0,
     a: 0,
     b: 0,
     c: 0,
     d: 0,
-    h: VId(0),
-    n: 0,
     step: 0,
     whnf: 0,
     ty: 0,
+    key: 0,
 };
 
 #[inline]
@@ -270,33 +306,66 @@ pub struct LevelSub {
     pub vs: LevelsId,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum EnvTag {
+    Nil,
+    Cons,
+    Framed,
+}
+
 const NO_ENV: u32 = u32::MAX;
 
 #[derive(Clone, Copy)]
 struct EnvNode {
-    parent: u32,
-    up: [u32; 3],
-    val: V,
-    vals: [V; 3],
+    mask: u64,
+    a: u32,
+    b: u32,
     len: u32,
-    lsub: Option<LsubId>,
+    lsub: u32,
+    tag: EnvTag,
+    cut: u8,
 }
 
 const NIL_ENV_NODE: EnvNode = EnvNode {
-    parent: NO_ENV,
-    up: [NO_ENV; 3],
-    val: DUMMY,
-    vals: [DUMMY; 3],
+    mask: 0,
+    a: 0,
+    b: NO_ENV,
     len: 0,
-    lsub: None,
+    lsub: 0,
+    tag: EnvTag::Nil,
+    cut: 0,
 };
 
-pub(crate) const FAR: u64 = FAR_VARS;
+#[inline(always)]
+fn lsub_code(lsub: Option<LsubId>) -> u32 {
+    lsub.map_or(0, |l| l.0 + 1)
+}
 
-#[derive(Debug, Clone, Copy)]
-pub enum Ctx {
+#[derive(Clone, Copy)]
+pub(crate) enum EnvView {
     Nil,
-    Cons { ty: V, parent: C },
+    Cons {
+        v: V,
+        parent: E,
+    },
+    Framed {
+        mask: u64,
+        start: usize,
+        cut: u32,
+        rest: Option<E>,
+    },
+}
+
+pub(crate) type SpineProjs = smallvec::SmallVec<[(usize, NameId, u16); 2]>;
+
+pub(crate) const FAR: u64 = FAR_VARS;
+pub(crate) const NEAR: u32 = NEAR_VARS as u32;
+
+#[derive(Clone, Copy)]
+struct CtxNode {
+    ty: V,
+    parent: C,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -307,13 +376,15 @@ pub enum Spine {
 
 pub(crate) struct Vals {
     nodes: Vec<VNode>,
-    keys: Vec<u64>,
     table: PtrMap<(u64, u64, u64), V>,
-    apps: PtrMap<(V, V), V>,
+    apps: PtrMap<u64, u32>,
+    memoized: Vec<V>,
     envs: Vec<EnvNode>,
-    env_table: PtrMap<(E, V), E>,
+    env_slots: Vec<V>,
+    env_table: PtrMap<u64, E>,
+    frames: PtrMap<u64, E>,
     nils: PtrMap<LsubId, E>,
-    ctxs: Vec<Ctx>,
+    ctxs: Vec<CtxNode>,
     lsubs: Vec<LevelSub>,
 }
 
@@ -341,11 +412,13 @@ impl Vals {
     pub(crate) fn new() -> Self {
         let mut vals = Vals {
             nodes: Vec::new(),
-            keys: Vec::new(),
             table: Reset::with_cap(SESSION),
             apps: Reset::with_cap(SESSION),
+            memoized: Vec::new(),
             envs: Vec::new(),
+            env_slots: Vec::new(),
             env_table: Reset::with_cap(SESSION),
+            frames: Reset::with_cap(SESSION),
             nils: Reset::with_cap(SMALL),
             ctxs: Vec::new(),
             lsubs: Vec::new(),
@@ -356,33 +429,47 @@ impl Vals {
 
     pub(crate) fn clear(&mut self) {
         self.nodes.clear();
-        self.keys.clear();
         self.table.reset_shrink();
         self.apps.reset_shrink();
+        self.memoized.clear();
         self.envs.clear();
+        self.env_slots.clear();
         self.env_table.reset_shrink();
+        self.frames.reset_shrink();
         self.nils.reset();
         self.ctxs.clear();
         self.lsubs.clear();
         self.nodes.push(BLANK);
-        self.keys.push(0);
         self.envs.push(NIL_ENV_NODE);
-        self.ctxs.push(Ctx::Nil);
+        self.ctxs.push(CtxNode {
+            ty: DUMMY,
+            parent: EMPTY_CTX,
+        });
     }
 
     pub(crate) fn clear_memos(&mut self) {
-        for n in &mut self.nodes {
+        for v in self.memoized.drain(..) {
+            let n = at_mut(&mut self.nodes, v.index());
             n.step = 0;
             n.whnf = 0;
             n.ty = 0;
         }
     }
 
+    #[inline(always)]
+    fn memo_node(&mut self, v: V) -> &mut VNode {
+        let n = at_mut(&mut self.nodes, v.index());
+        if n.step | n.whnf | n.ty == 0 {
+            self.memoized.push(v);
+        }
+        at_mut(&mut self.nodes, v.index())
+    }
+
     pub(crate) fn reset(&mut self, keep: usize) {
         let held = self.nodes.capacity() * size_of::<VNode>()
-            + self.keys.capacity() * size_of::<u64>()
             + self.envs.capacity() * size_of::<EnvNode>()
-            + self.ctxs.capacity() * size_of::<Ctx>()
+            + self.env_slots.capacity() * size_of::<V>()
+            + self.ctxs.capacity() * size_of::<CtxNode>()
             + self.lsubs.capacity() * size_of::<LevelSub>();
         if held > keep {
             *self = Vals::new();
@@ -392,9 +479,10 @@ impl Vals {
     }
 
     pub(crate) fn used_bytes(&self) -> usize {
-        self.nodes.len() * (size_of::<VNode>() + size_of::<u64>())
+        self.nodes.len() * size_of::<VNode>()
             + self.envs.len() * size_of::<EnvNode>()
-            + self.ctxs.len() * size_of::<Ctx>()
+            + self.env_slots.len() * size_of::<V>()
+            + self.ctxs.len() * size_of::<CtxNode>()
             + self.lsubs.len() * size_of::<LevelSub>()
     }
 
@@ -406,7 +494,13 @@ impl Vals {
     #[inline(always)]
     pub(crate) fn val(&self, v: V) -> Value {
         let n = self.node(v);
-        match n.t {
+        let head = |vals: &Self| {
+            let h = spine_head(v, n);
+            let hn = vals.node(h);
+            (h, hn.a, hn.b)
+        };
+        let rigid = |head: RigidHead| Value::Rigid { head, spine: v };
+        match n.kind {
             VT::Sort => Value::Sort {
                 level: LevelId::from_raw(n.a),
             },
@@ -434,51 +528,105 @@ impl Vals {
                     loose: n.loose,
                 },
             },
-            VT::Dummy => unreachable!("the blank value is never read"),
-            _ => {
-                let h = self.node(n.h);
-                let name = NameId::from_raw(h.a);
-                let levels = LevelsId::from_raw(h.b);
-                let head = match h.t {
-                    VT::BVar => RigidHead::BVar(h.a, VId(h.b)),
-                    VT::Axiom => RigidHead::Axiom(name, levels),
-                    VT::Ctor => RigidHead::Ctor(name, levels),
-                    VT::Recursor => RigidHead::Recursor(name, levels),
-                    VT::QuotConst => RigidHead::QuotConst(name, levels),
-                    VT::Inductive => RigidHead::Inductive(name, levels),
-                    VT::Unfold => {
-                        return Value::Unfold {
-                            head: UnfoldHead { name, levels },
-                            spine: v,
-                            head_value: n.h,
-                        };
-                    }
-                    _ => unreachable!("a spine head is a rigid or unfold head"),
-                };
-                Value::Rigid { head, spine: v }
+            VT::BVar => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::BVar(a, VId(b)))
             }
+            VT::Axiom => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::Axiom(NameId::from_raw(a), LevelsId::from_raw(b)))
+            }
+            VT::Ctor => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::Ctor(NameId::from_raw(a), LevelsId::from_raw(b)))
+            }
+            VT::Recursor => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::Recursor(
+                    NameId::from_raw(a),
+                    LevelsId::from_raw(b),
+                ))
+            }
+            VT::QuotConst => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::QuotConst(
+                    NameId::from_raw(a),
+                    LevelsId::from_raw(b),
+                ))
+            }
+            VT::Inductive => {
+                let (_, a, b) = head(self);
+                rigid(RigidHead::Inductive(
+                    NameId::from_raw(a),
+                    LevelsId::from_raw(b),
+                ))
+            }
+            VT::Unfold => {
+                let (h, a, b) = head(self);
+                Value::Unfold {
+                    head: UnfoldHead {
+                        name: NameId::from_raw(a),
+                        levels: LevelsId::from_raw(b),
+                    },
+                    spine: v,
+                    head_value: h,
+                }
+            }
+            VT::Dummy => unreachable!("the reserved value node is never read"),
         }
     }
 
     #[inline(always)]
     pub(crate) fn spine(&self, s: S) -> Spine {
         let n = self.node(s);
-        match n.t {
-            VT::App => Spine::Snoc {
+        if n.flags & IS_APP != 0 {
+            Spine::Snoc {
                 prev: VId(n.a),
                 elim: Elim::App(VId(n.b)),
-            },
-            VT::Proj => Spine::Snoc {
+            }
+        } else if n.flags & IS_PROJ != 0 {
+            Spine::Snoc {
                 prev: VId(n.a),
-                elim: Elim::Proj(NameId::from_raw(n.c), n.b as u16),
-            },
-            _ => Spine::Empty,
+                elim: Elim::Proj(NameId::from_raw(n.b), n.loose),
+            }
+        } else {
+            Spine::Empty
         }
     }
 
     #[inline(always)]
+    pub(crate) fn kind(&self, v: V) -> VT {
+        self.node(v).kind
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_inert_rigid(&self, v: V) -> bool {
+        let n = self.node(v);
+        matches!(n.kind, VT::BVar | VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive)
+            && n.flags & HEAD_ACTIVE == 0
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_neutral(&self, v: V) -> bool {
+        matches!(
+            self.node(v).kind,
+            VT::BVar | VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive | VT::Unfold
+        )
+    }
+
+    #[inline(always)]
+    pub(crate) fn head_name(&self, v: V) -> NameId {
+        let n = self.node(v);
+        debug_assert!(matches!(
+            n.kind,
+            VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive | VT::Unfold
+        ));
+        NameId::from_raw(self.node(spine_head(v, n)).a)
+    }
+
+    #[inline(always)]
     pub(crate) fn is_head(&self, s: S) -> bool {
-        self.node(s).n == 0
+        !is_spine(self.node(s))
     }
 
     #[inline(always)]
@@ -505,7 +653,7 @@ impl Vals {
 
     #[inline(always)]
     pub(crate) fn set_whnf(&mut self, v: V, r: V) {
-        at_mut(&mut self.nodes, v.index()).whnf = r.0;
+        self.memo_node(v).whnf = r.0;
     }
 
     #[inline(always)]
@@ -516,12 +664,12 @@ impl Vals {
 
     #[inline(always)]
     pub(crate) fn set_ty(&mut self, v: V, r: V) {
-        at_mut(&mut self.nodes, v.index()).ty = r.0;
+        self.memo_node(v).ty = r.0;
     }
 
     #[inline(always)]
     pub(crate) fn set_step(&mut self, v: V, r: V) {
-        let n = at_mut(&mut self.nodes, v.index());
+        let n = self.memo_node(v);
         if n.step == 0 {
             n.step = r.0;
         }
@@ -529,12 +677,12 @@ impl Vals {
 
     #[inline]
     pub fn digest(&mut self, v: V) -> u64 {
-        let k = *at(&self.keys, v.index());
+        let k = self.node(v).key;
         if k & KEY_PRESENT != 0 {
             return k;
         }
         let k = seal(self.compute_key(v));
-        *at_mut(&mut self.keys, v.index()) = k;
+        at_mut(&mut self.nodes, v.index()).key = k;
         k
     }
 
@@ -545,20 +693,30 @@ impl Vals {
 
     fn compute_key(&mut self, v: V) -> (u64, bool) {
         let n = *self.node(v);
-        match n.t {
-            VT::App => {
-                let (f, a) = (VId(n.a), VId(n.b));
-                (kmix(self.digest(f), self.digest(a)), self.is_closed(f) && self.is_closed(a))
-            }
-            VT::Proj => {
-                let s = VId(n.a);
-                (
-                    kmix(kmix(self.digest(s), u64::from(n.c)), u64::from(n.b) | (1 << 60)),
-                    self.is_closed(s),
-                )
-            }
+        if n.flags & IS_APP != 0 {
+            let (f, a) = (VId(n.a), VId(n.b));
+            return (
+                kmix(self.digest(f), self.digest(a)),
+                self.is_closed(f) && self.is_closed(a),
+            );
+        }
+        if n.flags & IS_PROJ != 0 {
+            let s = VId(n.a);
+            return (
+                kmix(
+                    kmix(self.digest(s), u64::from(n.b)),
+                    u64::from(n.loose) | (1 << 60),
+                ),
+                self.is_closed(s),
+            );
+        }
+        match n.kind {
             VT::Unfold => (
-                const_key(KeyTag::Unfold, NameId::from_raw(n.a), LevelsId::from_raw(n.b)),
+                const_key(
+                    KeyTag::Unfold,
+                    NameId::from_raw(n.a),
+                    LevelsId::from_raw(n.b),
+                ),
                 true,
             ),
             _ => match self.val(v) {
@@ -635,45 +793,103 @@ impl Vals {
 
     #[inline]
     pub fn env_lsub(&self, e: E) -> Option<LsubId> {
-        at(&self.envs, e.index()).lsub
+        at(&self.envs, e.index()).lsub.checked_sub(1).map(LsubId)
     }
 
     #[inline]
     pub(crate) fn env_cons(&self, e: E) -> Option<(V, E)> {
         let n = at(&self.envs, e.index());
-        (n.parent != NO_ENV).then_some((n.val, EnvId(n.parent)))
+        (n.tag == EnvTag::Cons).then_some((VId(n.a), EnvId(n.b)))
+    }
+
+    #[inline]
+    pub(crate) fn env_view(&self, e: E) -> EnvView {
+        let n = at(&self.envs, e.index());
+        match n.tag {
+            EnvTag::Nil => EnvView::Nil,
+            EnvTag::Cons => EnvView::Cons {
+                v: VId(n.a),
+                parent: EnvId(n.b),
+            },
+            EnvTag::Framed => EnvView::Framed {
+                mask: n.mask,
+                start: n.a as usize,
+                cut: u32::from(n.cut),
+                rest: (n.b != NO_ENV).then_some(EnvId(n.b)),
+            },
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn env_slot(&self, i: usize) -> V {
+        *at(&self.env_slots, i)
+    }
+
+    #[inline(always)]
+    pub(crate) fn env_slots_end(&self) -> usize {
+        self.env_slots.len()
+    }
+
+    #[inline(always)]
+    pub(crate) fn push_env_slot(&mut self, v: V) {
+        self.env_slots.push(v);
+    }
+
+    #[inline(always)]
+    pub(crate) fn drop_env_slots(&mut self, from: usize) {
+        self.env_slots.truncate(from);
+    }
+
+    #[inline(always)]
+    pub(crate) fn env_is_pruned(&self, e: E, mask: u64) -> bool {
+        let n = at(&self.envs, e.index());
+        n.mask & mask == n.mask
     }
 
     #[inline]
     pub fn env_lookup(&self, env: E, idx: u16) -> Option<V> {
-        let mut i = u32::from(idx);
-        let mut cur = env;
+        let mut idx = u32::from(idx);
+        let mut n = at(&self.envs, env.index());
         loop {
-            let n = at(&self.envs, cur.index());
-            if i >= n.len {
-                return None;
-            }
-            let v = match i {
-                0 => n.val,
-                1..=3 => n.vals[i as usize - 1],
-                _ => {
-                    cur = EnvId(n.up[2]);
-                    i -= 4;
-                    continue;
+            match n.tag {
+                EnvTag::Cons => {
+                    if idx == 0 {
+                        return Some(VId(n.a));
+                    }
+                    idx -= 1;
                 }
-            };
-            return (v != DUMMY).then_some(v);
+                EnvTag::Framed => {
+                    let cut = u32::from(n.cut);
+                    if idx < cut {
+                        if (n.mask >> idx) & 1 == 0 {
+                            return None;
+                        }
+                        let below = n.mask & ((1u64 << idx) - 1);
+                        return Some(*at(
+                            &self.env_slots,
+                            n.a as usize + below.count_ones() as usize,
+                        ));
+                    }
+                    if n.b == NO_ENV {
+                        return None;
+                    }
+                    idx -= cut;
+                }
+                EnvTag::Nil => return None,
+            }
+            n = at(&self.envs, n.b as usize);
         }
     }
 
     pub fn ctx_lookup(&self, ctx: C, mut idx: u16) -> Option<V> {
         let mut cur = ctx;
-        while let Ctx::Cons { ty, parent } = *at(&self.ctxs, cur.index()) {
+        while cur != EMPTY_CTX {
+            let n = at(&self.ctxs, cur.index());
             if idx == 0 {
-                return Some(ty);
+                return Some(n.ty);
             }
             idx -= 1;
-            cur = parent;
+            cur = n.parent;
         }
         None
     }
@@ -685,7 +901,7 @@ impl Vals {
 
     #[inline]
     pub fn spine_len(&self, s: S) -> u32 {
-        self.node(s).n
+        spine_len(self.node(s))
     }
 
     #[inline]
@@ -706,17 +922,30 @@ impl Vals {
     }
 
     pub(crate) fn spine_apps(&self, s: S) -> Option<SpineArgs> {
-        if self.has_proj(s) {
-            return None;
-        }
-        let mut out = SpineArgs::with_capacity(self.spine_len(s) as usize);
+        (!self.has_proj(s)).then(|| self.spine_split(s).0)
+    }
+
+    pub(crate) fn spine_split(&self, s: S) -> (SpineArgs, SpineProjs) {
+        let len = self.spine_len(s) as usize;
+        let mut args: SpineArgs = smallvec::smallvec![DUMMY; len];
+        let mut projs = SpineProjs::new();
+        let mut i = len;
         let mut cur = self.node(s);
-        while cur.t == VT::App {
-            out.push(VId(cur.b));
+        while is_spine(cur) {
+            if cur.flags & IS_APP != 0 {
+                i -= 1;
+                args[i] = VId(cur.b);
+            } else {
+                projs.push((i, NameId::from_raw(cur.b), cur.loose));
+            }
             cur = self.node(VId(cur.a));
         }
-        out.reverse();
-        Some(out)
+        args.drain(..i);
+        for p in &mut projs {
+            p.0 -= i;
+        }
+        projs.reverse();
+        (args, projs)
     }
 
     pub(crate) fn as_inductive_app(&self, v: V) -> Option<(NameId, LevelsId, SpineArgs)> {
@@ -740,18 +969,16 @@ impl Vals {
     }
 
     fn intern(&mut self, node: VNode) -> V {
-        let key = (
-            node.t as u64 | (u64::from(node.a) << 8),
-            u64::from(node.b) | (u64::from(node.c) << 32),
-            u64::from(node.d) | (u64::from(node.loose) << 32),
-        );
+        let w0 = node.kind as u64
+            | (u64::from(node.flags) << 8)
+            | (u64::from(node.loose) << 16)
+            | (u64::from(node.a) << 32);
+        let w1 = u64::from(node.b) | (u64::from(node.c) << 32);
+        let key = (w0, w1, u64::from(node.d));
         match self.table.find(key) {
             Ok(v) => v,
             Err(slot) => {
                 let id = self.push_node(node);
-                if node.n == 0 && node.t != VT::Lam && node.t != VT::Pi {
-                    at_mut(&mut self.nodes, id.index()).h = id;
-                }
                 self.table.insert_at(slot, key, id);
                 id
             }
@@ -761,12 +988,11 @@ impl Vals {
     fn push_node(&mut self, node: VNode) -> V {
         let id = VId(next_id(self.nodes.len()));
         self.nodes.push(node);
-        self.keys.push(0);
         id
     }
 
     pub(crate) fn mk_head(&mut self, head: RigidHead, active: bool) -> V {
-        let (t, a, b, flags) = match head {
+        let (kind, a, b, flags) = match head {
             RigidHead::BVar(lvl, ty) => (VT::BVar, lvl, ty.0, HAS_BVAR),
             RigidHead::Axiom(n, ls) => (VT::Axiom, n.raw(), ls.raw(), 0),
             RigidHead::Ctor(n, ls) => (VT::Ctor, n.raw(), ls.raw(), 0),
@@ -776,7 +1002,7 @@ impl Vals {
         };
         let flags = if active { flags | HEAD_ACTIVE } else { flags };
         self.intern(VNode {
-            t,
+            kind,
             a,
             b,
             flags,
@@ -786,7 +1012,7 @@ impl Vals {
 
     pub(crate) fn mk_unfold_head(&mut self, name: NameId, levels: LevelsId, active: bool) -> V {
         self.intern(VNode {
-            t: VT::Unfold,
+            kind: VT::Unfold,
             a: name.raw(),
             b: levels.raw(),
             flags: if active { HEAD_ACTIVE } else { 0 },
@@ -796,14 +1022,14 @@ impl Vals {
 
     #[inline(always)]
     pub(crate) fn find_inert_app(&self, f: V, a: V) -> Option<V> {
-        let v = self.apps.find((f, a)).ok()?;
-        (self.node(v).flags & HEAD_ACTIVE == 0).then_some(v)
+        let v = self.apps.find(pair(f.0, a.0)).ok()?;
+        (v & APP_ACTIVE == 0).then_some(VId(v))
     }
 
     #[inline(always)]
     pub(crate) fn app(&mut self, f: V, a: V) -> V {
-        match self.apps.find((f, a)) {
-            Ok(v) => v,
+        match self.apps.find(pair(f.0, a.0)) {
+            Ok(v) => VId(v & !APP_ACTIVE),
             Err(slot) => self.app_new(slot, f, a),
         }
     }
@@ -811,30 +1037,35 @@ impl Vals {
     #[inline(never)]
     fn app_new(&mut self, slot: (usize, u8), f: V, a: V) -> V {
         let fl = *self.node(f);
-        let flags = (fl.flags | (self.node(a).flags & HAS_BVAR)) & (SPINE_PROJ | HAS_BVAR | HEAD_ACTIVE);
+        let flags = (fl.flags | (self.node(a).flags & HAS_BVAR)) & SPINE_FLAGS;
         let id = self.push_node(VNode {
-            t: VT::App,
-            flags,
+            kind: fl.kind,
+            flags: flags | IS_APP,
             a: f.0,
             b: a.0,
-            h: fl.h,
-            n: fl.n + 1,
+            c: spine_head(f, &fl).0,
+            d: spine_len(&fl) + 1,
             ..BLANK
         });
-        self.apps.insert_at(slot, (f, a), id);
+        let active = if flags & HEAD_ACTIVE != 0 {
+            APP_ACTIVE
+        } else {
+            0
+        };
+        self.apps.insert_at(slot, pair(f.0, a.0), id.0 | active);
         id
     }
 
     pub(crate) fn proj(&mut self, s: S, ty_name: NameId, idx: u16) -> V {
         let sl = *self.node(s);
         let id = self.intern(VNode {
-            t: VT::Proj,
-            flags: SPINE_PROJ | (sl.flags & (HAS_BVAR | HEAD_ACTIVE)),
+            kind: sl.kind,
+            flags: SPINE_PROJ | IS_PROJ | (sl.flags & SPINE_FLAGS),
+            loose: idx,
             a: s.0,
-            b: u32::from(idx),
-            c: ty_name.raw(),
-            h: sl.h,
-            n: sl.n + 1,
+            b: ty_name.raw(),
+            c: spine_head(s, &sl).0,
+            d: spine_len(&sl) + 1,
             ..BLANK
         });
         id
@@ -850,7 +1081,7 @@ impl Vals {
     pub(crate) fn mk_lam(&mut self, binder_type: ExprId, body: Closure) -> V {
         debug_assert!(body.ctx.is_none());
         self.intern(VNode {
-            t: VT::Lam,
+            kind: VT::Lam,
             loose: body.loose,
             a: body.env.0,
             b: binder_type.raw(),
@@ -861,7 +1092,7 @@ impl Vals {
 
     pub(crate) fn mk_pi(&mut self, domain: V, body: Closure) -> V {
         self.intern(VNode {
-            t: VT::Pi,
+            kind: VT::Pi,
             loose: body.loose,
             a: domain.0,
             b: body.env.0,
@@ -873,7 +1104,7 @@ impl Vals {
 
     pub(crate) fn mk_sort(&mut self, level: LevelId) -> V {
         self.intern(VNode {
-            t: VT::Sort,
+            kind: VT::Sort,
             a: level.raw(),
             ..BLANK
         })
@@ -881,7 +1112,7 @@ impl Vals {
 
     pub(crate) fn mk_natlit(&mut self, lit: BigId) -> V {
         self.intern(VNode {
-            t: VT::NatLit,
+            kind: VT::NatLit,
             a: lit.raw(),
             ..BLANK
         })
@@ -889,7 +1120,7 @@ impl Vals {
 
     pub(crate) fn mk_strlit(&mut self, lit: StrId) -> V {
         self.intern(VNode {
-            t: VT::StrLit,
+            kind: VT::StrLit,
             a: lit.raw(),
             ..BLANK
         })
@@ -909,7 +1140,10 @@ impl Vals {
             Ok(e) => e,
             Err(slot) => {
                 let id = EnvId(next_id(self.envs.len()));
-                self.envs.push(EnvNode { lsub, ..NIL_ENV_NODE });
+                self.envs.push(EnvNode {
+                    lsub: lsub_code(lsub),
+                    ..NIL_ENV_NODE
+                });
                 self.nils.insert_at(slot, l, id);
                 id
             }
@@ -918,7 +1152,7 @@ impl Vals {
 
     #[inline(always)]
     pub(crate) fn env_push(&mut self, parent: E, v: V) -> E {
-        match self.env_table.find((parent, v)) {
+        match self.env_table.find(pair(parent.0, v.0)) {
             Ok(e) => e,
             Err(slot) => self.env_new(slot, parent, v),
         }
@@ -929,20 +1163,72 @@ impl Vals {
         let p = *at(&self.envs, parent.index());
         let id = EnvId(next_id(self.envs.len()));
         self.envs.push(EnvNode {
-            parent: parent.0,
-            up: [p.parent, p.up[0], p.up[1]],
-            val: v,
-            vals: [p.val, p.vals[0], p.vals[1]],
+            mask: (p.mask << 1) | (p.mask & FAR) | 1,
+            a: v.0,
+            b: parent.0,
             len: p.len + 1,
             lsub: p.lsub,
+            tag: EnvTag::Cons,
+            ..NIL_ENV_NODE
         });
-        self.env_table.insert_at(slot, (parent, v), id);
+        self.env_table.insert_at(slot, pair(parent.0, v.0), id);
         id
+    }
+
+    pub(crate) fn intern_frame(
+        &mut self,
+        slots_hash: u64,
+        near: u64,
+        start: usize,
+        cut: u32,
+        rest: Option<E>,
+        lsub: Option<LsubId>,
+    ) -> (E, bool) {
+        let mut hash = near.wrapping_mul(GOLDEN).wrapping_add(slots_hash);
+        let (mask, cut, len) = match rest {
+            Some(r) => {
+                hash = (hash.rotate_left(29) ^ u64::from(r.0))
+                    .wrapping_mul(GOLDEN)
+                    .wrapping_add(u64::from(cut));
+                (near | FAR, cut, cut + self.env_len(r))
+            }
+            None => (near, NEAR, 64 - near.leading_zeros()),
+        };
+        let count = (near & !FAR).count_ones() as usize;
+        let found = self.frames.find(hash);
+        if let Ok(e) = found {
+            let n = at(&self.envs, e.index());
+            let old = n.a as usize;
+            if n.tag == EnvTag::Framed
+                && n.mask == mask
+                && u32::from(n.cut) == cut
+                && n.b == rest.map_or(NO_ENV, |r| r.0)
+                && n.lsub == lsub_code(lsub)
+                && self.env_slots[old..old + count] == self.env_slots[start..start + count]
+            {
+                return (e, false);
+            }
+        }
+        let id = EnvId(next_id(self.envs.len()));
+        self.envs.push(EnvNode {
+            mask,
+            a: u32::try_from(start).expect("env slot store exceeds u32"),
+            b: rest.map_or(NO_ENV, |r| r.0),
+            len,
+            lsub: lsub_code(lsub),
+            tag: EnvTag::Framed,
+            cut: u8::try_from(cut).expect("a frame spans at most 63 positions"),
+            ..NIL_ENV_NODE
+        });
+        if let Err(vacant) = found {
+            self.frames.insert_at(vacant, hash, id);
+        }
+        (id, true)
     }
 
     pub(crate) fn ctx_extend(&mut self, parent: C, ty: V) -> C {
         let id = CtxId(next_id(self.ctxs.len()));
-        self.ctxs.push(Ctx::Cons { ty, parent });
+        self.ctxs.push(CtxNode { ty, parent });
         id
     }
 }
@@ -962,5 +1248,23 @@ impl Iterator for ElimsRev<'_> {
         };
         self.cur = prev;
         Some(elim)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::term::id::ZERO;
+
+    #[test]
+    fn extending_sparse_environment_keeps_far_dependencies() {
+        let mut vals = Vals::new();
+        let v = vals.mk_sort(ZERO);
+        vals.push_env_slot(v);
+        let (env, _) = vals.intern_frame(u64::from(v.raw()), 1 << 62, 0, NEAR, None, None);
+        let env = vals.env_push(env, v);
+        let env = vals.env_push(env, v);
+        assert!(vals.env_is_pruned(env, FAR | 3));
+        assert!(!vals.env_is_pruned(env, 3));
     }
 }

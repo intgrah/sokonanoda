@@ -337,7 +337,7 @@ mod tests {
     use std::io;
 
     fn test_ctx<A>(f: impl FnOnce(&mut TcCtx) -> A) -> Result<A, Box<dyn Error>> {
-        let export_file = parse_export_file(io::empty(), Config::default())?;
+        let export_file = parse_export_file(io::empty(), Config::default(), 0)?;
         Ok(export_file.with_ctx(|ctx, _cache, _arena| f(ctx)))
     }
 

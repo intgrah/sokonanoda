@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn hash_eq_of_eq() -> Result<(), Box<dyn Error>> {
-        let export = parse_export_file(io::empty(), Config::default())?;
+        let export = parse_export_file(io::empty(), Config::default(), 0)?;
         let mut rng = rand::rng();
         export.with_ctx(|ctx, _cache, _arena| {
             for size in 0..100 {

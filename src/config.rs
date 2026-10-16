@@ -5,8 +5,9 @@ use crate::checker::context::ExportFile;
 use crate::frontend::parser::{parse_export_file, parse_export_mapped};
 use crate::outcome::CheckError;
 use std::error::Error;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
 const STANDARD_AXIOMS: [&str; 3] = ["propext", "Classical.choice", "Quot.sound"];
@@ -114,7 +115,10 @@ impl Config {
     fn parse(self) -> Result<ExportFile, Box<dyn Error>> {
         let use_stdin = self.use_stdin || self.export_file_path.as_deref() == Some(Path::new("-"));
         if use_stdin {
-            parse_export_file(io::stdin(), self)
+            let input_len = File::from(io::stdin().as_fd().try_clone_to_owned()?)
+                .metadata()
+                .map_or(0, |m| usize::try_from(m.len()).unwrap_or(0));
+            parse_export_file(io::stdin(), self, input_len)
         } else if let Some(pathbuf) = self.export_file_path.as_ref() {
             match OpenOptions::new().read(true).truncate(false).open(pathbuf) {
                 Ok(file) => {

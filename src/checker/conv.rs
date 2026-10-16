@@ -4,7 +4,7 @@
 use crate::checker::env::{Declar, ReducibilityHint};
 use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{E, EMPTY_ENV, Elim, ElimView, RigidHead, S, Spine, UnfoldHead, V, Value};
+use crate::checker::value::{E, EMPTY_ENV, Elim, ElimView, EnvView, RigidHead, S, Spine, UnfoldHead, V, VT, Value};
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 fn rigid_head_eq(hx: RigidHead, hy: RigidHead) -> bool {
     match (hx, hy) {
@@ -14,17 +14,8 @@ fn rigid_head_eq(hx: RigidHead, hy: RigidHead) -> bool {
 }
 
 #[inline]
-fn is_cacheable(v: Value) -> bool {
-    matches!(
-        v,
-        Value::Pi { .. }
-            | Value::Lam { .. }
-            | Value::Unfold { .. }
-            | Value::Rigid {
-                head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
-                ..
-            }
-    )
+fn is_cacheable(kind: VT) -> bool {
+    matches!(kind, VT::Pi | VT::Lam | VT::Unfold | VT::Recursor | VT::QuotConst)
 }
 
 type ProbePairs = smallvec::SmallVec<[(V, V); 8]>;
@@ -70,9 +61,9 @@ impl<'t> TypeChecker<'_, 't> {
             if a == b {
                 return true;
             }
-            match (self.vals().env_cons(a), self.vals().env_cons(b)) {
-                (None, None) => return true,
-                (Some((va, pa)), Some((vb, pb))) => {
+            match (self.vals().env_view(a), self.vals().env_view(b)) {
+                (EnvView::Nil, EnvView::Nil) => return true,
+                (EnvView::Cons { v: va, parent: pa }, EnvView::Cons { v: vb, parent: pb }) => {
                     if va != vb {
                         return false;
                     }
@@ -94,8 +85,9 @@ impl<'t> TypeChecker<'_, 't> {
 
     #[inline]
     fn unify_general<const RIGID: bool>(&mut self, depth: u32, x: V, y: V) -> bool {
-        let cacheable = is_cacheable(self.val(x)) || is_cacheable(self.val(y));
-        let neg_eligible = !matches!(self.val(x), Value::Lam { .. }) && !matches!(self.val(y), Value::Lam { .. });
+        let (kx, ky) = (self.vals().kind(x), self.vals().kind(y));
+        let cacheable = is_cacheable(kx) || is_cacheable(ky);
+        let neg_eligible = kx != VT::Lam && ky != VT::Lam;
         if cacheable {
             let (xa, ya) = (x, y);
             let cache_key = if xa < ya { (xa, ya) } else { (ya, xa) };
@@ -413,17 +405,12 @@ impl<'t> TypeChecker<'_, 't> {
                 if let Some(v1) = self.iota_value(depth, t) {
                     return self.unify::<true>(depth, v1, t2);
                 }
-                if matches!(
-                    self.val(t2),
-                    Value::Rigid {
-                        head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
-                        ..
-                    }
-                ) && let Some(v2) = self.iota_value(depth, t2)
+                if matches!(self.vals().kind(t2), VT::Recursor | VT::QuotConst)
+                    && let Some(v2) = self.iota_value(depth, t2)
                 {
                     return self.unify::<true>(depth, t, v2);
                 }
-                if matches!(self.val(t2), Value::Unfold { .. }) {
+                if self.vals().kind(t2) == VT::Unfold {
                     let v2 = self.unfold_value_demand(depth, t2);
                     if v2 != t2 {
                         return self.unify::<true>(depth, t, v2);
@@ -444,7 +431,7 @@ impl<'t> TypeChecker<'_, 't> {
                 if let Some(v2) = self.iota_value(depth, t2) {
                     return self.unify::<true>(depth, t, v2);
                 }
-                if matches!(self.val(t), Value::Unfold { .. }) {
+                if self.vals().kind(t) == VT::Unfold {
                     let v1 = self.unfold_value_demand(depth, t);
                     if v1 != t {
                         return self.unify::<true>(depth, v1, t2);
@@ -706,14 +693,14 @@ impl<'t> TypeChecker<'_, 't> {
             return true;
         }
         match (self.val(x), self.val(y)) {
-            (Value::Lam { body, .. }, _) if !matches!(self.val(y), Value::Lam { .. }) => {
+            (Value::Lam { body, .. }, _) if self.vals().kind(y) != VT::Lam => {
                 let domain = self.lam_domain(depth, x);
                 let fresh = self.mk_bvar_hc(depth, domain);
                 let lhs = self.apply_closure(depth + 1, body, fresh, None);
                 let rhs = self.apply(depth + 1, y, fresh);
                 return self.unify::<true>(depth + 1, lhs, rhs);
             }
-            (_, Value::Lam { body, .. }) if !matches!(self.val(x), Value::Lam { .. }) => {
+            (_, Value::Lam { body, .. }) if self.vals().kind(x) != VT::Lam => {
                 let domain = self.lam_domain(depth, y);
                 let fresh = self.mk_bvar_hc(depth, domain);
                 let lhs = self.apply(depth + 1, x, fresh);
@@ -758,13 +745,13 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     fn try_proof_irrel_at(&mut self, depth: u32, x: V, y: V) -> bool {
-        if matches!(self.val(x), Value::Lam { .. }) || matches!(self.val(y), Value::Lam { .. }) {
+        if self.vals().kind(x) == VT::Lam || self.vals().kind(y) == VT::Lam {
             return self.try_proof_irrel_lam(depth, x, y);
         }
-        if !matches!(self.val(x), Value::Rigid { .. } | Value::Unfold { .. }) {
+        if !self.vals().is_neutral(x) {
             return false;
         }
-        if !matches!(self.val(y), Value::Rigid { .. } | Value::Unfold { .. }) {
+        if !self.vals().is_neutral(y) {
             return false;
         }
         if self.statically_not_proof(x) || self.statically_not_proof(y) {
@@ -849,7 +836,7 @@ impl<'t> TypeChecker<'_, 't> {
         if !self.may_be_nat(x) && !self.may_be_nat(y) {
             return None;
         }
-        if matches!(self.val(x), Value::NatLit { .. }) && matches!(self.val(y), Value::NatLit { .. }) {
+        if self.vals().kind(x) == VT::NatLit && self.vals().kind(y) == VT::NatLit {
             return None;
         }
         let xz = self.value_is_nat_zero(x);
@@ -866,12 +853,10 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     fn may_be_nat(&self, v: V) -> bool {
-        match self.val(v) {
-            Value::NatLit { .. } => true,
-            Value::Rigid {
-                head: RigidHead::Ctor(name, _),
-                ..
-            } => {
+        match self.vals().kind(v) {
+            VT::NatLit => true,
+            VT::Ctor => {
+                let name = self.vals().head_name(v);
                 let nc = &self.ctx.export_file.name_cache;
                 Some(name) == nc.nat_zero || Some(name) == nc.nat_succ
             }

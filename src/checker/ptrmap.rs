@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::checker::cache::Reset;
-use crate::checker::value::{C, E, KeyTag, LsubId, V};
+use crate::checker::value::{E, LsubId, V};
 use crate::term::hash::GOLDEN;
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) trait Word: Copy {
     fn word(self) -> u64;
 }
 
-macro_rules! id_words {
+pub(crate) trait Half: Copy {
+    fn half(self) -> u32;
+}
+
+macro_rules! id_keys {
     ($($t:ty),*) => {
         $(
             impl Word for $t {
@@ -21,30 +26,30 @@ macro_rules! id_words {
                     u64::from(self.raw())
                 }
             }
+
+            impl Half for $t {
+                #[inline(always)]
+                fn half(self) -> u32 {
+                    self.raw()
+                }
+            }
         )*
     };
 }
 
-id_words!(ExprId, NameId, LevelId, LevelsId, V, E, C, LsubId);
+id_keys!(ExprId, NameId, LevelId, LevelsId, V, E, LsubId);
 
-impl Word for Option<C> {
+impl Half for u16 {
     #[inline(always)]
-    fn word(self) -> u64 {
-        self.map_or(0, |c| u64::from(c.raw()) + 1)
+    fn half(self) -> u32 {
+        u32::from(self)
     }
 }
 
-impl Word for u16 {
+impl Half for u32 {
     #[inline(always)]
-    fn word(self) -> u64 {
-        u64::from(self)
-    }
-}
-
-impl Word for u32 {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        u64::from(self)
+    fn half(self) -> u32 {
+        self
     }
 }
 
@@ -55,11 +60,9 @@ impl Word for u64 {
     }
 }
 
-impl Word for KeyTag {
-    #[inline(always)]
-    fn word(self) -> u64 {
-        self.u64()
-    }
+#[inline(always)]
+fn pack<A: Half, B: Half>(a: A, b: B) -> u64 {
+    (u64::from(a.half()) << 32) | u64::from(b.half())
 }
 
 pub(crate) trait Key: Copy {
@@ -82,11 +85,23 @@ impl<A: Word> Key for A {
     }
 }
 
-impl<A: Word, B: Word> Key for (A, B) {
+impl<A: Half, B: Half> Key for (A, B) {
+    type Words = [u64; 1];
+    #[inline(always)]
+    fn words(self) -> [u64; 1] {
+        [pack(self.0, self.1)]
+    }
+    #[inline(always)]
+    fn hash(w: &[u64; 1]) -> u64 {
+        w[0].wrapping_mul(GOLDEN)
+    }
+}
+
+impl<A: Half, B: Half, C: Half> Key for (A, B, C) {
     type Words = [u64; 2];
     #[inline(always)]
     fn words(self) -> [u64; 2] {
-        [self.0.word(), self.1.word()]
+        [pack(self.0, self.1), u64::from(self.2.half())]
     }
     #[inline(always)]
     fn hash(w: &[u64; 2]) -> u64 {
@@ -94,30 +109,16 @@ impl<A: Word, B: Word> Key for (A, B) {
     }
 }
 
-impl<A: Word, B: Word, C: Word> Key for (A, B, C) {
+impl Key for (u64, u64, u64) {
     type Words = [u64; 3];
     #[inline(always)]
     fn words(self) -> [u64; 3] {
-        [self.0.word(), self.1.word(), self.2.word()]
+        [self.0, self.1, self.2]
     }
     #[inline(always)]
     fn hash(w: &[u64; 3]) -> u64 {
         let h = w[0].wrapping_mul(GOLDEN) ^ w[1].wrapping_mul(SECOND);
         (h.rotate_left(29) ^ w[2]).wrapping_mul(GOLDEN)
-    }
-}
-
-impl<A: Word, B: Word, C: Word, D: Word> Key for (A, B, C, D) {
-    type Words = [u64; 4];
-    #[inline(always)]
-    fn words(self) -> [u64; 4] {
-        [self.0.word(), self.1.word(), self.2.word(), self.3.word()]
-    }
-    #[inline(always)]
-    fn hash(w: &[u64; 4]) -> u64 {
-        let h = w[0].wrapping_mul(GOLDEN) ^ w[1].wrapping_mul(SECOND);
-        let g = w[2].wrapping_mul(GOLDEN) ^ w[3].wrapping_mul(SECOND);
-        (h.rotate_left(29) ^ g).wrapping_mul(GOLDEN)
     }
 }
 
@@ -131,12 +132,20 @@ pub(crate) struct PtrMap<K: Key, V: Copy> {
     tags: Vec<u8>,
     slots: Vec<MaybeUninit<Slot<K::Words, V>>>,
     shift: u32,
+    epoch: u32,
     len: usize,
+    limit: usize,
     floor: usize,
     _key: PhantomData<K>,
 }
 
+fn grow_limit(n: usize) -> usize {
+    n / 8 * 6
+}
+
 const VACANT: u8 = 0;
+
+static NEXT_EPOCH: AtomicU32 = AtomicU32::new(0);
 
 impl<K: Key, V: Copy> PtrMap<K, V> {
     fn fresh(n: usize) -> Vec<MaybeUninit<Slot<K::Words, V>>> {
@@ -151,7 +160,7 @@ impl<K: Key, V: Copy> PtrMap<K, V> {
     fn place(&self, w: &K::Words) -> (usize, u8) {
         let h = K::hash(w);
         let index = usize::try_from(h >> self.shift).expect("usize is 64 bits wide");
-        let tag = ((h >> (self.shift - 7)) & 0x7f) as u8 | 0x80;
+        let tag = h.to_le_bytes()[0] | 0x80;
         (index, tag)
     }
 
@@ -187,13 +196,27 @@ impl<K: Key, V: Copy> PtrMap<K, V> {
             val: v,
         });
         self.len += 1;
-        if self.len * 8 > self.tags.len() * 6 {
+        if self.len > self.limit {
             self.grow();
         }
     }
 
     pub(crate) fn clear(&mut self) {
         Reset::reset(self);
+    }
+
+    #[inline(always)]
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    #[inline(always)]
+    pub(crate) fn insert_found(&mut self, at: (usize, u8), epoch: u32, k: K, v: V) {
+        if epoch == self.epoch && self.tags[at.0] == VACANT {
+            self.insert_at(at, k, v);
+        } else {
+            self.insert(k, v);
+        }
     }
 
     #[inline]
@@ -223,6 +246,8 @@ impl<K: Key, V: Copy> PtrMap<K, V> {
         let old_tags = std::mem::replace(&mut self.tags, vec![VACANT; n]);
         let old_slots = std::mem::replace(&mut self.slots, Self::fresh(n));
         self.shift -= 1;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.limit = grow_limit(n);
         let mask = n - 1;
         for (t, s) in old_tags.into_iter().zip(old_slots) {
             if t == VACANT {
@@ -242,6 +267,8 @@ impl<K: Key, V: Copy> PtrMap<K, V> {
         self.tags = vec![VACANT; n];
         self.slots = Self::fresh(n);
         self.shift = 64 - n.trailing_zeros();
+        self.epoch = self.epoch.wrapping_add(1);
+        self.limit = grow_limit(n);
         self.len = 0;
     }
 }
@@ -253,7 +280,9 @@ impl<K: Key, V: Copy> Reset for PtrMap<K, V> {
             tags: vec![VACANT; n],
             slots: Self::fresh(n),
             shift: 64 - n.trailing_zeros(),
+            epoch: NEXT_EPOCH.fetch_add(1 << 16, Ordering::Relaxed),
             len: 0,
+            limit: grow_limit(n),
             floor: n,
             _key: PhantomData,
         }
@@ -263,6 +292,7 @@ impl<K: Key, V: Copy> Reset for PtrMap<K, V> {
         if self.len != 0 {
             self.tags.fill(VACANT);
             self.len = 0;
+            self.epoch = self.epoch.wrapping_add(1);
         }
     }
 
@@ -305,5 +335,22 @@ impl<K: Key> Reset for PtrSet<K> {
 
     fn reset_shrink(&mut self) {
         self.0.reset_shrink();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_collisions_preserve_distinct_keys() {
+        let mut map: PtrMap<(u32, u32), u32> = Reset::with_cap(1);
+        for i in 0..256 {
+            map.insert((i, 7), i);
+        }
+        for i in 0..256 {
+            assert_eq!(map.get(&(i, 7)), Some(i));
+        }
+        assert_eq!(map.get(&(256, 7)), None);
     }
 }

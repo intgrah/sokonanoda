@@ -73,12 +73,12 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
                         | RigidHead::Ctor(n, _)
                         | RigidHead::Recursor(n, _)
                         | RigidHead::QuotConst(n, _)
-                        | RigidHead::Inductive(n, _) => name_is_ind_occ(self.ctx, n, haystack),
+                        | RigidHead::Inductive(n, _) => name_is_ind_occ(&self.ctx, n, haystack),
                     };
                     head_hit || self.spine_has_ind_occ(depth, spine, haystack)
                 }
                 Value::Unfold { head, spine, .. } => {
-                    name_is_ind_occ(self.ctx, head.name, haystack)
+                    name_is_ind_occ(&self.ctx, head.name, haystack)
                         || self.spine_has_ind_occ(depth, spine, haystack)
                 }
                 Value::Lam { body, .. } => {
@@ -107,7 +107,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         clo: &Closure,
         haystack: &[ExprId],
     ) -> bool {
-        if has_ind_occ(self.ctx, clo.body, haystack) {
+        if has_ind_occ(&self.ctx, clo.body, haystack) {
             return true;
         }
         let nlb = clo.loose;

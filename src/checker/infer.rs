@@ -4,7 +4,7 @@
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
 use crate::checker::value::{
-    C, Closure, DUMMY, E, EMPTY_CTX, EMPTY_ENV, RigidHead, V, Vals, Value,
+    C, Closure, E, EMPTY_CTX, EMPTY_ENV, RigidHead, V, Vals, Value,
 };
 use crate::outcome::{ensure, reject};
 use crate::term::expr::{Expr, ExprNode, SPINE};
@@ -39,8 +39,7 @@ fn has_deep_bvar_prefix(vals: &Vals, mut env: E) -> bool {
     for _ in 0..64 {
         match vals.env_cons(env) {
             Some((v, parent))
-                if v != DUMMY
-                    && matches!(
+                if matches!(
                         vals.val(v),
                         Value::Rigid {
                             head: RigidHead::BVar(..),
@@ -194,10 +193,10 @@ impl<'t> TypeChecker<'_, 't> {
                 }
                 let binder_loose = self.ctx.loose(binder_type);
                 let reuse = body_ty.is_some_and(|bt| {
-                    atomic_type(self.vals(), bt)
-                        && self.vals_mut().is_closed(bt)
-                        && bt == dom
+                    bt == dom
                         && binder_loose == 0
+                        && atomic_type(self.vals(), bt)
+                        && self.vals_mut().is_closed(bt)
                         && has_deep_bvar_prefix(self.vals(), env)
                 });
                 let clo = match reuse.then_some(()) {
@@ -287,7 +286,7 @@ impl<'t> TypeChecker<'_, 't> {
             {
                 if flag == Check {
                     let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
-                    let domain = self.eval_arg(depth, tenv, binder_type);
+                    let domain = self.eval(depth, tenv, binder_type);
                     ensure!(
                         self.conv_types_at(depth, domain, arg_ty),
                         "app arg def_eq failed"
@@ -296,7 +295,7 @@ impl<'t> TypeChecker<'_, 't> {
                 let av = if self.ctx.ignores_binder(body) {
                     self.placeholder()
                 } else {
-                    self.eval_arg(depth, env, arg)
+                    self.eval(depth, env, arg)
                 };
                 telescope = Some((self.env_extend(tenv, av), body));
                 continue;
@@ -320,7 +319,7 @@ impl<'t> TypeChecker<'_, 't> {
                 if self.ctx.ignores_binder(body.body) {
                     fty = self.apply_closure(depth, body, domain, Some(domain));
                 } else {
-                    let av = self.eval_arg(depth, env, arg);
+                    let av = self.eval(depth, env, arg);
                     fty = self.apply_closure(depth, body, av, Some(domain));
                 }
             } else if body.loose == 0 {
@@ -329,7 +328,7 @@ impl<'t> TypeChecker<'_, 't> {
                 let av = if self.ctx.ignores_binder(body.body) {
                     self.placeholder()
                 } else {
-                    self.eval_arg(depth, env, arg)
+                    self.eval(depth, env, arg)
                 };
                 telescope = Some((self.env_extend(body.env, av), body.body));
             }

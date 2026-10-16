@@ -3,11 +3,9 @@
 
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{C, Closure, DUMMY, E, EMPTY_ENV, Elim, FAR, LsubId, RigidHead, S, V};
-use crate::outcome::reject;
+use crate::checker::value::{C, Closure, E, EMPTY_ENV, Elim, EnvView, FAR, LsubId, NEAR, RigidHead, S, V};
 use crate::term::hash::GOLDEN;
 use crate::term::id::{BigId, ExprId, LevelId, LevelsId, NameId, StrId};
-use std::mem::MaybeUninit;
 
 impl TypeChecker<'_, '_> {
     #[inline]
@@ -69,84 +67,122 @@ impl TypeChecker<'_, '_> {
         self.eval(0, base, ex)
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn prune_env(&mut self, e: E, mask: u64) -> E {
         if mask == 0 {
             let lsub = self.vals().env_lsub(e);
             return self.lsub_base(lsub);
         }
-        let len = self.vals().env_len(e);
-        if mask & FAR == 0 && len != 0 && len < 64 && mask == (1u64 << len) - 1 {
+        if self.vals().env_is_pruned(e, mask) {
             return e;
         }
         let slot = prune_slot(e, mask);
-        let ent = self.tc_cache.prune_dm[slot];
-        if ent.0 == Some(e)
-            && ent.1 == mask
-            && let Some(hit) = ent.2
-        {
+        let (m, k, hit) = self.tc_cache.prune_dm[slot];
+        if k == e && m == mask {
             return hit;
         }
         self.prune_env_cold(e, mask, slot)
     }
 
+    fn frame_without(&mut self, dropped: u32, mask: u64, start: usize, cut: u32, rest: Option<E>, lsub: Option<LsubId>) -> Option<E> {
+        let near = (mask & !FAR) >> dropped;
+        if near == 0 && rest.is_none() {
+            return None;
+        }
+        let skipped = (mask & ((1u64 << dropped) - 1)).count_ones() as usize;
+        let kept = start + skipped;
+        let vals = self.vals();
+        let slots_hash = (kept..kept + near.count_ones() as usize).fold(lsub.map_or(0, |l| u64::from(l.raw())), |h, i| {
+            h.wrapping_mul(GOLDEN).wrapping_add(u64::from(vals.env_slot(i).raw()))
+        });
+        Some(self.tc_cache.vals.intern_frame(slots_hash, near, kept, cut - dropped, rest, lsub).0)
+    }
+
     #[inline(never)]
-    fn prune_env_cold(&mut self, e: E, mask: u64, first: usize) -> E {
-        if mask == u64::MAX {
-            return e;
-        }
-        let wide = mask & FAR != 0;
+    fn prune_env_cold(&mut self, e: E, mask: u64, slot: usize) -> E {
         let lsub = self.vals().env_lsub(e);
-        let mut path: [MaybeUninit<(E, usize)>; 64] = [const { MaybeUninit::uninit() }; 64];
-        let mut depth = 0;
+        let start = self.vals().env_slots_end();
+        let mut slots_hash = lsub.map_or(0, |l| u64::from(l.raw()));
+        let mut out_mask = 0u64;
+        let keep_far = mask & FAR != 0;
+        let mut rem = mask & !FAR;
+        let mut consumed = 0u32;
         let mut cur = e;
-        let mut m = mask;
-        let mut slot = first;
-        let mut base;
+        let mut rest = None;
         loop {
-            let Some((_, parent)) = self.vals().env_cons(cur) else {
-                reject!("loose bound variable during evaluation")
-            };
-            path[depth].write((cur, slot));
-            depth += 1;
-            cur = parent;
-            m = (m >> 1) | (m & FAR);
-            if m == 0 {
-                base = self.lsub_base(lsub);
+            if consumed == NEAR {
+                if keep_far {
+                    rest = match self.vals().env_view(cur) {
+                        EnvView::Nil | EnvView::Framed { mask: 0, .. } => None,
+                        _ => Some(cur),
+                    };
+                }
                 break;
             }
-            if m == u64::MAX {
-                base = cur;
+            if rem == 0 && !keep_far {
                 break;
             }
-            slot = prune_slot(cur, m);
-            let ent = self.tc_cache.prune_dm[slot];
-            if ent.0 == Some(cur)
-                && ent.1 == m
-                && let Some(hit) = ent.2
-            {
-                base = hit;
-                break;
+            match self.vals().env_view(cur) {
+                EnvView::Nil => break,
+                EnvView::Framed {
+                    mask: fmask,
+                    start: fstart,
+                    cut,
+                    rest: frest,
+                } => {
+                    let taken = cut.min(NEAR - consumed);
+                    let m2 = rem & fmask & ((1u64 << taken) - 1);
+                    out_mask |= m2 << consumed;
+                    let mut sel = m2;
+                    while sel != 0 {
+                        let below = fmask & ((1u64 << sel.trailing_zeros()) - 1);
+                        sel &= sel - 1;
+                        let sv = self.vals().env_slot(fstart + below.count_ones() as usize);
+                        self.vals_mut().push_env_slot(sv);
+                        slots_hash = slots_hash.wrapping_mul(GOLDEN).wrapping_add(u64::from(sv.raw()));
+                    }
+                    if taken < cut {
+                        if keep_far {
+                            rest = self.frame_without(taken, fmask, fstart, cut, frest, lsub);
+                        }
+                        break;
+                    }
+                    let Some(next) = frest else {
+                        break;
+                    };
+                    rem >>= taken;
+                    consumed += taken;
+                    cur = next;
+                }
+                EnvView::Cons { v, parent } => {
+                    if rem & 1 != 0 {
+                        self.vals_mut().push_env_slot(v);
+                        slots_hash = slots_hash.wrapping_mul(GOLDEN).wrapping_add(u64::from(v.raw()));
+                        out_mask |= 1u64 << consumed;
+                        rem >>= 1;
+                        consumed += 1;
+                        cur = parent;
+                        continue;
+                    }
+                    let unrequested = rem.trailing_zeros().min(NEAR - consumed);
+                    let mut hops = 0;
+                    while hops < unrequested
+                        && let Some((_, parent)) = self.vals().env_cons(cur)
+                    {
+                        cur = parent;
+                        hops += 1;
+                    }
+                    rem >>= hops;
+                    consumed += hops;
+                }
             }
         }
-        for i in (0..depth).rev() {
-            let (env, s) = unsafe { path[i].assume_init() };
-            let mi = if wide {
-                (mask >> i) | !(u64::MAX >> (i + 1))
-            } else {
-                mask >> i
-            };
-            let v = if mi & 1 != 0 {
-                self.vals()
-                    .env_cons(env)
-                    .map_or(DUMMY, |(v, _)| v)
-            } else {
-                DUMMY
-            };
-            base = self.env_extend(base, v);
-            self.tc_cache.prune_dm[s] = (Some(env), mi, Some(base));
+        let (r, fresh) = self.tc_cache.vals.intern_frame(slots_hash, out_mask, start, NEAR, rest, lsub);
+        if !fresh {
+            self.vals_mut().drop_env_slots(start);
         }
-        base
+        self.tc_cache.prune_dm[slot] = (mask, e, r);
+        r
     }
 
     #[inline(always)]

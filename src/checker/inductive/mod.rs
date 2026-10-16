@@ -127,7 +127,7 @@ impl ExportFile {
             let recursors =
                 ctx.with_tc_and_env_ext(&ctor_extension, env_limit, cache, |tc| {
                     tc.mk_elim_level(&mut st);
-                    st.init_k_target(tc.ctx);
+                    st.init_k_target(&tc.ctx);
                     tc.check_declared_metadata(&st, &unmodified_tys_ctors);
                     tc.mk_majors(&mut st);
                     tc.mk_motives(&mut st);

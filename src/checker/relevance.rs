@@ -123,7 +123,7 @@ impl<'t> TypeChecker<'_, 't> {
             "wrong number of universe levels for {}",
             self.ctx.display(name)
         );
-        let s = template.at(self.ctx, levels);
+        let s = template.at(&self.ctx, levels);
         self.ctx.sig_cache.insert((name, levels), s);
         s
     }

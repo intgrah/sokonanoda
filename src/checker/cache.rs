@@ -7,8 +7,8 @@ use crate::checker::value::{E, LsubId, V, Vals};
 use crate::term::hash::GOLDEN;
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 
-pub(crate) const PRUNE_DM_LEN: usize = 1 << 10;
-pub(crate) const PRUNE_DM_SHIFT: u32 = 64 - 10;
+pub(crate) const PRUNE_DM_LEN: usize = 1 << 14;
+pub(crate) const PRUNE_DM_SHIFT: u32 = 64 - 14;
 
 pub(crate) const SMALL: usize = 14;
 pub(crate) const SESSION_SMALL: usize = 1 << 12;
@@ -86,11 +86,12 @@ macro_rules! caches {
 macro_rules! memo {
     ($map:expr, $key:expr, $compute:expr) => {{
         let key = $key;
-        match $map.get(&key) {
-            Some(v) => v,
-            None => {
+        match $map.find(key) {
+            Ok(v) => v,
+            Err(at) => {
+                let epoch = $map.epoch();
                 let v = $compute;
-                $map.insert(key, v);
+                $map.insert_found(at, epoch, key, v);
                 v
             }
         }
@@ -124,7 +125,7 @@ caches! {
         #[cap(SESSION)] type_cache: PtrMap<(E, ExprId), CachedType>,
         #[cap(SESSION)] quote_cache: PtrMap<(V, u32), ExprId>,
         #[cap(SMALL)] level_subs: PtrMap<(LevelsId, LevelsId), LsubId>,
-        #[cap(0)] prune_dm: Box<[(Option<E>, u64, Option<E>); PRUNE_DM_LEN]>,
+        #[cap(0)] prune_dm: Box<[(u64, E, E); PRUNE_DM_LEN]>,
         #[cap(SMALL)] struct_eta_cache: PtrMap<(V, NameId), Option<V>>,
         #[cap(SMALL)] ind_occ_cache: PtrMap<V, bool>,
         #[memos(Vals::new())] vals: Vals,
