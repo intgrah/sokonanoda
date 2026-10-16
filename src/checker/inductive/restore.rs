@@ -8,7 +8,7 @@ use crate::checker::env::{
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::Value;
 use crate::outcome::{ensure, ensure_eq, reject};
-use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
+use crate::term::expr::Expr::{Const, Pi};
 use crate::term::hash::FxIndexMap;
 use crate::term::id::{ExprId, LevelsId, NameId};
 use std::sync::Arc;
@@ -212,103 +212,18 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             specialized_rec_names_to_unspecialized_rec_names,
         ) {
             Some(out) => out,
-            None => match self.ctx.ex(e) {
-                Var { .. } | Sort { .. } | Const { .. } | StringLit { .. } | NatLit { .. } => e,
-                Lambda { binder_type, body } => {
-                    let binder_type = self.restore_replace(
-                        binder_type,
+            None => {
+                let expr = self.ctx.ex(e).map_children(|child, binders| {
+                    self.restore_replace(
+                        child,
                         num_params,
-                        depth,
+                        depth + binders,
                         st,
                         specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    let body = self.restore_replace(
-                        body,
-                        num_params,
-                        depth + 1,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    self.ctx.mk_lambda(binder_type, body)
-                }
-                Pi { binder_type, body } => {
-                    let binder_type = self.restore_replace(
-                        binder_type,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    let body = self.restore_replace(
-                        body,
-                        num_params,
-                        depth + 1,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    self.ctx.mk_pi(binder_type, body)
-                }
-                Let {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                } => {
-                    let binder_type = self.restore_replace(
-                        binder_type,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    let val = self.restore_replace(
-                        val,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    let body = self.restore_replace(
-                        body,
-                        num_params,
-                        depth + 1,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    self.ctx.mk_let(binder_type, val, body, nondep)
-                }
-                Proj {
-                    ty_name,
-                    idx,
-                    structure,
-                } => {
-                    let structure = self.restore_replace(
-                        structure,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    self.ctx.mk_proj(ty_name, idx, structure)
-                }
-                App { fun, arg } => {
-                    let fun = self.restore_replace(
-                        fun,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    let arg = self.restore_replace(
-                        arg,
-                        num_params,
-                        depth,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    );
-                    self.ctx.mk_app(fun, arg)
-                }
-            },
+                    )
+                });
+                self.ctx.rebuild_expr(e, expr)
+            }
         }
     }
     /// Traverse an expression replacing one of three appearances:\

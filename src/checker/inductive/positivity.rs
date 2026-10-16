@@ -7,7 +7,7 @@ use crate::checker::context::TcCtx;
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{Closure, EMPTY_ENV, ElimView, RigidHead, S, V, Value};
 use crate::outcome::{ensure, reject};
-use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
+use crate::term::expr::Expr::{App, Const, Var};
 use crate::term::id::{ExprId, LevelsId, NameId};
 
 impl<'x, 't: 'x> TypeChecker<'x, 't> {
@@ -294,85 +294,20 @@ fn check_uniform_inductive_occurrences_at(
         return;
     }
 
-    match ctx.ex(e) {
-        Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => {}
-        App { fun, arg } => {
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                fun,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset,
-            );
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                arg,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset,
-            );
-        }
-        Pi { binder_type, body } | Lambda { binder_type, body } => {
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                binder_type,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset,
-            );
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                body,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset.checked_add(1).expect("binder depth exceeds u16"),
-            );
-        }
-        Let {
-            binder_type,
-            val,
-            body,
-            ..
-        } => {
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                binder_type,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset,
-            );
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                val,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset,
-            );
-            check_uniform_inductive_occurrences_at(
-                ctx,
-                body,
-                ind_names,
-                expected_levels,
-                num_params,
-                offset.checked_add(1).expect("binder depth exceeds u16"),
-            );
-        }
-        Proj { structure, .. } => check_uniform_inductive_occurrences_at(
+    ctx.ex(e).for_each_child(|child, binders| {
+        check_uniform_inductive_occurrences_at(
             ctx,
-            structure,
+            child,
             ind_names,
             expected_levels,
             num_params,
-            offset,
-        ),
-    }
+            offset
+                .checked_add(binders)
+                .expect("binder depth exceeds u16"),
+        );
+    });
 }
+
 pub(super) fn has_ind_occ(ctx: &TcCtx<'_>, e: ExprId, haystack: &[ExprId]) -> bool {
     let f = |nptr| {
         haystack.iter().copied().any(|c| match ctx.ex(c) {

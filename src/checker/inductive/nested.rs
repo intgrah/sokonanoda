@@ -5,7 +5,7 @@ use super::{CtorHeader, IndTyHeader, InductiveCheckState};
 use crate::checker::env::{ConstructorData, InductiveData};
 use crate::checker::tc::TypeChecker;
 use crate::outcome::{ensure, ensure_eq};
-use crate::term::expr::Expr::{App, Const, Lambda, Let, NatLit, Pi, Proj, Sort, StringLit, Var};
+use crate::term::expr::Expr::App;
 use crate::term::id::ExprId;
 
 impl<'x, 't: 'x> TypeChecker<'x, 't> {
@@ -253,43 +253,10 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         if let Some(eprime) = self.replace_if_nested(e, st, offset) {
             eprime
         } else {
-            match self.ctx.ex(e) {
-                Var { .. } | Sort { .. } | Const { .. } | NatLit { .. } | StringLit { .. } => e,
-                Pi { binder_type, body } => {
-                    let binder_type = self.replace_all_nested(binder_type, st, offset);
-                    let body = self.replace_all_nested(body, st, offset + 1);
-                    self.ctx.mk_pi(binder_type, body)
-                }
-                Lambda { binder_type, body } => {
-                    let binder_type = self.replace_all_nested(binder_type, st, offset);
-                    let body = self.replace_all_nested(body, st, offset + 1);
-                    self.ctx.mk_lambda(binder_type, body)
-                }
-                Let {
-                    binder_type,
-                    val,
-                    body,
-                    nondep,
-                } => {
-                    let binder_type = self.replace_all_nested(binder_type, st, offset);
-                    let val = self.replace_all_nested(val, st, offset);
-                    let body = self.replace_all_nested(body, st, offset + 1);
-                    self.ctx.mk_let(binder_type, val, body, nondep)
-                }
-                App { fun, arg } => {
-                    let fun = self.replace_all_nested(fun, st, offset);
-                    let arg = self.replace_all_nested(arg, st, offset);
-                    self.ctx.mk_app(fun, arg)
-                }
-                Proj {
-                    ty_name,
-                    idx,
-                    structure,
-                } => {
-                    let structure = self.replace_all_nested(structure, st, offset);
-                    self.ctx.mk_proj(ty_name, idx, structure)
-                }
-            }
+            let expr = self.ctx.ex(e).map_children(|child, binders| {
+                self.replace_all_nested(child, st, offset + binders)
+            });
+            self.ctx.rebuild_expr(e, expr)
         }
     }
 }
