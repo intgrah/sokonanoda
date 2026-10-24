@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use super::cache::{Reset, SESSION, SMALL, TcCache};
+use super::cache::{ExprCache, Reset, SESSION, SMALL, TcCache};
 use super::ptrmap::{PtrMap, PtrSet};
 use crate::checker::env::{DeclarMap, Env, EnvLimit};
 use crate::checker::relevance::{Sig, SigTemplate};
@@ -16,30 +16,6 @@ use crate::term::name::{Name, NameDisplay, NameSource, NatRed};
 use bumpalo::Bump;
 use num_bigint::BigUint;
 use rustc_hash::FxBuildHasher;
-
-pub struct ExprCache {
-    pub(crate) inst: PtrMap<(ExprId, u16), ExprId>,
-    pub(crate) subst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
-    pub(crate) dsubst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
-    pub(crate) simplify: PtrMap<LevelId, LevelId>,
-}
-
-impl ExprCache {
-    fn new() -> Self {
-        ExprCache {
-            inst: Reset::with_cap(SMALL),
-            subst: Reset::with_cap(SMALL),
-            dsubst: Reset::with_cap(SMALL),
-            simplify: Reset::with_cap(SMALL),
-        }
-    }
-
-    pub(crate) fn clear_session(&mut self) {
-        self.inst.reset_shrink();
-        self.subst.reset_shrink();
-        self.dsubst.reset_shrink();
-    }
-}
 
 pub struct ExportFile {
     pub(crate) terms: Terms,

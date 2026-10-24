@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Jeremy Chen
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::checker::cache::TcCache;
+use crate::checker::cache::{SESSION_BUDGET, TcCache};
 use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{Declar, DeclarInfo, Env, EnvLimit};
 use crate::checker::value::{V, Vals, Value};
@@ -9,9 +9,6 @@ use crate::outcome::{CheckError, ensure};
 use crate::report::Reporter;
 use crate::term::id::ExprId;
 use std::panic::{self, AssertUnwindSafe};
-
-const SESSION_BUDGET: usize = 9 * 1024 * 1024;
-const ARENA_KEEP: usize = 4 * SESSION_BUDGET;
 
 const CHUNK_SIZE: usize = 64;
 
@@ -170,7 +167,6 @@ impl ExportFile {
                     if matches!(d, Declar::Inductive(..)) {
                         report.check(d, || self.check_inductive_declar(tctx, &mut ind_cache, d));
                         ind_cache.clear_session();
-                        ind_cache.vals.reset(ARENA_KEEP);
                         continue;
                     }
                     report.check(d, || self.check_declar_with(tctx, &mut cache, d));
@@ -181,7 +177,6 @@ impl ExportFile {
                 }
             };
             cache.clear_session();
-            cache.vals.reset(ARENA_KEEP);
             tctx.expr_cache.clear_session();
             if finished {
                 return;

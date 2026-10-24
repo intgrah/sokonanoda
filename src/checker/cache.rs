@@ -10,6 +10,9 @@ use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 pub(crate) const PRUNE_DM_LEN: usize = 1 << 14;
 pub(crate) const PRUNE_DM_SHIFT: u32 = 64 - 14;
 
+pub(crate) const SESSION_BUDGET: usize = 9 * 1024 * 1024;
+const ARENA_KEEP: usize = 4 * SESSION_BUDGET;
+
 pub(crate) const SMALL: usize = 14;
 pub(crate) const SESSION_SMALL: usize = 1 << 12;
 pub(crate) const SESSION: usize = 1 << 13;
@@ -33,22 +36,15 @@ impl<T: Copy + Default, const N: usize> Reset for Box<[T; N]> {
 }
 
 macro_rules! caches {
-    (@init cap($cap:expr)) => { $crate::checker::cache::Reset::with_cap($cap) };
-    (@init keep($init:expr)) => { $init };
-    (@init session($init:expr)) => { $init };
-    (@init memos($init:expr)) => { $init };
-    (@init_small cap($cap:expr)) => { $crate::checker::cache::Reset::with_cap(SMALL) };
-    (@init_small keep($init:expr)) => { $init };
-    (@init_small session($init:expr)) => { $init };
-    (@init_small memos($init:expr)) => { $init };
-    (@clear $f:expr, cap($cap:expr)) => { $crate::checker::cache::Reset::reset(&mut $f) };
-    (@clear $f:expr, keep($init:expr)) => {};
-    (@clear $f:expr, session($init:expr)) => {};
+    (@init $small:ident, cap($cap:expr)) => { Reset::with_cap(if $small { SMALL } else { $cap }) };
+    (@init $small:ident, $kind:ident($init:expr)) => { $init };
+    (@clear $f:expr, cap($cap:expr)) => { Reset::reset(&mut $f) };
     (@clear $f:expr, memos($init:expr)) => { $f.clear_memos() };
-    (@clear_session $f:expr, cap($cap:expr)) => { $crate::checker::cache::Reset::reset_shrink(&mut $f) };
+    (@clear $f:expr, $kind:ident($init:expr)) => {};
+    (@clear_session $f:expr, cap($cap:expr)) => { Reset::reset_shrink(&mut $f) };
     (@clear_session $f:expr, keep($init:expr)) => {};
     (@clear_session $f:expr, session($init:expr)) => { $f = $init };
-    (@clear_session $f:expr, memos($init:expr)) => {};
+    (@clear_session $f:expr, memos($init:expr)) => { $f.reset(ARENA_KEEP) };
     (
         $vis:vis struct $name:ident {
             $(#[$kind:ident($arg:expr)] $f:ident: $t:ty,)*
@@ -60,14 +56,16 @@ macro_rules! caches {
 
         impl $name {
             pub(crate) fn new() -> Self {
-                Self {
-                    $($f: caches!(@init $kind($arg)),)*
-                }
+                Self::with_size::<false>()
             }
 
             pub(crate) fn new_small() -> Self {
+                Self::with_size::<true>()
+            }
+
+            fn with_size<const SMALL_MAPS: bool>() -> Self {
                 Self {
-                    $($f: caches!(@init_small $kind($arg)),)*
+                    $($f: caches!(@init SMALL_MAPS, $kind($arg)),)*
                 }
             }
 
@@ -129,6 +127,30 @@ caches! {
         #[cap(SMALL)] struct_eta_cache: PtrMap<(V, NameId), Option<V>>,
         #[cap(SMALL)] ind_occ_cache: PtrMap<V, bool>,
         #[memos(Vals::new())] vals: Vals,
+    }
+}
+
+pub struct ExprCache {
+    pub(crate) inst: PtrMap<(ExprId, u16), ExprId>,
+    pub(crate) subst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
+    pub(crate) dsubst: PtrMap<(ExprId, LevelsId, LevelsId), ExprId>,
+    pub(crate) simplify: PtrMap<LevelId, LevelId>,
+}
+
+impl ExprCache {
+    pub(crate) fn new() -> Self {
+        ExprCache {
+            inst: Reset::with_cap(SMALL),
+            subst: Reset::with_cap(SMALL),
+            dsubst: Reset::with_cap(SMALL),
+            simplify: Reset::with_cap(SMALL),
+        }
+    }
+
+    pub(crate) fn clear_session(&mut self) {
+        self.inst.reset_shrink();
+        self.subst.reset_shrink();
+        self.dsubst.reset_shrink();
     }
 }
 
