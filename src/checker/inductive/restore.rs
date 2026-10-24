@@ -424,6 +424,13 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
                 ensure_eq!(original.rec_rules.len(), restored.rec_rules.len());
                 for (&old, &new) in original.rec_rules.iter().zip(restored.rec_rules.iter()) {
                     ensure_eq!(old.ctor_name, new.ctor_name);
+                    ensure_eq!(
+                        old.ctor_telescope_size_wo_params,
+                        new.ctor_telescope_size_wo_params,
+                        "recursor rule field count mismatch for {:?} in {:?}",
+                        self.ctx.debug_print(old.ctor_name),
+                        self.ctx.debug_print(resolved_rec_name),
+                    );
                     self.assert_imported_expr_matches(old.val, new.val);
                 }
             }

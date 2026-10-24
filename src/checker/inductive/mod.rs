@@ -17,6 +17,9 @@ mod recursor;
 mod restore;
 mod spec;
 
+#[cfg(test)]
+mod tests;
+
 use positivity::check_uniform_inductive_occurrences;
 
 impl ExportFile {
