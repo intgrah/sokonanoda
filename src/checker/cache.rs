@@ -50,23 +50,22 @@ macro_rules! caches {
     (@clear_session $f:expr, session($init:expr)) => { $f = $init };
     (@clear_session $f:expr, memos($init:expr)) => {};
     (
-        $vis:vis struct $name:ident<$($lt:lifetime),*> {
+        $vis:vis struct $name:ident {
             $(#[$kind:ident($arg:expr)] $f:ident: $t:ty,)*
         }
-        fn new($($param:ident: $pty:ty),*);
     ) => {
-        $vis struct $name<$($lt),*> {
+        $vis struct $name {
             $(pub(crate) $f: $t,)*
         }
 
-        impl<$($lt),*> $name<$($lt),*> {
-            pub(crate) fn new($($param: $pty),*) -> Self {
+        impl $name {
+            pub(crate) fn new() -> Self {
                 Self {
                     $($f: caches!(@init $kind($arg)),)*
                 }
             }
 
-            pub(crate) fn new_small($($param: $pty),*) -> Self {
+            pub(crate) fn new_small() -> Self {
                 Self {
                     $($f: caches!(@init_small $kind($arg)),)*
                 }
@@ -100,7 +99,7 @@ macro_rules! memo {
 pub(crate) use memo;
 
 caches! {
-    pub struct TcCache<> {
+    pub struct TcCache {
         #[cap(SESSION_SMALL)] unfold_const_cache: PtrMap<(NameId, LevelsId), V>,
         #[cap(SMALL)] rec_rule_cache: PtrMap<(ExprId, LevelsId), V>,
         #[cap(SESSION_SMALL)] const_head_type_cache: PtrMap<(NameId, LevelsId), V>,
@@ -130,7 +129,6 @@ caches! {
         #[cap(SMALL)] ind_occ_cache: PtrMap<V, bool>,
         #[memos(Vals::new())] vals: Vals,
     }
-    fn new();
 }
 
 pub(crate) const WHNF_ADMIT_LEN: usize = 1 << 22;
