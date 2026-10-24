@@ -101,6 +101,7 @@ pub(crate) use memo;
 caches! {
     pub struct TcCache {
         #[cap(SESSION_SMALL)] unfold_const_cache: PtrMap<(NameId, LevelsId), V>,
+        #[cap(SMALL)] arithmetic_delta_cache: PtrMap<V, V>,
         #[cap(SMALL)] rec_rule_cache: PtrMap<(ExprId, LevelsId), V>,
         #[cap(SESSION_SMALL)] const_head_type_cache: PtrMap<(NameId, LevelsId), V>,
         #[cap(SESSION_SMALL)] const_head_value_cache: PtrMap<(NameId, LevelsId), V>,

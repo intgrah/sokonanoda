@@ -326,29 +326,29 @@ impl<'t> TypeChecker<'_, 't> {
                     let lh = self.unfold_hint(nx);
                     let rh = self.unfold_hint(ny);
                     if lh.is_lt(rh) {
-                        let v2 = self.unfold_value(depth, t2);
+                        let v2 = self.unfold_value_for_conv(depth, t2, t, false);
                         if v2 != t2 {
                             return self.unify::<true>(depth, t, v2);
                         }
-                        let v1 = self.unfold_value(depth, t);
+                        let v1 = self.unfold_value_for_conv(depth, t, t2, false);
                         if v1 != t {
                             return self.unify::<true>(depth, v1, t2);
                         }
-                        let f2 = self.unfold_value_demand(depth, t2);
+                        let f2 = self.unfold_value_for_conv(depth, t2, t, true);
                         if f2 == t2 {
                             return false;
                         }
                         self.unify::<true>(depth, t, f2)
                     } else if rh.is_lt(lh) {
-                        let v1 = self.unfold_value(depth, t);
+                        let v1 = self.unfold_value_for_conv(depth, t, t2, false);
                         if v1 != t {
                             return self.unify::<true>(depth, v1, t2);
                         }
-                        let v2 = self.unfold_value(depth, t2);
+                        let v2 = self.unfold_value_for_conv(depth, t2, t, false);
                         if v2 != t2 {
                             return self.unify::<true>(depth, t, v2);
                         }
-                        let f1 = self.unfold_value_demand(depth, t);
+                        let f1 = self.unfold_value_for_conv(depth, t, t2, true);
                         if f1 == t {
                             return false;
                         }
@@ -367,9 +367,9 @@ impl<'t> TypeChecker<'_, 't> {
                 if self.try_proof_irrel_at(depth, t, t2) {
                     return true;
                 }
-                let v1 = self.unfold_value(depth, t);
+                let v1 = self.unfold_value_for_conv(depth, t, t2, false);
                 if v1 == t {
-                    let f1 = self.unfold_value_demand(depth, t);
+                    let f1 = self.unfold_value_for_conv(depth, t, t2, true);
                     if f1 == t {
                         return false;
                     }
@@ -381,9 +381,9 @@ impl<'t> TypeChecker<'_, 't> {
                 if self.try_proof_irrel_at(depth, t, t2) {
                     return true;
                 }
-                let v2 = self.unfold_value(depth, t2);
+                let v2 = self.unfold_value_for_conv(depth, t2, t, false);
                 if v2 == t2 {
-                    let f2 = self.unfold_value_demand(depth, t2);
+                    let f2 = self.unfold_value_for_conv(depth, t2, t, true);
                     if f2 == t2 {
                         return false;
                     }
@@ -411,7 +411,7 @@ impl<'t> TypeChecker<'_, 't> {
                     return self.unify::<true>(depth, t, v2);
                 }
                 if self.vals().kind(t2) == VT::Unfold {
-                    let v2 = self.unfold_value_demand(depth, t2);
+                    let v2 = self.unfold_value_for_conv(depth, t2, t, true);
                     if v2 != t2 {
                         return self.unify::<true>(depth, t, v2);
                     }
@@ -432,7 +432,7 @@ impl<'t> TypeChecker<'_, 't> {
                     return self.unify::<true>(depth, t, v2);
                 }
                 if self.vals().kind(t) == VT::Unfold {
-                    let v1 = self.unfold_value_demand(depth, t);
+                    let v1 = self.unfold_value_for_conv(depth, t, t2, true);
                     if v1 != t {
                         return self.unify::<true>(depth, v1, t2);
                     }
@@ -530,11 +530,11 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     fn unfold_pair(&mut self, depth: u32, t: V, t2: V) -> bool {
-        let v1 = self.unfold_value(depth, t);
-        let v2 = self.unfold_value(depth, t2);
+        let v1 = self.unfold_value_for_conv(depth, t, t2, false);
+        let v2 = self.unfold_value_for_conv(depth, t2, t, false);
         if v1 == t && v2 == t2 {
-            let f1 = self.unfold_value_demand(depth, t);
-            let f2 = self.unfold_value_demand(depth, t2);
+            let f1 = self.unfold_value_for_conv(depth, t, t2, true);
+            let f2 = self.unfold_value_for_conv(depth, t2, t, true);
             if f1 == t && f2 == t2 {
                 return false;
             }

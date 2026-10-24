@@ -352,14 +352,27 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     pub(crate) fn unfold_value(&mut self, depth: u32, v: V) -> V {
-        self.unfold_value_go(depth, v, false)
+        self.unfold_value_go(depth, v, false, true)
     }
 
     pub(crate) fn unfold_value_demand(&mut self, depth: u32, v: V) -> V {
-        self.unfold_value_go(depth, v, self.tc_cache.probe_depth == 0)
+        self.unfold_value_go(depth, v, self.tc_cache.probe_depth == 0, true)
     }
 
-    fn unfold_value_go(&mut self, depth: u32, v: V, force: bool) -> V {
+    pub(crate) fn unfold_value_for_conv(&mut self, depth: u32, v: V, other: V, force: bool) -> V {
+        let native = !self.value_has_free_bvar(v) && !self.value_has_free_bvar(other);
+        if native {
+            if force {
+                self.unfold_value_demand(depth, v)
+            } else {
+                self.unfold_value(depth, v)
+            }
+        } else {
+            self.unfold_value_go(depth, v, force && self.tc_cache.probe_depth == 0, false)
+        }
+    }
+
+    fn unfold_value_go(&mut self, depth: u32, v: V, force: bool, native: bool) -> V {
         if let Value::Unfold {
             head,
             spine,
@@ -367,16 +380,21 @@ impl<'t> TypeChecker<'_, 't> {
         } = self.val(v)
         {
             let head_value_node = head_value;
-            if v != head_value
-                && let Some(f) = self.vals().step(v)
-            {
-                return f;
+            let arithmetic =
+                self.nat_extension && self.ctx.export_file.nat_red(head.name).is_some();
+            let symbolic = arithmetic && !native;
+            if v != head_value {
+                let cached = if symbolic {
+                    self.tc_cache.arithmetic_delta_cache.get(&v)
+                } else {
+                    self.vals().step(v)
+                };
+                if let Some(f) = cached {
+                    return f;
+                }
             }
-            if self.nat_extension
-                && self.ctx.export_file.nat_red(head.name).is_some()
-                && let Some(args) = self.vals().spine_apps(spine)
-            {
-                if let Some(r) = self.do_nat_red(depth, head.name, &args) {
+            if arithmetic && let Some(args) = self.vals().spine_apps(spine) {
+                if !symbolic && let Some(r) = self.do_nat_red(depth, head.name, &args) {
                     self.vals_mut().set_step(v, r);
                     return r;
                 }
@@ -414,7 +432,11 @@ impl<'t> TypeChecker<'_, 't> {
             if from < args.len() {
                 cur = self.apply_many(depth, cur, &args[from..]);
             }
-            self.vals_mut().set_step(v, cur);
+            if symbolic {
+                self.tc_cache.arithmetic_delta_cache.insert(v, cur);
+            } else {
+                self.vals_mut().set_step(v, cur);
+            }
             return cur;
         }
         v
@@ -744,15 +766,6 @@ impl<'t> TypeChecker<'_, 't> {
 
     fn do_nat_red(&mut self, depth: u32, name: NameId, args: &[V]) -> Option<V> {
         self.do_nat_red_at(depth, name, args, true)
-    }
-
-    pub(super) fn do_nat_red_shallow(
-        &mut self,
-        depth: u32,
-        name: NameId,
-        args: &[V],
-    ) -> Option<V> {
-        self.do_nat_red_at(depth, name, args, false)
     }
 
     fn do_nat_red_at(

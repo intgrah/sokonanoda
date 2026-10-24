@@ -431,18 +431,7 @@ impl<'t> TypeChecker<'_, 't> {
                 }
                 self.neutral_app(f, a)
             }
-            Value::Unfold { head, spine, .. } => {
-                if self.nat_extension && self.ctx.export_file.nat_red(head.name).is_some() {
-                    let new_spine = self.spine_snoc_hc(spine, Elim::app(a));
-                    if let Some(args) = self.vals().spine_apps(new_spine)
-                        && let Some(r) = self.do_nat_red_shallow(depth, head.name, &args)
-                    {
-                        return r;
-                    }
-                    return new_spine;
-                }
-                self.neutral_app(f, a)
-            }
+            Value::Unfold { .. } => self.neutral_app(f, a),
             _ => reject!("apply: ill-typed application"),
         }
     }
