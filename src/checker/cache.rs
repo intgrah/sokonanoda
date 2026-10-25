@@ -113,7 +113,7 @@ caches! {
         #[session(None)] placeholder: Option<V>,
         #[cap(SESSION_SMALL)] closed_eval_cache: PtrMap<ExprId, V>,
         #[cap(SESSION_SMALL)] closed_lsub_eval_cache: PtrMap<(ExprId, LsubId), V>,
-        #[keep(Reset::with_cap(SMALL))] whnf_store: PtrMap<u64, (u128, ExprId)>,
+        #[keep(Reset::with_cap(SMALL))] whnf_store: PtrMap<u64, (u128, ExprId, ExprId)>,
         #[keep(Box::new([0; 1024]))] whnf_store_filter: Box<[u64; 1024]>,
         #[keep(Box::new([0; 1024]))] whnf_head_filter: Box<[u64; 1024]>,
         #[keep(vec![0; WHNF_ADMIT_LEN].into_boxed_slice().try_into().expect("admit table size"))]

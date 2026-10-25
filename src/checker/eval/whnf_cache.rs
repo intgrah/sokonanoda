@@ -57,11 +57,15 @@ impl<'t> TypeChecker<'_, 't> {
         let Some(hk) = self.shallow_head_key(src) else {
             return;
         };
+        let source = self.quote(depth, src);
+        if self.ctx.loose(source) != 0 {
+            return;
+        }
         let q = self.quote(0, res);
         let (hi, hb) = crate::checker::cache::tenure_slot(hk);
         self.tc_cache.whnf_head_filter[hi] |= hb;
         self.tc_cache.whnf_store_filter[fi] |= fb;
-        self.tc_cache.whnf_store.insert(k, (full, q));
+        self.tc_cache.whnf_store.insert(k, (full, source, q));
     }
 
     #[inline]
@@ -98,9 +102,12 @@ impl<'t> TypeChecker<'_, 't> {
         if self.tc_cache.whnf_store_filter[fi] & fb == 0 {
             return None;
         }
-        let (full, e) = self.tc_cache.whnf_store.get(&k)?;
+        let (full, source, e) = self.tc_cache.whnf_store.get(&k)?;
         let (mine, verified) = self.global_key(v, depth).ok()?;
         if !verified || mine != full {
+            return None;
+        }
+        if self.quote(depth, v) != source {
             return None;
         }
         let env = EMPTY_ENV;
