@@ -16,8 +16,6 @@ pub enum Name {
 
 pub(crate) const NO_DECL: u32 = u32::MAX;
 
-pub(crate) const NO_NAT_RED: u8 = u8::MAX;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum NatRed {
@@ -38,35 +36,6 @@ pub(crate) enum NatRed {
     Gcd,
     Shl,
     Shr,
-}
-
-impl NatRed {
-    pub(crate) fn from_u8(k: u8) -> Option<Self> {
-        use NatRed::{
-            Add, Beq, Ble, Div, DivGo, Gcd, LAnd, LOr, Mod, ModCoreGo, Mul, Pow, Shl, Shr, Sub,
-            Succ, XOr,
-        };
-        Some(match k {
-            0 => Succ,
-            1 => DivGo,
-            2 => ModCoreGo,
-            3 => Add,
-            4 => Sub,
-            5 => Mul,
-            6 => Pow,
-            7 => Mod,
-            8 => Div,
-            9 => Beq,
-            10 => Ble,
-            11 => LAnd,
-            12 => LOr,
-            13 => XOr,
-            14 => Gcd,
-            15 => Shl,
-            16 => Shr,
-            _ => return None,
-        })
-    }
 }
 
 pub(crate) trait NameSource {

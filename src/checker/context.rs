@@ -22,7 +22,7 @@ pub struct ExportFile {
     pub(crate) terms: Terms,
     pub(crate) declars: DeclarMap,
     pub(crate) decl_of: Vec<u32>,
-    pub(crate) nat_red: Vec<u8>,
+    pub(crate) nat_red: Vec<Option<NatRed>>,
     pub(crate) name_cache: NameCache,
     pub(crate) config: Config,
     pub(crate) mutual_block_sizes: FxHashMap<NameId, (usize, usize)>,
@@ -126,8 +126,7 @@ impl ExportFile {
                         self.decl_of[name.index()] =
                             u32::try_from(idx).expect("too many declarations");
                     }
-                    self.nat_red =
-                        vec![crate::term::name::NO_NAT_RED; self.terms.names.items.len()];
+                    self.nat_red = vec![None; self.terms.names.items.len()];
                     self.name_cache = self.terms.mk_name_cache(&mut self.nat_red);
                 })?
                 .join()
@@ -164,7 +163,7 @@ impl ExportFile {
         if n.is_local() {
             return None;
         }
-        NatRed::from_u8(*self.nat_red.get(n.index())?)
+        *self.nat_red.get(n.index())?
     }
 
     #[cfg(test)]

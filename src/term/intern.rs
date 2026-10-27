@@ -123,13 +123,13 @@ macro_rules! name_cache {
         }
 
         impl Terms {
-            pub(crate) fn mk_name_cache(&self, nat_red: &mut [u8]) -> NameCache {
+            pub(crate) fn mk_name_cache(&self, nat_red: &mut [Option<NatRed>]) -> NameCache {
                 let cache = NameCache {
                     $($field: self.find_name($path),)*
                 };
                 $($(
                     if let Some(n) = cache.$field {
-                        nat_red[n.index()] = NatRed::$red as u8;
+                        nat_red[n.index()] = Some(NatRed::$red);
                     }
                 )?)*
                 cache

@@ -10,7 +10,7 @@ use crate::term::hash::{FxHashMap, FxIndexMap, new_fx_hash_map, new_fx_index_map
 use crate::term::id::{ANON, BigId, ExprId, LevelId, LevelsId, NameId, StrId, ZERO};
 use crate::term::intern::Terms;
 use crate::term::level::Level;
-use crate::term::name::{NO_DECL, NO_NAT_RED, Name, NameDisplay};
+use crate::term::name::{NO_DECL, Name, NameDisplay};
 use num_bigint::BigUint;
 use serde::de::{Error as DeError, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -768,7 +768,7 @@ impl Parser {
 
     fn finish(self) -> Result<ExportFile, Box<dyn Error>> {
         let num_names = self.terms.names.items.len();
-        let mut nat_red = vec![NO_NAT_RED; num_names];
+        let mut nat_red = vec![None; num_names];
         let name_cache = self.terms.mk_name_cache(&mut nat_red);
         let mut decl_of = self.decl_of;
         decl_of.resize(num_names, NO_DECL);
