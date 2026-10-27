@@ -79,7 +79,9 @@ impl ExportFile {
                 let is_recursive = 'found: {
                     for mut ctor_ty in physical_ctor_types.iter().copied() {
                         while let Pi { binder_type, body } = ctx.ex(ctor_ty) {
-                            if ctx.find_const(binder_type, |name| physical_ind_names.contains(&name)) {
+                            if ctx
+                                .find_const(binder_type, |name| physical_ind_names.contains(&name))
+                            {
                                 break 'found true;
                             }
                             ctor_ty = body;
@@ -127,16 +129,15 @@ impl ExportFile {
             let ctor_extension = st.ctors_env_ext(ctx, ind_ty_ext1);
 
             // The constructed recursors and rec rules
-            let recursors =
-                ctx.with_tc_and_env_ext(&ctor_extension, env_limit, cache, |tc| {
-                    tc.mk_elim_level(&mut st);
-                    st.init_k_target(&tc.ctx);
-                    tc.check_declared_metadata(&st, &unmodified_tys_ctors);
-                    tc.mk_majors(&mut st);
-                    tc.mk_motives(&mut st);
-                    tc.mk_minors(&mut st);
-                    tc.mk_recursors(&st)
-                });
+            let recursors = ctx.with_tc_and_env_ext(&ctor_extension, env_limit, cache, |tc| {
+                tc.mk_elim_level(&mut st);
+                st.init_k_target(&tc.ctx);
+                tc.check_declared_metadata(&st, &unmodified_tys_ctors);
+                tc.mk_majors(&mut st);
+                tc.mk_motives(&mut st);
+                tc.mk_minors(&mut st);
+                tc.mk_recursors(&st)
+            });
 
             // The last temporary environment extension, which also includes the recursors.
             let recursor_extension = {
@@ -388,11 +389,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         );
     }
 
-    fn get_local_params(
-        &mut self,
-        e: ExprId,
-        num_params: u16,
-    ) -> (Vec<ExprId>, ExprId) {
+    fn get_local_params(&mut self, e: ExprId, num_params: u16) -> (Vec<ExprId>, ExprId) {
         let mut depth = 0u32;
         let mut params = Vec::with_capacity(num_params as usize);
         let mut cur = self.value_of(e);
@@ -421,12 +418,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             .collect()
     }
 
-    fn mk_pis_dep(
-        &mut self,
-        binders: &[ExprId],
-        gap: u16,
-        mut body: ExprId,
-    ) -> ExprId {
+    fn mk_pis_dep(&mut self, binders: &[ExprId], gap: u16, mut body: ExprId) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx
@@ -446,12 +438,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         body
     }
 
-    fn mk_lambdas_dep(
-        &mut self,
-        binders: &[ExprId],
-        gap: u16,
-        mut body: ExprId,
-    ) -> ExprId {
+    fn mk_lambdas_dep(&mut self, binders: &[ExprId], gap: u16, mut body: ExprId) -> ExprId {
         for (i, ty) in binders.iter().copied().enumerate().rev() {
             let ty = self
                 .ctx

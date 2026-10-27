@@ -30,13 +30,7 @@ impl<'t> TypeChecker<'_, 't> {
         self.env.can_be_struct(name)
     }
 
-    pub(crate) fn do_proj(
-        &mut self,
-        depth: u32,
-        ty_name: NameId,
-        idx: u16,
-        v: V,
-    ) -> V {
+    pub(crate) fn do_proj(&mut self, depth: u32, ty_name: NameId, idx: u16, v: V) -> V {
         let v = self.whnf_head(depth, v);
         match self.val(v) {
             Value::Rigid {
@@ -48,8 +42,10 @@ impl<'t> TypeChecker<'_, 't> {
                     && inductive_name == ty_name
                 {
                     let np = usize::from(num_params);
-                    if let Some(ElimView::App(field)) =
-                        self.vals().spine_get(spine, np + usize::from(idx)).map(Elim::view)
+                    if let Some(ElimView::App(field)) = self
+                        .vals()
+                        .spine_get(spine, np + usize::from(idx))
+                        .map(Elim::view)
                     {
                         return field;
                     }
@@ -142,7 +138,10 @@ impl<'t> TypeChecker<'_, 't> {
 
     #[inline(always)]
     pub(crate) fn force_all(&mut self, depth: u32, v: V) -> V {
-        if !matches!(self.vals().kind(v), VT::Unfold | VT::Recursor | VT::QuotConst) {
+        if !matches!(
+            self.vals().kind(v),
+            VT::Unfold | VT::Recursor | VT::QuotConst
+        ) {
             return v;
         }
         if let Some(w) = self.vals().whnf(v) {
@@ -472,11 +471,7 @@ impl<'t> TypeChecker<'_, 't> {
         result
     }
 
-    pub(crate) fn unfold_const(
-        &mut self,
-        name: NameId,
-        levels: LevelsId,
-    ) -> Option<V> {
+    pub(crate) fn unfold_const(&mut self, name: NameId, levels: LevelsId) -> Option<V> {
         if let Some(cached) = self.tc_cache.unfold_const_cache.get(&(name, levels)) {
             return Some(cached);
         }
@@ -598,12 +593,7 @@ impl<'t> TypeChecker<'_, 't> {
         self.apply_many(depth, result, &args[major_idx + 1..])
     }
 
-    fn try_struct_eta_reduce(
-        &mut self,
-        depth: u32,
-        major: V,
-        rec: &RecursorData,
-    ) -> Option<V> {
+    fn try_struct_eta_reduce(&mut self, depth: u32, major: V, rec: &RecursorData) -> Option<V> {
         if !self.vals().is_neutral(major) {
             return None;
         }
@@ -768,13 +758,7 @@ impl<'t> TypeChecker<'_, 't> {
         self.do_nat_red_at(depth, name, args, true)
     }
 
-    fn do_nat_red_at(
-        &mut self,
-        depth: u32,
-        name: NameId,
-        args: &[V],
-        deep: bool,
-    ) -> Option<V> {
+    fn do_nat_red_at(&mut self, depth: u32, name: NameId, args: &[V], deep: bool) -> Option<V> {
         use crate::term::name::NatRed;
         let kind = self.ctx.export_file.nat_red(name)?;
         if let NatRed::Succ = kind {
@@ -866,12 +850,7 @@ impl<'t> TypeChecker<'_, 't> {
         self.value_to_bignum_at(depth, v, true)
     }
 
-    pub(super) fn value_to_bignum_at(
-        &mut self,
-        depth: u32,
-        v: V,
-        deep: bool,
-    ) -> Option<BigUint> {
+    pub(super) fn value_to_bignum_at(&mut self, depth: u32, v: V, deep: bool) -> Option<BigUint> {
         let mut succs: u64 = 0;
         let mut cur = v;
         loop {

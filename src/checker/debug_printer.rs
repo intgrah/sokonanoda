@@ -209,10 +209,7 @@ impl std::fmt::Debug for DebugPrinter<'_, '_, &crate::checker::env::DeclarInfo> 
         f.debug_struct("DeclarInfo")
             .field("name", &self.ctx.debug_print(self.elem_to_print.name))
             .field("ty", &self.ctx.debug_print(self.elem_to_print.ty))
-            .field(
-                "uparams",
-                &self.ctx.debug_print(self.elem_to_print.uparams),
-            )
+            .field("uparams", &self.ctx.debug_print(self.elem_to_print.uparams))
             .finish()
     }
 }

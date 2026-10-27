@@ -39,7 +39,9 @@ impl<T: Hash + Eq> Interner<T> {
     {
         let items = &self.items;
         self.table
-            .find(FxBuildHasher.hash_one(q), |&i| items[i as usize].borrow() == q)
+            .find(FxBuildHasher.hash_one(q), |&i| {
+                items[i as usize].borrow() == q
+            })
             .copied()
     }
 
@@ -53,9 +55,8 @@ impl<T: Hash + Eq> Interner<T> {
         let hash = FxBuildHasher.hash_one(&t);
         let i = self.push(t);
         let items = &self.items;
-        self.table.insert_unique(hash, i, |&j| {
-            FxBuildHasher.hash_one(&items[j as usize])
-        });
+        self.table
+            .insert_unique(hash, i, |&j| FxBuildHasher.hash_one(&items[j as usize]));
         i
     }
 

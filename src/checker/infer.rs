@@ -3,9 +3,7 @@
 
 use crate::checker::env::Declar;
 use crate::checker::tc::{InferFlag, TypeChecker};
-use crate::checker::value::{
-    C, Closure, E, EMPTY_CTX, EMPTY_ENV, RigidHead, V, Vals, Value,
-};
+use crate::checker::value::{C, Closure, E, EMPTY_CTX, EMPTY_ENV, RigidHead, V, Vals, Value};
 use crate::outcome::{ensure, reject};
 use crate::term::expr::{Expr, ExprNode, SPINE};
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
@@ -40,12 +38,12 @@ fn has_deep_bvar_prefix(vals: &Vals, mut env: E) -> bool {
         match vals.env_cons(env) {
             Some((v, parent))
                 if matches!(
-                        vals.val(v),
-                        Value::Rigid {
-                            head: RigidHead::BVar(..),
-                            ..
-                        }
-                    ) =>
+                    vals.val(v),
+                    Value::Rigid {
+                        head: RigidHead::BVar(..),
+                        ..
+                    }
+                ) =>
             {
                 env = parent;
             }
@@ -103,7 +101,10 @@ impl<'t> TypeChecker<'_, 't> {
     ) -> V {
         let node = *self.ctx.node(e);
         if let Var { dbj_idx } = node.expr {
-            return self.vals().ctx_lookup(ctx, dbj_idx).expect("loose bvar in infer");
+            return self
+                .vals()
+                .ctx_lookup(ctx, dbj_idx)
+                .expect("loose bvar in infer");
         }
         self.infer_nonvar(flag, depth, env, ctx, e, node)
     }
@@ -119,7 +120,12 @@ impl<'t> TypeChecker<'_, 't> {
         node: ExprNode,
     ) -> V {
         match node.expr {
-            Var { dbj_idx } => return self.vals().ctx_lookup(ctx, dbj_idx).expect("loose bvar in infer"),
+            Var { dbj_idx } => {
+                return self
+                    .vals()
+                    .ctx_lookup(ctx, dbj_idx)
+                    .expect("loose bvar in infer");
+            }
             Sort { level } => {
                 if let (Check, Some(info)) = (flag, self.declar_info)
                     && !self.ctx.leaf_checked(e)
@@ -262,14 +268,7 @@ impl<'t> TypeChecker<'_, 't> {
         r
     }
 
-    fn infer_app_v(
-        &mut self,
-        flag: InferFlag,
-        depth: u32,
-        env: E,
-        ctx: C,
-        e: ExprId,
-    ) -> V {
+    fn infer_app_v(&mut self, flag: InferFlag, depth: u32, env: E, ctx: C, e: ExprId) -> V {
         let mut buf = [MaybeUninit::uninit(); SPINE];
         let spilled;
         let (head, rev_args) = if let Some(peeled) = self.ctx.peel_apps(e, &mut buf) {

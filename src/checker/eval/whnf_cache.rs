@@ -3,7 +3,9 @@
 
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{Closure, E, EMPTY_ENV, ElimView, KeyTag, RigidHead, S, V, Value, kmix};
+use crate::checker::value::{
+    Closure, E, EMPTY_ENV, ElimView, KeyTag, RigidHead, S, V, Value, kmix,
+};
 use crate::term::id::{LevelsId, NameId};
 
 #[inline]
@@ -14,10 +16,7 @@ fn mix(a: u128, b: u128) -> u128 {
 }
 
 fn head_key(tag: KeyTag, n: NameId, ls: LevelsId) -> u128 {
-    mix(
-        mix(tag.u128(), u128::from(n.raw())),
-        u128::from(ls.raw()),
-    )
+    mix(mix(tag.u128(), u128::from(n.raw())), u128::from(ls.raw()))
 }
 
 const WHNF_ADMIT_THRESHOLD: u8 = 2;
@@ -74,9 +73,7 @@ impl<'t> TypeChecker<'_, 't> {
             kmix(tag.u64(), kmix(u64::from(n.raw()), u64::from(ls.raw())))
         };
         let (h, spine) = match self.val(v) {
-            Value::Unfold { head: u, spine, .. } => {
-                (head(KeyTag::Unfold, u.name, u.levels), spine)
-            }
+            Value::Unfold { head: u, spine, .. } => (head(KeyTag::Unfold, u.name, u.levels), spine),
             Value::Rigid {
                 head: h @ (RigidHead::Recursor(n, ls) | RigidHead::QuotConst(n, ls)),
                 spine,
@@ -171,23 +168,12 @@ impl<'t> TypeChecker<'_, 't> {
         }
     }
 
-    fn closure_key(
-        &mut self,
-        tag: u128,
-        clo: Closure,
-        depth: u32,
-    ) -> Result<(u128, bool), u8> {
+    fn closure_key(&mut self, tag: u128, clo: Closure, depth: u32) -> Result<(u128, bool), u8> {
         if clo.ctx.is_some() {
             return Err(FAIL_CLOSURE);
         }
         let acc = mix(tag, u128::from(clo.body.raw()));
-        self.env_key(
-            acc,
-            true,
-            clo.env,
-            depth,
-            clo.loose.saturating_sub(1),
-        )
+        self.env_key(acc, true, clo.env, depth, clo.loose.saturating_sub(1))
     }
 
     fn env_key(
@@ -202,10 +188,7 @@ impl<'t> TypeChecker<'_, 't> {
         let mut closed = closed;
         if let Some(ls) = self.vals().env_lsub(env) {
             let ls = self.vals().lsub(ls);
-            acc = mix(
-                mix(acc, u128::from(ls.ks.raw())),
-                u128::from(ls.vs.raw()),
-            );
+            acc = mix(mix(acc, u128::from(ls.ks.raw())), u128::from(ls.vs.raw()));
         }
         for i in 0..count {
             if let Some(slot) = self.vals().env_lookup(env, i) {

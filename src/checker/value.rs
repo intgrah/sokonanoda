@@ -602,15 +602,23 @@ impl Vals {
     #[inline(always)]
     pub(crate) fn is_inert_rigid(&self, v: V) -> bool {
         let n = self.node(v);
-        matches!(n.kind, VT::BVar | VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive)
-            && n.flags & HEAD_ACTIVE == 0
+        matches!(
+            n.kind,
+            VT::BVar | VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive
+        ) && n.flags & HEAD_ACTIVE == 0
     }
 
     #[inline(always)]
     pub(crate) fn is_neutral(&self, v: V) -> bool {
         matches!(
             self.node(v).kind,
-            VT::BVar | VT::Axiom | VT::Ctor | VT::Recursor | VT::QuotConst | VT::Inductive | VT::Unfold
+            VT::BVar
+                | VT::Axiom
+                | VT::Ctor
+                | VT::Recursor
+                | VT::QuotConst
+                | VT::Inductive
+                | VT::Unfold
         )
     }
 

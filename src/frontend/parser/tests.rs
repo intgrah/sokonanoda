@@ -41,7 +41,10 @@ fn ignore_binder_metadata_in_both_parser_paths() {
             let parsed = parser.get_expr(3);
             let slow = format!("{{ \"ie\":4, \"{kind}\":{{{fields}}} }}");
             parser.go1_general(&slow).unwrap();
-            assert_eq!(parser.node(parsed).expr, parser.node(parser.get_expr(4)).expr);
+            assert_eq!(
+                parser.node(parsed).expr,
+                parser.node(parser.get_expr(4)).expr
+            );
             assert_eq!(parser.node(parsed).loose, 1);
             assert_eq!(parser.node(parsed).mask, 1);
             if let Some(reference) = reference {
@@ -61,7 +64,10 @@ fn ignore_binder_metadata_in_both_parser_paths() {
             parser
                 .go1_general(&format!("{{\"ie\":4,\"{kind}\":{{{fields}{metadata}}}}}"))
                 .unwrap();
-            assert_eq!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
+            assert_eq!(
+                parser.node(reference).expr,
+                parser.node(parser.get_expr(4)).expr
+            );
         }
         // Domain and body references still distinguish expressions.
         parser
@@ -70,14 +76,20 @@ fn ignore_binder_metadata_in_both_parser_paths() {
                     .replace("\"body\":2", "\"body\":1"),
             )
             .unwrap();
-        assert_ne!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
+        assert_ne!(
+            parser.node(reference).expr,
+            parser.node(parser.get_expr(4)).expr
+        );
         parser
             .go1_general(
                 &format!("{{\"ie\":4,\"{kind}\":{{{fields}}}}}")
                     .replace("\"type\":0", "\"type\":2"),
             )
             .unwrap();
-        assert_ne!(parser.node(reference).expr, parser.node(parser.get_expr(4)).expr);
+        assert_ne!(
+            parser.node(reference).expr,
+            parser.node(parser.get_expr(4)).expr
+        );
     }
 }
 

@@ -50,12 +50,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             .saturating_sub(st.local_params.len());
         (valid_app_idx, ctor_args_wo_params[..keep].to_vec())
     }
-    pub(super) fn inst_params_at(
-        &mut self,
-        e: ExprId,
-        num_params: usize,
-        depth: u16,
-    ) -> ExprId {
+    pub(super) fn inst_params_at(&mut self, e: ExprId, num_params: usize, depth: u16) -> ExprId {
         let n = u16::try_from(num_params).expect("parameter count exceeds u16");
         let substs: Vec<ExprId> = (0..n).map(|j| self.ctx.mk_var(depth + n - 1 - j)).collect();
         self.ctx.inst_open(e, substs.as_slice())
@@ -101,12 +96,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             matches!(elim.view(), ElimView::App(a) if self.value_has_ind_occ(depth, a, haystack))
         })
     }
-    fn closure_has_ind_occ(
-        &mut self,
-        depth: u32,
-        clo: &Closure,
-        haystack: &[ExprId],
-    ) -> bool {
+    fn closure_has_ind_occ(&mut self, depth: u32, clo: &Closure, haystack: &[ExprId]) -> bool {
         if has_ind_occ(&self.ctx, clo.body, haystack) {
             return true;
         }

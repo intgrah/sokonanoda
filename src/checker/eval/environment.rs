@@ -3,14 +3,18 @@
 
 use crate::checker::cache::memo;
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{C, Closure, E, EMPTY_ENV, Elim, EnvView, FAR, LsubId, NEAR, RigidHead, S, V};
+use crate::checker::value::{
+    C, Closure, E, EMPTY_ENV, Elim, EnvView, FAR, LsubId, NEAR, RigidHead, S, V,
+};
 use crate::term::hash::GOLDEN;
 use crate::term::id::{BigId, ExprId, LevelId, LevelsId, NameId, StrId};
 
 impl TypeChecker<'_, '_> {
     #[inline]
     pub(crate) fn mk_bvar_hc(&mut self, level: u32, ty: V) -> V {
-        self.tc_cache.vals.mk_head(RigidHead::BVar(level, ty), false)
+        self.tc_cache
+            .vals
+            .mk_head(RigidHead::BVar(level, ty), false)
     }
 
     pub(crate) fn mk_sort_hc(&mut self, level: LevelId) -> V {
@@ -84,7 +88,15 @@ impl TypeChecker<'_, '_> {
         self.prune_env_cold(e, mask, slot)
     }
 
-    fn frame_without(&mut self, dropped: u32, mask: u64, start: usize, cut: u32, rest: Option<E>, lsub: Option<LsubId>) -> Option<E> {
+    fn frame_without(
+        &mut self,
+        dropped: u32,
+        mask: u64,
+        start: usize,
+        cut: u32,
+        rest: Option<E>,
+        lsub: Option<LsubId>,
+    ) -> Option<E> {
         let near = (mask & !FAR) >> dropped;
         if near == 0 && rest.is_none() {
             return None;
@@ -92,10 +104,19 @@ impl TypeChecker<'_, '_> {
         let skipped = (mask & ((1u64 << dropped) - 1)).count_ones() as usize;
         let kept = start + skipped;
         let vals = self.vals();
-        let slots_hash = (kept..kept + near.count_ones() as usize).fold(lsub.map_or(0, |l| u64::from(l.raw())), |h, i| {
-            h.wrapping_mul(GOLDEN).wrapping_add(u64::from(vals.env_slot(i).raw()))
-        });
-        Some(self.tc_cache.vals.intern_frame(slots_hash, near, kept, cut - dropped, rest, lsub).0)
+        let slots_hash = (kept..kept + near.count_ones() as usize).fold(
+            lsub.map_or(0, |l| u64::from(l.raw())),
+            |h, i| {
+                h.wrapping_mul(GOLDEN)
+                    .wrapping_add(u64::from(vals.env_slot(i).raw()))
+            },
+        );
+        Some(
+            self.tc_cache
+                .vals
+                .intern_frame(slots_hash, near, kept, cut - dropped, rest, lsub)
+                .0,
+        )
     }
 
     #[inline(never)]
@@ -139,7 +160,9 @@ impl TypeChecker<'_, '_> {
                         sel &= sel - 1;
                         let sv = self.vals().env_slot(fstart + below.count_ones() as usize);
                         self.vals_mut().push_env_slot(sv);
-                        slots_hash = slots_hash.wrapping_mul(GOLDEN).wrapping_add(u64::from(sv.raw()));
+                        slots_hash = slots_hash
+                            .wrapping_mul(GOLDEN)
+                            .wrapping_add(u64::from(sv.raw()));
                     }
                     if taken < cut {
                         if keep_far {
@@ -157,7 +180,9 @@ impl TypeChecker<'_, '_> {
                 EnvView::Cons { v, parent } => {
                     if rem & 1 != 0 {
                         self.vals_mut().push_env_slot(v);
-                        slots_hash = slots_hash.wrapping_mul(GOLDEN).wrapping_add(u64::from(v.raw()));
+                        slots_hash = slots_hash
+                            .wrapping_mul(GOLDEN)
+                            .wrapping_add(u64::from(v.raw()));
                         out_mask |= 1u64 << consumed;
                         rem >>= 1;
                         consumed += 1;
@@ -177,7 +202,10 @@ impl TypeChecker<'_, '_> {
                 }
             }
         }
-        let (r, fresh) = self.tc_cache.vals.intern_frame(slots_hash, out_mask, start, NEAR, rest, lsub);
+        let (r, fresh) = self
+            .tc_cache
+            .vals
+            .intern_frame(slots_hash, out_mask, start, NEAR, rest, lsub);
         if !fresh {
             self.vals_mut().drop_env_slots(start);
         }

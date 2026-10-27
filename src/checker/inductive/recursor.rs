@@ -53,11 +53,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         }
         self.which_valid_ind_app_v(st, depth, cur)
     }
-    fn handle_rec_args_aux(
-        &mut self,
-        cursor: V,
-        depth0: u32,
-    ) -> (ExprId, Vec<ExprId>, V, u32) {
+    fn handle_rec_args_aux(&mut self, cursor: V, depth0: u32) -> (ExprId, Vec<ExprId>, V, u32) {
         let mut depth = depth0;
         let mut cur = cursor;
         let mut xs = Vec::new();
@@ -78,13 +74,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         st: &InductiveCheckState,
         ctor_type_cursor: ExprId,
         depth0: u32,
-    ) -> (
-        ExprId,
-        V,
-        u32,
-        Vec<ExprId>,
-        Vec<(usize, V)>,
-    ) {
+    ) -> (ExprId, V, u32, Vec<ExprId>, Vec<(usize, V)>) {
         let mut all_args: Vec<ExprId> = Vec::new();
         let mut rec_positions = Vec::new();
         self.tc_cache.clear();
@@ -150,11 +140,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         }
         out
     }
-    fn mk_minors1group(
-        &mut self,
-        st: &InductiveCheckState,
-        ctors: &[CtorHeader],
-    ) -> Vec<ExprId> {
+    fn mk_minors1group(&mut self, st: &InductiveCheckState, ctors: &[CtorHeader]) -> Vec<ExprId> {
         let mut out = Vec::new();
         let base = u32::from(st.minor_base());
         for ctor in ctors.iter().copied() {

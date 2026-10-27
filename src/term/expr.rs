@@ -21,9 +21,13 @@ pub(crate) type SpineBuf = [MaybeUninit<ExprId>; SPINE];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Expr {
     /// A string literal.
-    StringLit { lit: StrId },
+    StringLit {
+        lit: StrId,
+    },
     /// A nat literal, an arbitrary precision bignum.
-    NatLit { lit: BigId },
+    NatLit {
+        lit: BigId,
+    },
     Proj {
         /// The name of the structure being projected. E.g. `Prod` if this is
         /// projection 0 of `Prod.mk ..`
@@ -35,12 +39,28 @@ pub enum Expr {
         structure: ExprId,
     },
     /// A bound variable represented by a deBruijn index.
-    Var { dbj_idx: u16 },
-    Sort { level: LevelId },
-    Const { name: NameId, levels: LevelsId },
-    App { fun: ExprId, arg: ExprId },
-    Pi { binder_type: ExprId, body: ExprId },
-    Lambda { binder_type: ExprId, body: ExprId },
+    Var {
+        dbj_idx: u16,
+    },
+    Sort {
+        level: LevelId,
+    },
+    Const {
+        name: NameId,
+        levels: LevelsId,
+    },
+    App {
+        fun: ExprId,
+        arg: ExprId,
+    },
+    Pi {
+        binder_type: ExprId,
+        body: ExprId,
+    },
+    Lambda {
+        binder_type: ExprId,
+        body: ExprId,
+    },
     Let {
         binder_type: ExprId,
         val: ExprId,

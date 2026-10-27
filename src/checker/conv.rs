@@ -4,7 +4,9 @@
 use crate::checker::env::{Declar, ReducibilityHint};
 use crate::checker::relevance::{MAX_TRACKED, Sig, app_prefix_len};
 use crate::checker::tc::TypeChecker;
-use crate::checker::value::{E, EMPTY_ENV, Elim, ElimView, EnvView, RigidHead, S, Spine, UnfoldHead, V, VT, Value};
+use crate::checker::value::{
+    E, EMPTY_ENV, Elim, ElimView, EnvView, RigidHead, S, Spine, UnfoldHead, V, VT, Value,
+};
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 fn rigid_head_eq(hx: RigidHead, hy: RigidHead) -> bool {
     match (hx, hy) {
@@ -15,7 +17,10 @@ fn rigid_head_eq(hx: RigidHead, hy: RigidHead) -> bool {
 
 #[inline]
 fn is_cacheable(kind: VT) -> bool {
-    matches!(kind, VT::Pi | VT::Lam | VT::Unfold | VT::Recursor | VT::QuotConst)
+    matches!(
+        kind,
+        VT::Pi | VT::Lam | VT::Unfold | VT::Recursor | VT::QuotConst
+    )
 }
 
 type ProbePairs = smallvec::SmallVec<[(V, V); 8]>;
@@ -275,10 +280,7 @@ impl<'t> TypeChecker<'_, 't> {
             (Value::Lam { body: bx, .. }, Value::Lam { body: by, .. }) => {
                 let dx = self.lam_domain(depth, t);
                 let dy = self.lam_domain(depth, t2);
-                if bx.body == by.body
-                    && dx == dy
-                    && self.envs_ptr_equal(bx.env, by.env)
-                {
+                if bx.body == by.body && dx == dy && self.envs_ptr_equal(bx.env, by.env) {
                     return true;
                 }
                 if !self.unify::<RIGID>(depth, dx, dy) {
@@ -598,18 +600,15 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     #[inline]
-    fn head_spine_sig(
-        &mut self,
-        name: NameId,
-        levels: LevelsId,
-        sx: S,
-        sy: S,
-    ) -> (Sig, u32) {
+    fn head_spine_sig(&mut self, name: NameId, levels: LevelsId, sx: S, sy: S) -> (Sig, u32) {
         let sig = self.sig_of(name, levels);
         if !sig.masks_any_arg() {
             return (Sig::ALL_RELEVANT, 0);
         }
-        (sig, app_prefix_len(self.vals(), sx).min(app_prefix_len(self.vals(), sy)))
+        (
+            sig,
+            app_prefix_len(self.vals(), sx).min(app_prefix_len(self.vals(), sy)),
+        )
     }
 
     fn unify_spine<const RIGID: bool>(
@@ -779,7 +778,10 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     fn try_proof_irrel_lam(&mut self, depth: u32, x: V, y: V) -> bool {
-        if matches!((self.val(x), self.val(y)), (Value::Lam { .. }, Value::Lam { .. })) {
+        if matches!(
+            (self.val(x), self.val(y)),
+            (Value::Lam { .. }, Value::Lam { .. })
+        ) {
             let dx = self.lam_domain(depth, x);
             let dy = self.lam_domain(depth, y);
             if !self.unify::<true>(depth, dx, dy) {
@@ -875,7 +877,9 @@ impl<'t> TypeChecker<'_, 't> {
                 head: RigidHead::Ctor(name, _),
                 spine,
                 ..
-            } => Some(name) == self.ctx.export_file.name_cache.nat_zero && self.vals().is_head(spine),
+            } => {
+                Some(name) == self.ctx.export_file.name_cache.nat_zero && self.vals().is_head(spine)
+            }
             Value::NatLit { lit, .. } => num_traits::Zero::is_zero(self.ctx.bignum(lit)),
             _ => false,
         }

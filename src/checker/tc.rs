@@ -68,12 +68,7 @@ pub struct TypeChecker<'x, 't> {
 }
 
 impl ExportFile {
-    fn check_declar_with<'t>(
-        &'t self,
-        ctx: &mut TcCtx<'t>,
-        cache: &mut TcCache,
-        d: &Declar,
-    ) {
+    fn check_declar_with<'t>(&'t self, ctx: &mut TcCtx<'t>, cache: &mut TcCache, d: &Declar) {
         use Declar::{Inductive, Quot};
         match d {
             Inductive(..) => self.check_inductive_declar(ctx, cache, d),
@@ -82,12 +77,7 @@ impl ExportFile {
         }
     }
 
-    fn check_simple_declar<'t>(
-        &'t self,
-        ctx: &mut TcCtx<'t>,
-        cache: &mut TcCache,
-        d: &Declar,
-    ) {
+    fn check_simple_declar<'t>(&'t self, ctx: &mut TcCtx<'t>, cache: &mut TcCache, d: &Declar) {
         use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
         let env = self.new_env(EnvLimit::ByName(d.info().name));
         let mut tc = TypeChecker::new(ctx, &env, Some(*d.info()), cache);

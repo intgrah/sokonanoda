@@ -114,10 +114,7 @@ impl<'t> TcCtx<'t> {
             arena,
             global: &export_file.terms,
             global_exprs: &export_file.terms.exprs.items,
-            expr_bases: [
-                export_file.terms.exprs.items.as_ptr(),
-                local_expr_base(&[]),
-            ],
+            expr_bases: [export_file.terms.exprs.items.as_ptr(), local_expr_base(&[])],
             local: Terms::default(),
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
@@ -219,12 +216,7 @@ impl<'t> TcCtx<'t> {
         self.leaf_checked[Self::leaf_slot(e)] = (e.raw(), self.leaf_stamp);
     }
 
-    pub fn with_tc<F, A>(
-        &mut self,
-        env_limit: EnvLimit,
-        cache: &mut TcCache,
-        f: F,
-    ) -> A
+    pub fn with_tc<F, A>(&mut self, env_limit: EnvLimit, cache: &mut TcCache, f: F) -> A
     where
         F: FnOnce(&mut TypeChecker<'_, 't>) -> A,
     {
@@ -365,7 +357,13 @@ impl<'t> TcCtx<'t> {
         self.alloc_expr(node)
     }
 
-    pub fn mk_let(&mut self, binder_type: ExprId, val: ExprId, body: ExprId, nondep: bool) -> ExprId {
+    pub fn mk_let(
+        &mut self,
+        binder_type: ExprId,
+        val: ExprId,
+        body: ExprId,
+        nondep: bool,
+    ) -> ExprId {
         let node = ExprNode::let_(
             binder_type,
             self.node(binder_type),

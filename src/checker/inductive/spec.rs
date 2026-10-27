@@ -11,11 +11,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
     /// Check the 0th element of the list of inductive types; this one is different
     /// than the mutuals, because we need to determine the target for the block codom
     /// and some other stuff.
-    fn check_inductive_spec_0th(
-        &mut self,
-        uparams: LevelsId,
-        st: &mut InductiveCheckState,
-    ) {
+    fn check_inductive_spec_0th(&mut self, uparams: LevelsId, st: &mut InductiveCheckState) {
         self.tc_cache.clear();
         let (ind_name, ind_ty) = st
             .all_inductives_incl_specialized
@@ -185,11 +181,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             }
         }
     }
-    fn large_elim_test_aux(
-        &mut self,
-        ctor_type_cursor: ExprId,
-        mut rem_params: usize,
-    ) -> bool {
+    fn large_elim_test_aux(&mut self, ctor_type_cursor: ExprId, mut rem_params: usize) -> bool {
         self.tc_cache.clear();
         let mut depth = 0u32;
         let mut cur = self.value_of(ctor_type_cursor);

@@ -180,11 +180,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
     /// If `c` is `_nested_Array_1.mk`, return just `Array.mk`,
     ///
     /// This is only used in restoring recursor rules, since those hold the constructor name.
-    fn restore_ctor_name(
-        &mut self,
-        st: &InductiveCheckState,
-        ctor_name: NameId,
-    ) -> NameId {
+    fn restore_ctor_name(&mut self, st: &InductiveCheckState, ctor_name: NameId) -> NameId {
         // from `_nested_Array_1.mk`, retrieve `(Array Lean.Syntax, _nested.Array_1)`
         let (unspecialized_ty, base_ind_name) = self.get_nested_if_aux_ctor(st, ctor_name).unwrap();
         // Now get just `Const(Array, [])`

@@ -331,7 +331,10 @@ enum ExportJsonVal<'a> {
     },
 }
 
-pub(crate) fn parse_export_mapped(input: &[u8], config: Config) -> Result<ExportFile, Box<dyn Error>> {
+pub(crate) fn parse_export_mapped(
+    input: &[u8],
+    config: Config,
+) -> Result<ExportFile, Box<dyn Error>> {
     let mut parser = Parser::with_input_len(config, input.len());
     parser.run_over(input)?;
     Ok(parser.finish())

@@ -29,7 +29,10 @@ impl<'t> TypeChecker<'_, 't> {
     pub(crate) fn eval(&mut self, depth: u32, env: E, e: ExprId) -> V {
         let node = *self.ctx.node(e);
         if let Expr::Var { dbj_idx } = node.expr {
-            return self.vals().env_lookup(env, dbj_idx).expect("eval: loose bvar");
+            return self
+                .vals()
+                .env_lookup(env, dbj_idx)
+                .expect("eval: loose bvar");
         }
         self.eval_node(depth, env, e, node)
     }
@@ -141,7 +144,10 @@ impl<'t> TypeChecker<'_, 't> {
             return self.eval_spine(depth, env, f, rev_args);
         }
         match first {
-            Expr::Var { dbj_idx } => self.vals().env_lookup(env, dbj_idx).expect("eval: loose bvar"),
+            Expr::Var { dbj_idx } => self
+                .vals()
+                .env_lookup(env, dbj_idx)
+                .expect("eval: loose bvar"),
             Expr::Sort { level } => {
                 let level = match self.vals().env_lsub(env) {
                     Some(ls) => {
@@ -210,13 +216,7 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     #[inline(always)]
-    fn eval_spine(
-        &mut self,
-        depth: u32,
-        env: E,
-        mut f: V,
-        rev_args: &[ExprId],
-    ) -> V {
+    fn eval_spine(&mut self, depth: u32, env: E, mut f: V, rev_args: &[ExprId]) -> V {
         if let Value::Rigid {
             head: RigidHead::Recursor(..) | RigidHead::QuotConst(..),
             spine,
@@ -333,11 +333,7 @@ impl<'t> TypeChecker<'_, 't> {
         v
     }
 
-    pub(crate) fn const_result_level(
-        &mut self,
-        name: NameId,
-        levels: LevelsId,
-    ) -> Option<LevelId> {
+    pub(crate) fn const_result_level(&mut self, name: NameId, levels: LevelsId) -> Option<LevelId> {
         if let Some(cached) = self.tc_cache.const_result_level_cache.get(&(name, levels)) {
             return Some(cached);
         }
@@ -563,13 +559,7 @@ impl<'t> TypeChecker<'_, 't> {
         }
     }
 
-    fn spine_type_with_value(
-        &mut self,
-        depth: u32,
-        mut ty: V,
-        prev_head: V,
-        spine: S,
-    ) -> V {
+    fn spine_type_with_value(&mut self, depth: u32, mut ty: V, prev_head: V, spine: S) -> V {
         let mut prev = prev_head;
         for elim in self.vals().spine_to_vec(spine) {
             match elim.view() {
