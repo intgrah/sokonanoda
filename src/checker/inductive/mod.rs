@@ -505,7 +505,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
     fn mk_unique_name(&mut self, n: NameId, st: &mut InductiveCheckState) -> NameId {
         for idx in st.next_ngen_idx..u64::MAX {
             let tester = self.ctx.append_index_after(n, idx);
-            if self.env.get_old_declar(tester).is_none() {
+            if tester.is_local() {
                 st.next_ngen_idx = idx + 1;
                 return tester;
             }
