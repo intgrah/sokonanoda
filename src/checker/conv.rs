@@ -62,7 +62,9 @@ impl<'t> TypeChecker<'_, 't> {
                 return true;
             }
             match (self.vals().env_view(a), self.vals().env_view(b)) {
-                (EnvView::Nil, EnvView::Nil) => return true,
+                (EnvView::Nil, EnvView::Nil) => {
+                    return self.vals().env_lsub(a) == self.vals().env_lsub(b);
+                }
                 (EnvView::Cons { v: va, parent: pa }, EnvView::Cons { v: vb, parent: pb }) => {
                     if va != vb {
                         return false;
