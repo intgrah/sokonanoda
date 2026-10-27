@@ -6,7 +6,6 @@ use crate::term::expr::Expr;
 use crate::term::hash::FxIndexMap;
 use crate::term::id::{ExprId, LevelsId, NameId};
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Reducibility hints accompany definitions; used to determine how
@@ -102,26 +101,6 @@ pub struct InductiveData {
     pub(crate) all_ctor_names: Arc<[NameId]>,
 }
 
-impl InductiveData {
-    pub fn aux_data_ck(&self, other: &Self) -> bool {
-        self.info.name == other.info.name
-            && self.num_params == other.num_params
-            && self.num_indices == other.num_indices
-            && self.is_nested == other.is_nested
-            && self.all_ctor_names.iter().collect::<HashSet<_>>()
-                == other.all_ctor_names.iter().collect::<HashSet<_>>()
-            && if other.is_nested {
-                self.all_ind_names
-                    .iter()
-                    .collect::<HashSet<_>>()
-                    .is_subset(&other.all_ind_names.iter().collect::<HashSet<_>>())
-            } else {
-                self.all_ind_names.iter().collect::<HashSet<_>>()
-                    == other.all_ind_names.iter().collect::<HashSet<_>>()
-            }
-    }
-}
-
 /// `inductive_name` is the name of the type this constructs. e.g. `Prod` for `Prod.mk`
 ///
 /// `ctor_idx` is 0-based; e.g. `List.nil (ctor_idx := 0)`, `List.cons (ctor_idx := 1)`
@@ -147,17 +126,6 @@ pub struct ConstructorData {
     pub num_fields: u16,
 }
 
-impl ConstructorData {
-    pub fn aux_data_ck(&self, other: &Self) -> bool {
-        self.info.name == other.info.name
-            && self.inductive_name == other.inductive_name
-            && self.ctor_idx == other.ctor_idx
-            && self.num_params == other.num_params
-            && self.num_fields == other.num_fields
-    }
-}
-
-/// Information received from the export file regarding a recursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecursorData {
     pub info: DeclarInfo,
@@ -174,17 +142,6 @@ impl RecursorData {
     /// Compute the index in the recursor's type (in the telescope) where the major premise is located.
     pub fn major_idx(&self) -> usize {
         (self.num_params + self.num_motives + self.num_minors + self.num_indices) as usize
-    }
-
-    pub fn aux_data_ck(&self, other: &Self) -> bool {
-        self.info.name == other.info.name
-            && self.num_params == other.num_params
-            && self.num_indices == other.num_indices
-            && self.num_motives == other.num_motives
-            && self.num_minors == other.num_minors
-            && self.is_k == other.is_k
-            && self.all_inductives.iter().collect::<HashSet<_>>()
-                == other.all_inductives.iter().collect::<HashSet<_>>()
     }
 }
 
@@ -238,6 +195,7 @@ pub struct Env<'x> {
     /// This allows us to make the complete environment at parse time, and then control visibility
     /// between threads by only making a particular slice of that environment available to a thread.
     cutoff: usize,
+    env_ext: Option<Arc<DeclarMap>>,
 }
 
 pub(crate) type DeclarMap = FxIndexMap<NameId, Declar>;
@@ -268,6 +226,7 @@ impl<'x> Env<'x> {
             decl_of,
             temp_declars,
             cutoff,
+            env_ext: None,
         }
     }
 
@@ -292,17 +251,22 @@ impl<'x> Env<'x> {
     }
 
     pub fn has_temp_ext(&self) -> bool {
-        self.temp_declars.is_some()
+        self.temp_declars.is_some() || self.env_ext.is_some()
     }
 
-    /// Get a declaration, only looking in the temporary extension.
-    pub fn get_temp_declar(&self, n: NameId) -> Option<&Declar> {
-        self.temp_declars.as_ref().and_then(|ext| ext.get(&n))
+    pub(crate) fn with_env_ext(mut self, env_ext: Option<Arc<DeclarMap>>) -> Self {
+        self.env_ext = env_ext;
+        self
     }
 
     /// Get a declaration, bypassing the temporary extension, only searching in
     /// the persistent set of declarations.
     pub fn get_old_declar(&self, n: NameId) -> Option<&Declar> {
+        if let Some(env_ext) = &self.env_ext
+            && let Some(declar) = env_ext.get(&n)
+        {
+            return Some(declar);
+        }
         let idx = Self::lookup_idx(self.decl_of, n) as usize;
         if idx < self.cutoff {
             Some(&self.declars[idx])

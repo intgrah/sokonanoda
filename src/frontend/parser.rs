@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::checker::context::ExportFile;
-use crate::checker::env::{
-    ConstructorData, Declar, DeclarInfo, InductiveData, RecursorData, ReducibilityHint,
-};
+use crate::checker::env::{ConstructorData, Declar, DeclarInfo, InductiveData, ReducibilityHint};
 use crate::config::{AxiomDecision, Config};
 use crate::outcome::{decline, ensure, reject, unsupported};
 use crate::term::expr::{Expr, ExprNode};
@@ -114,25 +112,6 @@ enum DefinitionSafety {
     Partial,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-enum QuotKind {
-    #[serde(rename = "type")]
-    Ty,
-    #[serde(rename = "ctor")]
-    Ctor,
-    #[serde(rename = "lift")]
-    Lift,
-    #[serde(rename = "ind")]
-    Ind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-struct RecursorRule {
-    ctor: u32,
-    nfields: u16,
-    rhs: u32,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 struct IndInfo {
     name: u32,
@@ -140,16 +119,7 @@ struct IndInfo {
     uparams: Vec<u32>,
     #[serde(rename = "type")]
     ty: u32,
-    all: Vec<u32>,
     ctors: Vec<u32>,
-    #[serde(rename = "isRec")]
-    is_rec: bool,
-    #[serde(rename = "isReflexive")]
-    is_reflexive: bool,
-    #[serde(rename = "numIndices")]
-    num_indices: u16,
-    #[serde(rename = "numNested")]
-    num_nested: u16,
     #[serde(rename = "numParams")]
     num_params: u16,
     #[serde(rename = "isUnsafe")]
@@ -159,40 +129,8 @@ struct IndInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 struct Constructor {
     name: u32,
-    #[serde(rename = "levelParams")]
-    uparams: Vec<u32>,
     #[serde(rename = "type")]
     ty: u32,
-    #[serde(rename = "isUnsafe")]
-    is_unsafe: bool,
-    cidx: u16,
-    #[serde(rename = "numParams")]
-    num_params: u16,
-    #[serde(rename = "numFields")]
-    num_fields: u16,
-    induct: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-struct Recursor {
-    name: u32,
-    #[serde(rename = "levelParams")]
-    uparams: Vec<u32>,
-    #[serde(rename = "type")]
-    ty: u32,
-    #[serde(rename = "isUnsafe")]
-    is_unsafe: bool,
-    #[serde(rename = "numParams")]
-    num_params: u16,
-    #[serde(rename = "numIndices")]
-    num_indices: u16,
-    #[serde(rename = "numMotives")]
-    num_motives: u16,
-    #[serde(rename = "numMinors")]
-    num_minors: u16,
-    rules: Vec<RecursorRule>,
-    all: Vec<u32>,
-    k: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -311,23 +249,13 @@ enum ExportJsonVal<'a> {
         is_unsafe: bool,
     },
     #[serde(rename = "quot")]
-    Quot {
-        name: u32,
-        #[serde(rename = "levelParams")]
-        uparams: Vec<u32>,
-        #[serde(rename = "type")]
-        ty: u32,
-        #[serde(rename = "kind")]
-        kind: QuotKind,
-    },
+    Quot { name: u32 },
     #[serde(rename = "inductive")]
     Inductive {
         #[serde(rename = "types")]
         ind_vals: Vec<IndInfo>,
         #[serde(rename = "ctors")]
         ctor_vals: Vec<Constructor>,
-        #[serde(rename = "recs")]
-        rec_vals: Vec<Recursor>,
     },
 }
 
@@ -337,7 +265,7 @@ pub(crate) fn parse_export_mapped(
 ) -> Result<ExportFile, Box<dyn Error>> {
     let mut parser = Parser::with_input_len(config, input.len());
     parser.run_over(input)?;
-    Ok(parser.finish())
+    parser.finish()
 }
 
 const READ_CHUNK: usize = 1 << 22;
@@ -414,7 +342,7 @@ pub(crate) fn parse_export_file<R: Read + Send + 'static>(
         parser.run_over(&block.bytes[..block.len])?;
         let _ = spent_tx.send(block);
     }
-    Ok(parser.finish())
+    parser.finish()
 }
 
 struct Fallback;
@@ -838,13 +766,13 @@ impl Parser {
         out
     }
 
-    fn finish(self) -> ExportFile {
+    fn finish(self) -> Result<ExportFile, Box<dyn Error>> {
         let num_names = self.terms.names.items.len();
         let mut nat_red = vec![NO_NAT_RED; num_names];
         let name_cache = self.terms.mk_name_cache(&mut nat_red);
         let mut decl_of = self.decl_of;
         decl_of.resize(num_names, NO_DECL);
-        ExportFile {
+        let mut export = ExportFile {
             terms: self.terms,
             declars: self.declars,
             decl_of,
@@ -852,7 +780,11 @@ impl Parser {
             name_cache,
             config: self.config,
             mutual_block_sizes: self.mutual_block_sizes,
+        };
+        if !export.config.parse_only {
+            export.check_inductives()?;
         }
+        Ok(export)
     }
 
     fn fast_line(&mut self, s: &[u8], pos: usize, idxs: &mut Vec<u32>) -> Result<usize, FastError> {
@@ -1402,141 +1334,84 @@ impl Parser {
                 let definition = Declar::Opaque { info, val };
                 self.add_declar(name, definition);
             }
-            Quot {
-                name, ty, uparams, ..
-            } => {
+            Quot { name } => {
                 let name = self.get_name(name);
-                let ty = self.get_expr(ty);
-                let uparams = self.get_uparams(&uparams);
-                let info = DeclarInfo { name, uparams, ty };
-                let quot = Declar::Quot { info };
-                self.add_declar(name, quot);
+                let ty = ExprId::new(
+                    self.terms
+                        .exprs
+                        .intern(ExprNode::leaf(Expr::Sort { level: ZERO })),
+                    false,
+                );
+                let uparams = LevelsId::new(self.terms.lists.intern_ref(&[][..]), false);
+                self.add_declar(
+                    name,
+                    Declar::Quot {
+                        info: DeclarInfo { name, uparams, ty },
+                    },
+                );
             }
             Inductive {
                 ind_vals,
                 ctor_vals,
-                rec_vals,
             } => {
                 let block_start = self.declars.len();
-                let block_size = ind_vals.len() + ctor_vals.len() + rec_vals.len();
-                let listed_ctors: Vec<(u32, u32)> = ind_vals
-                    .iter()
-                    .flat_map(|ind| ind.ctors.iter().map(move |&ctor| (ctor, ind.name)))
-                    .collect();
-                for IndInfo {
-                    name,
-                    ty,
-                    uparams,
-                    all,
-                    ctors,
-                    is_rec,
-                    num_nested,
-                    num_params,
-                    num_indices,
-                    is_unsafe,
-                    ..
-                } in ind_vals
-                {
-                    if is_unsafe {
+                let block_size =
+                    ind_vals.len() + ind_vals.iter().map(|ind| ind.ctors.len()).sum::<usize>();
+                let num_params = ind_vals.first().map_or(0, |ind| ind.num_params);
+                let uparams = match ind_vals.first() {
+                    Some(ind) => self.get_uparams(&ind.uparams),
+                    None => LevelsId::new(self.terms.lists.intern_ref(&[][..]), false),
+                };
+                let all_ind_names: Arc<[_]> = Arc::from(
+                    ind_vals
+                        .iter()
+                        .map(|ind| self.get_name(ind.name))
+                        .collect::<Vec<_>>(),
+                );
+                let mut constructors = Vec::new();
+                for ind in ind_vals {
+                    if ind.is_unsafe {
                         return decline("unsafe declarations are not supported");
                     }
-                    let name = self.get_name(name);
+                    let name = self.get_name(ind.name);
+                    let ty = self.get_expr(ind.ty);
+                    let all_ctor_names: Arc<[_]> = Arc::from(self.get_names(&ind.ctors));
                     self.mutual_block_sizes
                         .insert(name, (block_start, block_size));
-                    let uparams = self.get_uparams(&uparams);
-                    let ty = self.get_expr(ty);
-                    let all_ind_names = Arc::from(self.get_names(&all));
-                    let all_ctor_names = Arc::from(self.get_names(&ctors));
-                    let inductive = Declar::Inductive(InductiveData {
-                        info: DeclarInfo { name, uparams, ty },
-                        is_recursive: is_rec,
-                        is_nested: num_nested > 0,
-                        num_params,
-                        num_indices,
-                        all_ind_names,
-                        all_ctor_names,
-                    });
-                    self.add_declar(name, inductive);
-                }
-                for Constructor {
-                    name,
-                    uparams,
-                    ty,
-                    is_unsafe,
-                    induct,
-                    cidx,
-                    num_params,
-                    num_fields,
-                    ..
-                } in ctor_vals
-                {
-                    if is_unsafe {
-                        return decline("unsafe declarations are not supported");
-                    }
-                    if !listed_ctors.contains(&(name, induct)) {
-                        return Err(
-                            "constructor is not listed by its inductive type in this block".into(),
-                        );
-                    }
-                    let name = self.get_name(name);
-                    let ty = self.get_expr(ty);
-                    let uparams = self.get_uparams(&uparams);
-                    let info = DeclarInfo { name, uparams, ty };
-                    let parent_inductive = self.get_name(induct);
-                    let ctor_idx = cidx;
-                    let ctor = Declar::Constructor(ConstructorData {
-                        info,
-                        inductive_name: parent_inductive,
-                        ctor_idx,
-                        num_params,
-                        num_fields,
-                    });
-                    self.add_declar(name, ctor);
-                }
-                for Recursor {
-                    name,
-                    uparams,
-                    ty,
-                    rules,
-                    is_unsafe,
-                    num_params,
-                    num_indices,
-                    num_motives,
-                    num_minors,
-                    k,
-                    all,
-                    ..
-                } in rec_vals
-                {
-                    if is_unsafe {
-                        return decline("unsafe declarations are not supported");
-                    }
-                    let name = self.get_name(name);
-                    let ty = self.get_expr(ty);
-                    let uparams = self.get_uparams(&uparams);
-                    let info = DeclarInfo { name, uparams, ty };
-                    let rules = rules
-                        .into_iter()
-                        .map(
-                            |RecursorRule { rhs, ctor, nfields }| crate::checker::env::RecRule {
-                                val: self.get_expr(rhs),
-                                ctor_name: self.get_name(ctor),
-                                ctor_telescope_size_wo_params: nfields,
+                    self.add_declar(
+                        name,
+                        Declar::Inductive(InductiveData {
+                            info: DeclarInfo { name, uparams, ty },
+                            is_recursive: false,
+                            is_nested: false,
+                            num_params,
+                            num_indices: 0,
+                            all_ind_names: all_ind_names.clone(),
+                            all_ctor_names,
+                        }),
+                    );
+                    for (idx, ctor_name) in ind.ctors.into_iter().enumerate() {
+                        let ctor = ctor_vals
+                            .iter()
+                            .find(|ctor| ctor.name == ctor_name)
+                            .ok_or("missing constructor specification")?;
+                        let ctor_name = self.get_name(ctor_name);
+                        let ty = self.get_expr(ctor.ty);
+                        constructors.push(ConstructorData {
+                            info: DeclarInfo {
+                                name: ctor_name,
+                                uparams,
+                                ty,
                             },
-                        )
-                        .collect::<Vec<_>>();
-                    let all_inductives = self.get_names(&all);
-                    let recursor = Declar::Recursor(RecursorData {
-                        info,
-                        all_inductives: Arc::from(all_inductives),
-                        num_params,
-                        num_indices,
-                        num_motives,
-                        num_minors,
-                        rec_rules: Arc::from(rules),
-                        is_k: k,
-                    });
-                    self.add_declar(name, recursor);
+                            inductive_name: name,
+                            ctor_idx: u16::try_from(idx).expect("too many constructors"),
+                            num_params,
+                            num_fields: 0,
+                        });
+                    }
+                }
+                for ctor in constructors {
+                    self.add_declar(ctor.info.name, Declar::Constructor(ctor));
                 }
             }
         }

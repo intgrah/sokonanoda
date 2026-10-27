@@ -16,6 +16,7 @@ use crate::term::name::{Name, NameDisplay, NameSource, NatRed};
 use bumpalo::Bump;
 use num_bigint::BigUint;
 use rustc_hash::FxBuildHasher;
+use std::sync::Arc;
 
 pub struct ExportFile {
     pub(crate) terms: Terms,
@@ -40,6 +41,109 @@ impl NameSource for Terms {
 }
 
 impl ExportFile {
+    pub(crate) fn check_inductives(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("inductives".into())
+                .stack_size(crate::STACK_SIZE)
+                .spawn_scoped(scope, || {
+                    let (blocks, local) = {
+                        let arena = Bump::new();
+                        let mut ctx = TcCtx::new(self, &arena);
+                        ctx.env_ext = Some(Arc::new(crate::term::hash::new_fx_index_map()));
+                        let mut blocks = Vec::new();
+                        let mut next = 0;
+                        while next < self.declars.len() {
+                            let (_, declar) = self.declars.get_index(next).unwrap();
+                            let (start, size, derived) = match declar {
+                                crate::checker::env::Declar::Quot { .. } => {
+                                    let mut cache = TcCache::new_small();
+                                    let derived = crate::checker::quot::derive_quot(
+                                        &mut ctx, &mut cache, declar,
+                                    );
+                                    (next, 1, vec![derived])
+                                }
+                                crate::checker::env::Declar::Inductive(ind) => {
+                                    let &(start, size) =
+                                        self.mutual_block_sizes.get(&ind.info.name).unwrap();
+                                    let mut cache = TcCache::new_small();
+                                    let derived =
+                                        self.check_inductive_declar(&mut ctx, &mut cache, ind);
+                                    (start, size, derived)
+                                }
+                                _ => {
+                                    next += 1;
+                                    continue;
+                                }
+                            };
+                            let env_ext = Arc::get_mut(ctx.env_ext.as_mut().unwrap()).unwrap();
+                            for declar in &derived {
+                                env_ext.insert(declar.info().name, declar.clone());
+                            }
+                            blocks.push((start, size, derived));
+                            next = start + size;
+                        }
+                        (blocks, ctx.local)
+                    };
+                    let mut promoter =
+                        crate::checker::inductive::persist::Promoter::new(local, &mut self.terms);
+                    let mut blocks = blocks.into_iter().peekable();
+                    let mut declars = crate::term::hash::new_fx_index_map();
+                    self.mutual_block_sizes.clear();
+                    let mut skipped = 0;
+                    for (idx, (name, declar)) in
+                        std::mem::take(&mut self.declars).into_iter().enumerate()
+                    {
+                        if idx < skipped {
+                            continue;
+                        }
+                        if blocks.peek().is_some_and(|(start, _, _)| *start == idx) {
+                            let (_, size, block) = blocks.next().unwrap();
+                            skipped = idx + size;
+                            let start = declars.len();
+                            let size = block.len();
+                            for declar in block {
+                                let declar = promoter.declar(declar);
+                                let name = declar.info().name;
+                                if matches!(declar, crate::checker::env::Declar::Inductive(_)) {
+                                    self.mutual_block_sizes.insert(name, (start, size));
+                                }
+                                crate::outcome::ensure!(
+                                    declars.insert(name, declar).is_none(),
+                                    "duplicate declaration"
+                                );
+                            }
+                        } else {
+                            crate::outcome::ensure!(
+                                declars.insert(name, declar).is_none(),
+                                "duplicate declaration"
+                            );
+                        }
+                    }
+                    self.declars = declars;
+                    self.decl_of = vec![crate::term::name::NO_DECL; self.terms.names.items.len()];
+                    for (idx, (name, _)) in self.declars.iter().enumerate() {
+                        self.decl_of[name.index()] =
+                            u32::try_from(idx).expect("too many declarations");
+                    }
+                    self.nat_red =
+                        vec![crate::term::name::NO_NAT_RED; self.terms.names.items.len()];
+                    self.name_cache = self.terms.mk_name_cache(&mut self.nat_red);
+                })?
+                .join()
+                .map_err(crate::outcome::CheckError::from_panic)
+                .map_err(|error| -> Box<dyn std::error::Error> {
+                    match error {
+                        crate::outcome::CheckError::Rejected(error) => Box::new(error),
+                        crate::outcome::CheckError::Declined(error) => Box::new(error),
+                        crate::outcome::CheckError::Internal(payload) => {
+                            std::panic::resume_unwind(payload)
+                        }
+                    }
+                })
+        })
+    }
+
     pub fn num_declars(&self) -> usize {
         self.declars.len()
     }
@@ -85,6 +189,7 @@ pub struct TcCtx<'t> {
     global_exprs: &'t [ExprNode],
     expr_bases: [*const ExprNode; 2],
     local: Terms,
+    pub(crate) env_ext: Option<Arc<DeclarMap>>,
     pub(crate) expr_cache: ExprCache,
     pub(crate) sig_cache: PtrMap<(NameId, LevelsId), Sig>,
     pub(crate) sig_templates: PtrMap<NameId, SigTemplate<'t>>,
@@ -108,6 +213,12 @@ impl NameSource for TcCtx<'_> {
 }
 
 impl<'t> TcCtx<'t> {
+    pub(crate) fn new_env(&self, limit: EnvLimit) -> Env<'t> {
+        self.export_file
+            .new_env(limit)
+            .with_env_ext(self.env_ext.clone())
+    }
+
     pub fn new(export_file: &'t ExportFile, arena: &'t Bump) -> Self {
         Self {
             export_file,
@@ -116,6 +227,7 @@ impl<'t> TcCtx<'t> {
             global_exprs: &export_file.terms.exprs.items,
             expr_bases: [export_file.terms.exprs.items.as_ptr(), local_expr_base(&[])],
             local: Terms::default(),
+            env_ext: None,
             expr_cache: ExprCache::new(),
             sig_cache: Reset::with_cap(SESSION),
             sig_templates: Reset::with_cap(SMALL),
@@ -220,7 +332,7 @@ impl<'t> TcCtx<'t> {
     where
         F: FnOnce(&mut TypeChecker<'_, 't>) -> A,
     {
-        let env = self.export_file.new_env(env_limit);
+        let env = self.new_env(env_limit);
         let mut tc = TypeChecker::new(self, &env, None, cache);
         f(&mut tc)
     }
@@ -241,7 +353,8 @@ impl<'t> TcCtx<'t> {
             &export_file.decl_of,
             Some(env_ext),
             env_limit,
-        );
+        )
+        .with_env_ext(self.env_ext.clone());
         let mut tc = TypeChecker::new(self, &env, None, cache);
         f(&mut tc)
     }

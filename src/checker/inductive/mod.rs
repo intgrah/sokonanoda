@@ -5,13 +5,13 @@ use crate::checker::context::{ExportFile, TcCtx};
 use crate::checker::env::{ConstructorData, Declar, DeclarInfo, DeclarMap, InductiveData};
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::Value;
-use crate::outcome::{ensure, ensure_eq, reject};
-use crate::term::expr::Expr::Pi;
-use crate::term::hash::{FxHashSet, FxIndexMap};
+use crate::outcome::reject;
+use crate::term::hash::FxIndexMap;
 use crate::term::id::{ExprId, LevelId, LevelsId, NameId};
 use std::sync::Arc;
 
 mod nested;
+pub(crate) mod persist;
 mod positivity;
 mod recursor;
 mod restore;
@@ -27,78 +27,59 @@ impl ExportFile {
         &'t self,
         ctx: &mut TcCtx<'t>,
         cache: &mut crate::checker::cache::TcCache,
-        d: &Declar,
-    ) {
-        let (ind, env_limit) = match d {
-            Declar::Inductive(ind) => {
-                let &(start, size) = self
-                    .mutual_block_sizes
-                    .get(&ind.info.name)
-                    .expect("missing inductive block boundaries");
-                let mut physical_ind_names = Vec::new();
-                let mut physical_ctor_types = Vec::new();
-                let mut physical_inductive_types_and_ctors = Vec::new();
-                for idx in start..start + size {
-                    let (_, declar) = self
-                        .declars
-                        .get_index(idx)
-                        .expect("inductive block boundary exceeds environment");
-                    match declar {
-                        Declar::Inductive(inductive) => {
-                            physical_ind_names.push(inductive.info.name);
-                            physical_inductive_types_and_ctors.push(inductive.info.ty);
-                        }
-                        Declar::Constructor(constructor) => {
-                            physical_ctor_types.push(constructor.info.ty);
-                            physical_inductive_types_and_ctors.push(constructor.info.ty);
-                        }
-                        _ => {}
-                    }
+        ind: &InductiveData,
+    ) -> Vec<Declar> {
+        let &(start, _) = self
+            .mutual_block_sizes
+            .get(&ind.info.name)
+            .expect("missing inductive block boundaries");
+        let env_limit = crate::checker::env::EnvLimit::ByIndex(start);
+        {
+            let unmodified_tys_ctors = ctx.with_tc(env_limit, cache, |tc| {
+                for name in ind.all_ind_names.iter() {
+                    let declar = &self.declars[name];
+                    tc.tc_cache.clear();
+                    tc.ctx.next_declaration();
+                    tc.declar_info = Some(*declar.info());
+                    tc.check_declar_info_v(declar);
                 }
-                ensure!(
-                    !physical_ind_names.is_empty(),
-                    "inductive block contains no inductive types"
-                );
+                tc.collect_unmodified_mutuals(ind)
+            });
 
-                for ty in physical_ctor_types.iter().copied() {
+            for header in &unmodified_tys_ctors {
+                for ctor in &header.ctors {
                     check_uniform_inductive_occurrences(
                         ctx,
-                        ty,
-                        physical_ind_names.as_slice(),
+                        ctor.ty,
+                        &ind.all_ind_names,
                         ind.info.uparams,
                         ind.num_params,
                     );
                 }
-                let nested = ctx.str1("_nested");
-                for ty in physical_inductive_types_and_ctors.iter().copied() {
-                    ensure!(
-                        !ctx.has_nested_name(ty, nested),
-                        "reserved _nested name in inductive block"
-                    );
-                }
-                let is_recursive = 'found: {
-                    for mut ctor_ty in physical_ctor_types.iter().copied() {
-                        while let Pi { binder_type, body } = ctx.ex(ctor_ty) {
-                            if ctx
-                                .find_const(binder_type, |name| physical_ind_names.contains(&name))
-                            {
-                                break 'found true;
-                            }
-                            ctor_ty = body;
-                        }
-                    }
-                    false
-                };
-                ensure_eq!(ind.is_recursive, is_recursive);
-                (ind, crate::checker::env::EnvLimit::ByIndex(start + size))
             }
-            _ => reject!("expected inductive"),
-        };
-        {
-            // The **unmodified** types and constructors for all of the types in this mutual block.
-            let unmodified_tys_ctors = ctx.with_tc(env_limit, cache, |tc| {
-                tc.check_declar_info_v(d);
-                tc.collect_unmodified_mutuals(ind)
+
+            let type_specs: DeclarMap = ind
+                .all_ind_names
+                .iter()
+                .map(|&name| {
+                    (
+                        name,
+                        Declar::Axiom {
+                            info: *self.declars[&name].info(),
+                        },
+                    )
+                })
+                .collect();
+            ctx.with_tc_and_env_ext(&type_specs, env_limit, cache, |tc| {
+                for header in &unmodified_tys_ctors {
+                    for ctor in &header.ctors {
+                        let declar = &self.declars[&ctor.name];
+                        tc.tc_cache.clear();
+                        tc.ctx.next_declaration();
+                        tc.declar_info = Some(*declar.info());
+                        tc.check_declar_info_v(declar);
+                    }
+                }
             });
 
             // Initialize the big chunk of state used throughout the process of checking
@@ -132,7 +113,6 @@ impl ExportFile {
             let recursors = ctx.with_tc_and_env_ext(&ctor_extension, env_limit, cache, |tc| {
                 tc.mk_elim_level(&mut st);
                 st.init_k_target(&tc.ctx);
-                tc.check_declared_metadata(&st, &unmodified_tys_ctors);
                 tc.mk_majors(&mut st);
                 tc.mk_motives(&mut st);
                 tc.mk_minors(&mut st);
@@ -150,19 +130,28 @@ impl ExportFile {
 
             ctx.with_tc_and_env_ext(&recursor_extension, env_limit, cache, |tc| {
                 tc.check_generated_recursors(&st, &recursors);
+                let rec_names: Vec<_> = recursors.iter().map(|rec| rec.info().name).collect();
+                let is_recursive = recursors.iter().any(|rec| {
+                    let Declar::Recursor(rec) = rec else {
+                        unreachable!()
+                    };
+                    rec.rec_rules.iter().any(|rule| {
+                        tc.ctx
+                            .find_const(rule.val, |name| rec_names.contains(&name))
+                    })
+                });
+                let mut derived = tc.mk_declars(&st, &unmodified_tys_ctors, is_recursive);
                 if st.is_nested() {
-                    tc.restore_and_check(&st, &unmodified_tys_ctors, &ind.all_ind_names);
+                    derived.extend(tc.restore_recursors(
+                        &st,
+                        &unmodified_tys_ctors,
+                        &ind.all_ind_names,
+                    ));
                 } else {
-                    tc.assert_block_recursor_names(
-                        ind.info.name,
-                        recursors.iter().map(|recursor| recursor.info().name),
-                    );
-                    // Do the definitional equality assertions of new/old here.
-                    tc.assert_nonnested_tys_def_eq(ind, &st);
-                    tc.assert_nonnested_ctors_def_eq(&st);
-                    tc.assert_nonnested_recursors_def_eq(&st, &recursors);
+                    derived.extend(recursors);
                 }
-            });
+                derived
+            })
         }
     }
 }
@@ -255,9 +244,6 @@ impl<'a> InductiveCheckState {
     /// Extend the current environment with the inductive specifications,
     /// including modifications to accommodate any temporary declarations
     /// that come from nested inductives.
-    ///
-    /// Then assert that any of the inductive types in the temporary extension
-    /// which are also in the export file are `def_eq` to those in the export file.
     fn ind_tys_env_ext(&self) -> DeclarMap {
         // This will be different from the export file's list if this is a nested.
         let is_nested = !self.nested_to_unspecialized_ty.is_empty();
@@ -347,46 +333,47 @@ struct CtorHeader {
 }
 
 impl<'x, 't: 'x> TypeChecker<'x, 't> {
-    fn assert_block_recursor_names(
-        &mut self,
-        ind_name: NameId,
-        expected: impl IntoIterator<Item = NameId>,
-    ) {
-        let expected: FxHashSet<_> = expected.into_iter().collect();
-        let &(start, size) = self
-            .ctx
-            .export_file
-            .mutual_block_sizes
-            .get(&ind_name)
-            .expect("missing inductive block boundaries");
-        let imported: FxHashSet<_> = (start..start + size)
-            .filter_map(|idx| self.ctx.export_file.declars.get_index(idx))
-            .filter_map(|(_, declar)| match declar {
-                Declar::Recursor(recursor) => Some(recursor.info.name),
-                _ => None,
-            })
-            .collect();
-        ensure_eq!(
-            imported,
-            expected,
-            "imported inductive block contains an underived recursor"
-        );
-    }
-
-    fn base_recursor_names(&mut self, ind_names: &[NameId]) -> FxHashSet<NameId> {
-        let rec = self.ctx.alloc_string("rec");
-        ind_names
-            .iter()
-            .map(|name| self.ctx.str(*name, rec))
-            .collect()
-    }
-
-    fn assert_imported_expr_matches(&mut self, imported: ExprId, reconstructed: ExprId) {
-        self.tc_cache.clear();
-        ensure!(
-            self.def_eq_core(imported, reconstructed),
-            "imported recursor rule does not match the reconstructed rule"
-        );
+    fn mk_declars(
+        &self,
+        st: &InductiveCheckState,
+        headers: &[IndTyHeader],
+        is_recursive: bool,
+    ) -> Vec<Declar> {
+        let all_ind_names: Arc<[_]> = headers.iter().map(|header| header.name).collect();
+        let mut out = Vec::new();
+        for (idx, header) in headers.iter().enumerate() {
+            let info = DeclarInfo {
+                name: header.name,
+                uparams: st.uparams,
+                ty: header.ty,
+            };
+            let num_params = st.num_params();
+            let num_indices = u16::try_from(st.local_indices[idx].len()).unwrap();
+            out.push(Declar::Inductive(InductiveData {
+                info,
+                is_recursive,
+                is_nested: st.is_nested(),
+                num_params,
+                num_indices,
+                all_ind_names: all_ind_names.clone(),
+                all_ctor_names: header.ctors.iter().map(|ctor| ctor.name).collect(),
+            }));
+            for (idx, ctor) in header.ctors.iter().enumerate() {
+                let num_fields = self.env.get_constructor(ctor.name).unwrap().num_fields;
+                out.push(Declar::Constructor(ConstructorData {
+                    info: DeclarInfo {
+                        name: ctor.name,
+                        ty: ctor.ty,
+                        uparams: info.uparams,
+                    },
+                    inductive_name: header.name,
+                    ctor_idx: u16::try_from(idx).expect("too many constructors"),
+                    num_params,
+                    num_fields,
+                }));
+            }
+        }
+        out
     }
 
     fn get_local_params(&mut self, e: ExprId, num_params: u16) -> (Vec<ExprId>, ExprId) {
@@ -468,7 +455,12 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let ctors = t
             .all_ctor_names
             .iter()
-            .map(|ctor_name| header_of_ctor(self.env.get_constructor(*ctor_name).unwrap()))
+            .map(|ctor_name| {
+                header_of_ctor(match &self.ctx.export_file.declars[ctor_name] {
+                    Declar::Constructor(ctor) => ctor,
+                    _ => unreachable!(),
+                })
+            })
             .collect();
         IndTyHeader {
             name: t.info.name,
@@ -485,7 +477,12 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         t_from_file
             .all_ind_names
             .iter()
-            .map(|n| self.header_of_ty(self.env.get_inductive(*n).unwrap()))
+            .map(|n| {
+                self.header_of_ty(match &self.ctx.export_file.declars[n] {
+                    Declar::Inductive(ind) => ind,
+                    _ => unreachable!(),
+                })
+            })
             .collect()
     }
 

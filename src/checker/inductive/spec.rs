@@ -4,7 +4,7 @@
 use super::{IndTyHeader, InductiveCheckState};
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::{EMPTY_ENV, Value};
-use crate::outcome::{ensure, ensure_eq, reject};
+use crate::outcome::{ensure, reject};
 use crate::term::id::{ExprId, LevelsId, NameId};
 
 impl<'x, 't: 'x> TypeChecker<'x, 't> {
@@ -100,86 +100,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             st.all_inductives_incl_specialized.len(),
             st.local_indices.len()
         );
-    }
-    pub(super) fn check_declared_metadata(
-        &mut self,
-        st: &InductiveCheckState,
-        unmodified: &[IndTyHeader],
-    ) {
-        let num_params = usize::from(st.num_params());
-        for (i, header) in unmodified.iter().enumerate() {
-            let ind = self
-                .env
-                .get_inductive(header.name)
-                .expect("inductive is not declared");
-            ensure_eq!(
-                usize::from(ind.num_params),
-                num_params,
-                "inductive declares the wrong number of parameters"
-            );
-            ensure_eq!(
-                usize::from(ind.num_indices),
-                st.local_indices[i].len(),
-                "inductive declares the wrong number of indices"
-            );
-            ensure_eq!(
-                ind.all_ctor_names.len(),
-                header.ctors.len(),
-                "inductive declares the wrong number of constructors"
-            );
-            for (ctor_idx, ctor) in header.ctors.iter().enumerate() {
-                let telescope = self.ctx.pi_telescope_size(ctor.ty) as usize;
-                ensure!(
-                    telescope >= num_params,
-                    "constructor telescope is shorter than the parameters"
-                );
-                let cd = self
-                    .env
-                    .get_constructor(ctor.name)
-                    .expect("constructor is not declared");
-                ensure_eq!(
-                    cd.inductive_name,
-                    header.name,
-                    "constructor declares the wrong inductive"
-                );
-                ensure_eq!(
-                    usize::from(cd.ctor_idx),
-                    ctor_idx,
-                    "constructor declares the wrong index"
-                );
-                ensure_eq!(
-                    usize::from(cd.num_params),
-                    num_params,
-                    "constructor declares the wrong number of parameters"
-                );
-                ensure_eq!(
-                    usize::from(cd.num_fields),
-                    telescope - num_params,
-                    "constructor declares the wrong number of fields"
-                );
-            }
-            let rec_name = {
-                let rec_str_ptr = self.ctx.alloc_string("rec");
-                self.ctx.str(header.name, rec_str_ptr)
-            };
-            if let Some(rd) = self.env.get_recursor(rec_name) {
-                ensure_eq!(
-                    rd.is_k,
-                    st.k_target.unwrap(),
-                    "recursor declares the wrong k-reduction flag"
-                );
-                ensure_eq!(
-                    usize::from(rd.num_params),
-                    num_params,
-                    "recursor declares the wrong number of parameters"
-                );
-                ensure_eq!(
-                    usize::from(rd.num_indices),
-                    st.local_indices[i].len(),
-                    "recursor declares the wrong number of indices"
-                );
-            }
-        }
     }
     fn large_elim_test_aux(&mut self, ctor_type_cursor: ExprId, mut rem_params: usize) -> bool {
         self.tc_cache.clear();

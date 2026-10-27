@@ -69,16 +69,15 @@ pub struct TypeChecker<'x, 't> {
 
 impl ExportFile {
     fn check_declar_with<'t>(&'t self, ctx: &mut TcCtx<'t>, cache: &mut TcCache, d: &Declar) {
-        use Declar::{Inductive, Quot};
+        use Declar::{Constructor, Inductive, Quot, Recursor};
         match d {
-            Inductive(..) => self.check_inductive_declar(ctx, cache, d),
-            Quot { .. } => crate::checker::quot::check_quot(ctx, cache, d),
+            Inductive(..) | Constructor(..) | Recursor(..) | Quot { .. } => {}
             _ => self.check_simple_declar(ctx, cache, d),
         }
     }
 
     fn check_simple_declar<'t>(&'t self, ctx: &mut TcCtx<'t>, cache: &mut TcCache, d: &Declar) {
-        use Declar::{Axiom, Constructor, Definition, Inductive, Opaque, Quot, Recursor, Theorem};
+        use Declar::{Axiom, Definition, Opaque, Theorem};
         let env = self.new_env(EnvLimit::ByName(d.info().name));
         let mut tc = TypeChecker::new(ctx, &env, Some(*d.info()), cache);
         tc.ordered_declaration = true;
@@ -86,39 +85,8 @@ impl ExportFile {
             Definition { val, .. } | Theorem { val, .. } | Opaque { val, .. } => {
                 tc.check_def_like_v(d, *val);
             }
-            Axiom { .. } | Constructor(..) | Recursor(..) => tc.check_declar_info_v(d),
-            Inductive(..) | Quot { .. } => unreachable!(),
-        }
-        match d {
-            Constructor(ctor_data) => {
-                ensure!(self.declars.get(&ctor_data.inductive_name).is_some());
-            }
-            Recursor(recursor_data) => {
-                let rec_idx = self
-                    .declars
-                    .get_index_of(&recursor_data.info.name)
-                    .expect("missing recursor");
-                let first = *recursor_data
-                    .all_inductives
-                    .first()
-                    .expect("recursor is not associated with an inductive block");
-                let block = *self
-                    .mutual_block_sizes
-                    .get(&first)
-                    .expect("recursor is associated with a non-inductive declaration");
-                ensure!(
-                    rec_idx >= block.0 && rec_idx < block.0 + block.1,
-                    "recursor is not in its associated inductive block"
-                );
-                for ind_name in recursor_data.all_inductives.iter() {
-                    ensure!(
-                        matches!(self.declars.get(ind_name), Some(Inductive(..)))
-                            && self.mutual_block_sizes.get(ind_name) == Some(&block),
-                        "recursor is associated with a declaration outside its inductive block"
-                    );
-                }
-            }
-            _ => {}
+            Axiom { .. } => tc.check_declar_info_v(d),
+            _ => unreachable!(),
         }
     }
 
@@ -141,7 +109,6 @@ impl ExportFile {
         F: FnMut() -> Option<(usize, usize)>,
     {
         let mut cache = TcCache::new();
-        let mut ind_cache = TcCache::new_small();
         let mut pending = Some(first);
         loop {
             let finished = 'session: loop {
@@ -154,11 +121,6 @@ impl ExportFile {
                         .get_index(i)
                         .expect("declaration index out of range");
                     i += 1;
-                    if matches!(d, Declar::Inductive(..)) {
-                        report.check(d, || self.check_inductive_declar(tctx, &mut ind_cache, d));
-                        ind_cache.clear_session();
-                        continue;
-                    }
                     report.check(d, || self.check_declar_with(tctx, &mut cache, d));
                     if cache.vals.used_bytes() > SESSION_BUDGET {
                         pending = Some((i, end));

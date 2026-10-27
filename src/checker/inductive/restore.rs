@@ -7,119 +7,13 @@ use crate::checker::env::{
 };
 use crate::checker::tc::TypeChecker;
 use crate::checker::value::Value;
-use crate::outcome::{ensure, ensure_eq, reject};
+use crate::outcome::reject;
 use crate::term::expr::Expr::{Const, Pi};
 use crate::term::hash::FxIndexMap;
-use crate::term::id::{ExprId, LevelsId, NameId};
+use crate::term::id::{ExprId, NameId};
 use std::sync::Arc;
 
 impl<'x, 't: 'x> TypeChecker<'x, 't> {
-    pub(super) fn assert_nonnested_tys_def_eq(
-        &mut self,
-        base_ind: &InductiveData,
-        st: &InductiveCheckState,
-    ) {
-        assert!(!st.is_nested());
-        for name in base_ind.all_ind_names.iter() {
-            match (
-                self.env.get_old_declar(*name),
-                self.env.get_temp_declar(*name),
-            ) {
-                (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
-                    ensure!(old.aux_data_ck(new));
-                    debug_assert!(!std::ptr::eq(old, new));
-                    self.tc_cache.clear();
-                    self.assert_def_eq(old.info.ty, new.info.ty);
-                }
-                _ => reject!("expected an inductive declaration"),
-            }
-        }
-    }
-    pub(super) fn assert_nonnested_ctors_def_eq(&mut self, st: &InductiveCheckState) {
-        assert!(!st.is_nested());
-        for inductive in &st.all_inductives_incl_specialized {
-            for ctor in &inductive.ctors {
-                match (
-                    self.env.get_old_declar(ctor.name),
-                    self.env.get_temp_declar(ctor.name),
-                ) {
-                    (Some(Declar::Constructor(old)), Some(Declar::Constructor(new))) => {
-                        ensure!(old.aux_data_ck(new));
-                        debug_assert!(!std::ptr::eq(old, new));
-                        self.tc_cache.clear();
-                        self.assert_def_eq(old.info.ty, new.info.ty);
-                    }
-                    _ => reject!("expected an inductive declaration"),
-                }
-            }
-        }
-    }
-    fn assert_nonnested_rec_rule_def_eq(
-        &mut self,
-        st: &InductiveCheckState,
-        old: LevelsId,
-        imported_rr: &RecRule,
-        constructed_rr: &RecRule,
-    ) {
-        assert!(!std::ptr::eq(imported_rr, constructed_rr));
-        // Should be structurally != because they come from different envs.
-        assert_ne!(imported_rr, constructed_rr);
-        assert!(!st.is_nested());
-        self.tc_cache.clear();
-        ensure_eq!(imported_rr.ctor_name, constructed_rr.ctor_name);
-        ensure_eq!(
-            imported_rr.ctor_telescope_size_wo_params,
-            constructed_rr.ctor_telescope_size_wo_params
-        );
-        let rr_made_val =
-            self.ctx
-                .subst_expr_levels(constructed_rr.val, st.rec_uparams.unwrap(), old);
-        self.assert_imported_expr_matches(imported_rr.val, rr_made_val);
-    }
-    pub(super) fn assert_nonnested_recursors_def_eq(
-        &mut self,
-        st: &InductiveCheckState,
-        recursors: &Vec<Declar>,
-    ) {
-        assert!(!st.is_nested());
-        for new_rec in recursors {
-            match (self.env.get_old_declar(new_rec.info().name), new_rec) {
-                (
-                    Some(
-                        old @ Declar::Recursor(
-                            old_r @ RecursorData {
-                                rec_rules: old_rec_rules,
-                                ..
-                            },
-                        ),
-                    ),
-                    new @ Declar::Recursor(
-                        new_r @ RecursorData {
-                            rec_rules: new_rec_rules,
-                            ..
-                        },
-                    ),
-                ) => {
-                    self.tc_cache.clear();
-                    ensure!(old_r.aux_data_ck(new_r));
-                    assert!(!std::ptr::eq(old, new));
-                    // Should be structurally != because they come from different envs.
-                    assert_ne!(old, new);
-                    let imported_w_new_uparams = self.ctx.subst_expr_levels(
-                        old.info().ty,
-                        old.info().uparams,
-                        st.rec_uparams.unwrap(),
-                    );
-                    self.assert_def_eq(imported_w_new_uparams, new.info().ty);
-                    ensure_eq!(old_rec_rules.len(), new_rec_rules.len());
-                    for (r_old, r_new) in old_rec_rules.iter().zip(new_rec_rules.iter()) {
-                        self.assert_nonnested_rec_rule_def_eq(st, old.info().uparams, r_old, r_new);
-                    }
-                }
-                _ => reject!("Expected (Declar::Recursor, Declar::Recursor)"),
-            }
-        }
-    }
     /// Return an ordered map, mapping the specialized recursor names to the
     /// unspecialized recursor names. For example:
     ///
@@ -392,133 +286,21 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             ..new_env_rec
         }
     }
-    fn check_restored_recursor1(
+    pub(super) fn restore_recursors(
         &mut self,
         st: &InductiveCheckState,
-        // The list of names in the mutual block, NOT including
-        // the temporary nested declarations.
-        ind_names_no_specialized: &Arc<[NameId]>,
-        nested_rec_name_to_rec_name: &FxIndexMap<NameId, NameId>,
-        rec_name: NameId,
-    ) {
-        let restored = self.restore_recursor1(
-            st,
-            ind_names_no_specialized,
-            nested_rec_name_to_rec_name,
-            rec_name,
-        );
-        let resolved_rec_name = nested_rec_name_to_rec_name
-            .get(&rec_name)
-            .copied()
-            .unwrap_or(rec_name);
-        match self.env.get_old_declar(resolved_rec_name) {
-            Some(Declar::Recursor(original @ RecursorData { .. })) => {
-                ensure!(original.aux_data_ck(&restored));
-                self.tc_cache.clear();
-                self.assert_def_eq(original.info.ty, restored.info.ty);
-                // have to do the rec rules as well.
-                ensure_eq!(original.rec_rules.len(), restored.rec_rules.len());
-                for (&old, &new) in original.rec_rules.iter().zip(restored.rec_rules.iter()) {
-                    ensure_eq!(old.ctor_name, new.ctor_name);
-                    ensure_eq!(
-                        old.ctor_telescope_size_wo_params,
-                        new.ctor_telescope_size_wo_params,
-                        "recursor rule field count mismatch for {:?} in {:?}",
-                        self.ctx.debug_print(old.ctor_name),
-                        self.ctx.debug_print(resolved_rec_name),
-                    );
-                    self.assert_imported_expr_matches(old.val, new.val);
-                }
-            }
-            _ => reject!("missing imported recursor reconstructed from nested inductive"),
-        }
-    }
-    fn restore_recursors(
-        &mut self,
-        st: &InductiveCheckState,
-        specialized_rec_name_to_rec_name: &FxIndexMap<NameId, NameId>,
-        ind_names_no_specialized: &Arc<[NameId]>,
-    ) {
-        // Check the recursors for the base inductives (NOT the specialized types)
-        for old_ind_name in ind_names_no_specialized.iter().copied() {
-            let rec_name = {
-                let rec_str_ptr = self.ctx.alloc_string("rec");
-                self.ctx.str(old_ind_name, rec_str_ptr)
-            };
-            self.check_restored_recursor1(
-                st,
-                ind_names_no_specialized,
-                specialized_rec_name_to_rec_name,
-                rec_name,
-            );
-        }
-
-        // Check the recursors constructed for the specialized types,
-        // like `_nested.Array_1.rec` after restoring it to `Lean.Syntax.rec_1`
-        for specialized_ty_rec_name in specialized_rec_name_to_rec_name.keys().copied() {
-            self.check_restored_recursor1(
-                st,
-                ind_names_no_specialized,
-                specialized_rec_name_to_rec_name,
-                specialized_ty_rec_name,
-            );
-        }
-    }
-    fn check_restored_ctor1(
-        &mut self,
-        st: &InductiveCheckState,
-        rec_name_map: &FxIndexMap<NameId, NameId>,
-        old_ctor: &ConstructorData,
-    ) {
-        let new_ctor @ ConstructorData { .. } =
-            self.env.get_constructor(old_ctor.info.name).unwrap();
-        ensure!(old_ctor.aux_data_ck(new_ctor));
-        let new_ty = self.restore_e(st, new_ctor.info.ty, rec_name_map);
-        self.tc_cache.clear();
-        self.assert_def_eq(old_ctor.info.ty, new_ty);
-    }
-    pub(super) fn restore_and_check(
-        &mut self,
-        st: &InductiveCheckState,
-        unmodified_mutuals: &Vec<IndTyHeader>,
-        ind_names_no_specialized: &Arc<[NameId]>,
-    ) {
-        let specialized_to_unspecialized_rec_names =
-            self.mk_specialized_rec_to_unspecialized_map(unmodified_mutuals);
-        let base_rec_names = self.base_recursor_names(ind_names_no_specialized);
-        self.assert_block_recursor_names(
-            ind_names_no_specialized[0],
-            base_rec_names
-                .iter()
-                .copied()
-                .chain(specialized_to_unspecialized_rec_names.values().copied()),
-        );
-        for unmodified_ind_type in unmodified_mutuals {
-            match (
-                self.env.get_old_declar(unmodified_ind_type.name),
-                self.env.get_temp_declar(unmodified_ind_type.name),
-            ) {
-                (Some(Declar::Inductive(old)), Some(Declar::Inductive(new))) => {
-                    ensure!(old.aux_data_ck(new));
-                    debug_assert!(!std::ptr::eq(old, new));
-                    self.tc_cache.clear();
-                    self.assert_def_eq(old.info.ty, new.info.ty);
-                }
-                _ => reject!("expected an inductive declaration"),
-            }
-
-            for ctor in &unmodified_ind_type.ctors {
-                let ctor = match self.env.get_old_declar(ctor.name) {
-                    Some(Declar::Constructor(c)) => c.clone(),
-                    _ => reject!("expected a constructor declaration"),
-                };
-                self.check_restored_ctor1(st, &specialized_to_unspecialized_rec_names, &ctor);
-            }
-        }
-        self.restore_recursors(
-            st,
-            &specialized_to_unspecialized_rec_names,
-            ind_names_no_specialized,
-        );
+        unmodified: &[IndTyHeader],
+        ind_names: &Arc<[NameId]>,
+    ) -> Vec<Declar> {
+        let names = self.mk_specialized_rec_to_unspecialized_map(unmodified);
+        let rec = self.ctx.alloc_string("rec");
+        let base: Vec<_> = ind_names
+            .iter()
+            .map(|name| self.ctx.str(*name, rec))
+            .collect();
+        base.into_iter()
+            .chain(names.keys().copied())
+            .map(|name| Declar::Recursor(self.restore_recursor1(st, ind_names, &names, name)))
+            .collect()
     }
 }

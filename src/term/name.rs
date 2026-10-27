@@ -109,20 +109,6 @@ impl<S: NameSource> NameDisplay<'_, S> {
 }
 
 impl<'t> TcCtx<'t> {
-    pub(crate) fn get_pfx(&self, mut n: NameId) -> NameId {
-        loop {
-            match self.name(n) {
-                Anon => return n,
-                Str(pfx, ..) | Num(pfx, ..) => {
-                    if pfx == ANON {
-                        return n;
-                    }
-                    n = pfx;
-                }
-            }
-        }
-    }
-
     pub(crate) fn concat_name(&mut self, n1: NameId, n2: NameId) -> NameId {
         match self.name(n2) {
             Anon => n1,

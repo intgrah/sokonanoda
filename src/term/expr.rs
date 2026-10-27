@@ -474,30 +474,6 @@ impl TcCtx<'_> {
         Some(self.mk_app(string_of_list_const, out))
     }
 
-    pub(crate) fn has_nested_name(&self, e: ExprId, nested: NameId) -> bool {
-        let mut cache = crate::term::hash::new_fx_hash_map();
-        self.has_nested_name_aux(e, nested, &mut cache)
-    }
-
-    fn has_nested_name_aux(
-        &self,
-        e: ExprId,
-        nested: NameId,
-        cache: &mut FxHashMap<ExprId, bool>,
-    ) -> bool {
-        if let Some(cached) = cache.get(&e) {
-            return *cached;
-        }
-        let expr = self.ex(e);
-        let result = match expr {
-            Const { name, .. } => self.get_pfx(name) == nested,
-            Proj { ty_name, .. } if self.get_pfx(ty_name) == nested => true,
-            _ => expr.any_child(|child, _| self.has_nested_name_aux(child, nested, cache)),
-        };
-        cache.insert(e, result);
-        result
-    }
-
     /// Is this expression `Sort(Level::Zero)`?
     pub(crate) fn prop(&mut self) -> ExprId {
         self.mk_sort(ZERO)

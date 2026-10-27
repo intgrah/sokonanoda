@@ -54,10 +54,7 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
     let cname = ctx.str2("Eq", "refl");
 
     let prop = ctx.prop();
-    let env = ctx
-        .export_file
-        .new_env(EnvLimit::ByName(declar.info().name));
-    // The `Eq` declaration offered up by the export file;
+    let env = ctx.new_env(EnvLimit::ByName(declar.info().name));
     let Some(InductiveData {
         info,
         num_params,
@@ -114,11 +111,11 @@ pub fn check_eq<'x, 't: 'x, 'p: 't>(
 }
 
 #[allow(non_snake_case)]
-pub fn check_quot<'x, 't: 'x, 'p: 't>(
+pub fn derive_quot<'x, 't: 'x, 'p: 't>(
     ctx: &'x mut TcCtx<'t>,
     cache: &mut crate::checker::cache::TcCache,
     declar: &Declar,
-) {
+) -> Declar {
     // `Eq` matching expectations is a prerequisite for checking `Quot`.
     let prop = ctx.prop();
     let u_name = ctx.str1("u");
@@ -132,8 +129,10 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
     let levels_u = ctx.alloc_levels(&[u_level]);
     let levels_v = ctx.alloc_levels(&[v_level]);
     let levels_uv = ctx.alloc_levels(&[u_level, v_level]);
-    let quot_name = ctx.export_file.name_cache.quot.unwrap();
-    let quot_mk_name = ctx.export_file.name_cache.quot_mk.unwrap();
+    let names = ctx.export_file.name_cache;
+    let quot_name = names
+        .quot
+        .unwrap_or_else(|| reject!("invalid quotient declaration"));
 
     let r_dom = {
         let a1 = ctx.mk_var(1);
@@ -152,7 +151,13 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
             },
         },
     };
+    if Some(declar.info().name) == names.quot {
+        return expected_quot;
+    }
     let quot_const = ctx.mk_const(expected_quot.info().name, levels_u);
+    let quot_mk_name = names
+        .quot_mk
+        .unwrap_or_else(|| reject!("Quot.mk primitive is required"));
 
     // Quot.mk : Π {A : Sort u} (r : A → A → Prop), A → @Quot A r
     let expected_quot_mk = Declar::Quot {
@@ -175,19 +180,23 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
     let eq_name = ctx.str1("Eq");
     let eq_const = ctx.mk_const(eq_name, levels_v);
 
-    if declar.info().name == ctx.str1("Quot") {
-        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
-        tc.assert_def_eq(declar.info().ty, expected_quot.info().ty);
-    } else if declar.info().name == ctx.str2("Quot", "mk") {
-        let env = ctx.export_file.new_env(EnvLimit::ByName(quot_mk_name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
-        tc.assert_def_eq(declar.info().ty, expected_quot_mk.info().ty);
-    } else if declar.info().name == ctx.str2("Quot", "lift") {
+    if Some(declar.info().name) == names.quot_mk {
+        let env = ctx.new_env(EnvLimit::ByName(declar.info().name));
+        if !matches!(env.get_declar(quot_name), Some(Declar::Quot { .. })) {
+            reject!("Quot.mk requires the Quot primitive");
+        }
+        expected_quot_mk
+    } else if Some(declar.info().name) == names.quot_lift {
+        let env = ctx.new_env(EnvLimit::ByName(declar.info().name));
+        if !matches!(env.get_declar(quot_name), Some(Declar::Quot { .. }))
+            || !matches!(env.get_declar(quot_mk_name), Some(Declar::Quot { .. }))
+        {
+            reject!("Quot.lift requires the Quot and Quot.mk primitives");
+        }
         check_eq(ctx, cache, declar);
         // Quot.lift : Π {A : Sort u} {r : A → A → Prop} {B : Sort v} (f : A → B),
         //   (∀ (a b : A), r a b → f a = f b) → @Quot A r → B
-        let expected_quot_lift = Declar::Quot {
+        Declar::Quot {
             info: DeclarInfo {
                 name: declar.info().name,
                 uparams: levels_uv,
@@ -229,15 +238,16 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
                     ctx.mk_pi(sort_u, r_pi)
                 },
             },
-        };
-        let env = ctx
-            .export_file
-            .new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
-        tc.assert_def_eq(declar.info().ty, expected_quot_lift.info().ty);
-    } else if declar.info().name == ctx.str2("Quot", "ind") {
+        }
+    } else if Some(declar.info().name) == names.quot_ind {
+        let env = ctx.new_env(EnvLimit::ByName(declar.info().name));
+        if !matches!(env.get_declar(quot_name), Some(Declar::Quot { .. }))
+            || !matches!(env.get_declar(quot_mk_name), Some(Declar::Quot { .. }))
+        {
+            reject!("Quot.ind requires the Quot and Quot.mk primitives");
+        }
         //           (∀ (a : A), B (@Quot.mk A r a)) → ∀ (q : @Quot A r), B q
-        let expected_quot_ind = Declar::Quot {
+        Declar::Quot {
             info: DeclarInfo {
                 name: declar.info().name,
                 uparams: levels_u,
@@ -273,13 +283,7 @@ pub fn check_quot<'x, 't: 'x, 'p: 't>(
                     ctx.mk_pi(sort_u, r_pi)
                 },
             },
-        };
-
-        let env = ctx
-            .export_file
-            .new_env(EnvLimit::ByName(declar.info().name));
-        let mut tc = TypeChecker::new(ctx, &env, Some(*declar.info()), cache);
-        tc.assert_def_eq(declar.info().ty, expected_quot_ind.info().ty);
+        }
     } else {
         reject!(
             "invalid quotient declaration {:?}",
