@@ -715,7 +715,10 @@ impl<'t> TypeChecker<'_, 't> {
     fn try_struct_eta(&mut self, depth: u32, x: V, y: V) -> bool {
         let xt = self.value_type_opt(depth, x);
         let yt = self.value_type_opt(depth, y);
-        for ty in [xt, yt].into_iter().flatten() {
+        let (Some(xt), Some(yt)) = (xt, yt) else {
+            return false;
+        };
+        for ty in [xt, yt] {
             let ty_f = self.force_all(depth, ty);
             if let Value::Rigid {
                 head: RigidHead::Inductive(ind_name, _),
@@ -723,14 +726,13 @@ impl<'t> TypeChecker<'_, 't> {
             } = self.val(ty_f)
             {
                 let ind_name = ind_name;
-                if self.is_unit_inductive(ind_name) {
-                    return true;
-                }
-                if self.can_be_struct_memo(ind_name)
-                    && (self.try_eta_struct_v(depth, ind_name, x, y)
-                        || self.try_eta_struct_v(depth, ind_name, y, x))
-                {
-                    return true;
+                if self.can_be_struct_memo(ind_name) {
+                    if !self.unify::<true>(depth, xt, yt) {
+                        return false;
+                    }
+                    return self.is_unit_inductive(ind_name)
+                        || self.try_eta_struct_v(depth, ind_name, x, y)
+                        || self.try_eta_struct_v(depth, ind_name, y, x);
                 }
             }
         }
