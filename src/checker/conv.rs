@@ -256,6 +256,7 @@ impl<'t> TypeChecker<'_, 't> {
             ) => {
                 if bx.body == by.body
                     && dx == dy
+                    && bx.ctx == by.ctx
                     && self.envs_ptr_equal(bx.env, by.env)
                 {
                     return true;
