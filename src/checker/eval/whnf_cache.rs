@@ -24,7 +24,7 @@ const WHNF_ADMIT_THRESHOLD: u8 = 2;
 const FAIL_CLOSURE: u8 = 1;
 const FAIL_DEPTH: u8 = 7;
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     #[inline]
     pub(super) fn note_whnf(&mut self, depth: u32, src: V, res: V, steps: u32) {
         if steps == 0 {

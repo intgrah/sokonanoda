@@ -24,7 +24,7 @@ enum ConstKind {
     Axiom,
 }
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     #[inline(always)]
     pub(crate) fn eval(&mut self, depth: u32, env: E, e: ExprId) -> V {
         let node = *self.ctx.node(e);

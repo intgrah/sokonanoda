@@ -94,26 +94,25 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         st: &InductiveCheckState,
         specialized_rec_names_to_unspecialized_rec_names: &FxIndexMap<NameId, NameId>,
     ) -> ExprId {
-        match self.replace_f(
+        if let Some(out) = self.replace_f(
             e,
             num_params,
             depth,
             st,
             specialized_rec_names_to_unspecialized_rec_names,
         ) {
-            Some(out) => out,
-            None => {
-                let expr = self.ctx.ex(e).map_children(|child, binders| {
-                    self.restore_replace(
-                        child,
-                        num_params,
-                        depth + binders,
-                        st,
-                        specialized_rec_names_to_unspecialized_rec_names,
-                    )
-                });
-                self.ctx.rebuild_expr(e, expr)
-            }
+            out
+        } else {
+            let expr = self.ctx.ex(e).map_children(|child, binders| {
+                self.restore_replace(
+                    child,
+                    num_params,
+                    depth + binders,
+                    st,
+                    specialized_rec_names_to_unspecialized_rec_names,
+                )
+            });
+            self.ctx.rebuild_expr(e, expr)
         }
     }
     /// Traverse an expression replacing one of three appearances:\

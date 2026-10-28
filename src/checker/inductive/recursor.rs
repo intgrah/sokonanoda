@@ -46,7 +46,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let mut depth = depth0;
         let mut cur = cursor;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = domain;
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
             depth += 1;
@@ -58,7 +57,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let mut cur = cursor;
         let mut xs = Vec::new();
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = domain;
             let dom_e = self.quote(depth, domain);
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -84,7 +82,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             let Value::Pi { domain, body, .. } = self.val(cur) else {
                 reject!("constructor type has fewer binders than the block parameters")
             };
-            let domain = domain;
             let lv = self.mk_bvar_hc(
                 u32::try_from(i).expect("parameter count exceeds u32"),
                 domain,
@@ -92,7 +89,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             cur = self.apply_closure(depth, body, lv, Some(domain));
         }
         while let Value::Pi { domain, body, .. } = self.val(cur) {
-            let domain = domain;
             let binder_type = self.quote(depth, domain);
             let is_rec = self.is_rec_argument_v(st, domain, depth).is_some();
             let fresh = self.mk_bvar_hc(depth, domain);

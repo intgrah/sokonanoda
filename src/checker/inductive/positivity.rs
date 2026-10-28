@@ -78,7 +78,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
                 }
                 Value::Lam { body, .. } => {
                     let dom = self.lam_domain(depth, v);
-                    let body = body;
                     self.value_has_ind_occ(depth, dom, haystack)
                         || self.closure_has_ind_occ(depth, &body, haystack)
                 }
@@ -124,13 +123,13 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         v: V,
     ) -> Option<usize> {
         let f = self.force_all(depth, v);
-        let (name, levels, spine) = match self.val(f) {
-            Value::Rigid {
-                head: RigidHead::Inductive(n, ls),
-                spine,
-                ..
-            } => (n, ls, spine),
-            _ => return None,
+        let Value::Rigid {
+            head: RigidHead::Inductive(name, levels),
+            spine,
+            ..
+        } = self.val(f)
+        else {
+            return None;
         };
         let pos = st
             .ind_consts
@@ -178,12 +177,12 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         v: V,
     ) -> bool {
         let f = self.force_all(depth, v);
-        let name = match self.val(f) {
-            Value::Rigid {
-                head: RigidHead::Inductive(n, _),
-                ..
-            } => n,
-            _ => return false,
+        let Value::Rigid {
+            head: RigidHead::Inductive(name, _),
+            ..
+        } = self.val(f)
+        else {
+            return false;
         };
         name == parent_ind_name && self.which_valid_ind_app_v(st, depth, f).is_some()
     }
@@ -201,7 +200,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             let Value::Pi { domain, body, .. } = self.val(cur) else {
                 reject!("constructor type has fewer binders than the block parameters")
             };
-            let domain = domain;
             let expected = self.eval(depth, env, st.local_params[i]);
             ensure!(self.def_eq_at(depth, domain, expected), "def_eq failed");
             let fresh = self.mk_bvar_hc(depth, domain);
@@ -211,7 +209,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         }
         // Non-param constructor args.
         while let Value::Pi { domain, body, .. } = self.val(cur) {
-            let domain = domain;
             let s = self
                 .level_of_type(depth, domain)
                 .expect("constructor argument is not a type");

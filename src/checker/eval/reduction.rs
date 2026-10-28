@@ -19,7 +19,7 @@ enum ForceStep {
     Done,
 }
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     pub(crate) fn ctor_shape(&mut self, name: NameId) -> Option<(u16, u16, NameId)> {
         self.env
             .get_constructor(name)
@@ -267,7 +267,6 @@ impl<'t> TypeChecker<'_, 't> {
                 } else {
                     return ForceStep::Done;
                 };
-                let name = name;
                 let Some(args) = self.vals().spine_apps(spine) else {
                     return ForceStep::Done;
                 };
@@ -733,13 +732,13 @@ impl<'t> TypeChecker<'_, 't> {
         } else {
             return None;
         };
-        let (qmk_head, qmk_spine) = match self.val(qmk) {
-            Value::Rigid {
-                head: RigidHead::QuotConst(name, _),
-                spine,
-                ..
-            } => (name, spine),
-            _ => return None,
+        let Value::Rigid {
+            head: RigidHead::QuotConst(qmk_head, _),
+            spine: qmk_spine,
+            ..
+        } = self.val(qmk)
+        else {
+            return None;
         };
         if Some(qmk_head) != cache.quot_mk {
             return None;

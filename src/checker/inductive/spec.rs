@@ -24,7 +24,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let mut indices = Vec::new();
         let mut i = 0;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = domain;
             if i < st.local_params.len() {
                 let stored = st.local_params[i];
                 self.tc_cache.clear();
@@ -64,7 +63,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let mut indices = Vec::new();
         let mut i = 0;
         while let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) {
-            let domain = domain;
             if i >= st.local_params.len() {
                 let binder_type = self.quote(depth, domain);
                 indices.push(binder_type);
@@ -107,7 +105,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
         let mut cur = self.value_of(ctor_type_cursor);
         let mut non_prop_levels: Vec<u32> = Vec::new();
         while let Value::Pi { domain, body, .. } = self.val(cur) {
-            let domain = domain;
             let fresh = self.mk_bvar_hc(depth, domain);
             let level = depth;
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));

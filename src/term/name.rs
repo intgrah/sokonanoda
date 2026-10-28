@@ -77,7 +77,7 @@ impl<S: NameSource> NameDisplay<'_, S> {
     }
 }
 
-impl<'t> TcCtx<'t> {
+impl TcCtx<'_> {
     pub(crate) fn concat_name(&mut self, n1: NameId, n2: NameId) -> NameId {
         match self.name(n2) {
             Anon => n1,

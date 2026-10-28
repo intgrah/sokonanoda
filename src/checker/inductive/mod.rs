@@ -199,7 +199,7 @@ pub(crate) struct InductiveCheckState {
     minors: Vec<Vec<ExprId>>,
 }
 
-impl<'a> InductiveCheckState {
+impl InductiveCheckState {
     /// To be a target for k-like reduction, a type cannot be mutual or nested, must be an inductive
     /// prop, must have only one constructor, and the constructor can take only the type's parameters
     /// as arguments.
@@ -384,7 +384,6 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
             let Some(Value::Pi { domain, body, .. }) = self.force_pi(depth, cur) else {
                 reject!("exhausted telescope early")
             };
-            let domain = domain;
             let binder_type = self.quote(depth, domain);
             let fresh = self.mk_bvar_hc(depth, domain);
             cur = self.apply_closure(depth + 1, body, fresh, Some(domain));
@@ -446,7 +445,7 @@ impl<'x, 't: 'x> TypeChecker<'x, 't> {
     }
 
     fn header_of_ty(&self, t: &InductiveData) -> IndTyHeader {
-        fn header_of_ctor<'t>(t: &ConstructorData) -> CtorHeader {
+        fn header_of_ctor(t: &ConstructorData) -> CtorHeader {
             CtorHeader {
                 name: t.info.name,
                 ty: t.info.ty,

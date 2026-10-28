@@ -160,8 +160,9 @@ impl TcCtx<'_> {
             (Succ(s), _) => self.leq_core(s, r_in, diff - 1),
             (_, Succ(s)) => self.leq_core(l_in, s, diff + 1),
             (Max(a, b), _) => self.leq_core(a, r_in, diff) && self.leq_core(b, r_in, diff),
-            (Param(..), Max(x, y)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
-            (Zero, Max(x, y)) => self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff),
+            (Param(..) | Zero, Max(x, y)) => {
+                self.leq_core(l_in, x, diff) || self.leq_core(l_in, y, diff)
+            }
             (IMax(a, b), IMax(x, y)) if (a == x) && (b == y) && diff >= 0 => true,
             (IMax(_, b), _) if self.is_param(b) => self.leq_imax_by_cases(b, l_in, r_in, diff),
 

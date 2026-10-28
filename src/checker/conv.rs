@@ -25,7 +25,7 @@ fn is_cacheable(kind: VT) -> bool {
 
 type ProbePairs = smallvec::SmallVec<[(V, V); 8]>;
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     pub(crate) fn def_eq_core(&mut self, x: ExprId, y: ExprId) -> bool {
         let depth = 0u32;
         let env = EMPTY_ENV;
@@ -726,16 +726,14 @@ impl<'t> TypeChecker<'_, 't> {
                 head: RigidHead::Inductive(ind_name, _),
                 ..
             } = self.val(ty_f)
+                && self.can_be_struct_memo(ind_name)
             {
-                let ind_name = ind_name;
-                if self.can_be_struct_memo(ind_name) {
-                    if !self.unify::<true>(depth, xt, yt) {
-                        return false;
-                    }
-                    return self.is_unit_inductive(ind_name)
-                        || self.try_eta_struct_v(depth, ind_name, x, y)
-                        || self.try_eta_struct_v(depth, ind_name, y, x);
+                if !self.unify::<true>(depth, xt, yt) {
+                    return false;
                 }
+                return self.is_unit_inductive(ind_name)
+                    || self.try_eta_struct_v(depth, ind_name, x, y)
+                    || self.try_eta_struct_v(depth, ind_name, y, x);
             }
         }
         false
@@ -801,13 +799,13 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     fn try_eta_struct_v(&mut self, depth: u32, ind_name: NameId, x: V, y: V) -> bool {
-        let (yname, yspine) = match self.val(y) {
-            Value::Rigid {
-                head: RigidHead::Ctor(name, _),
-                spine,
-                ..
-            } => (name, spine),
-            _ => return false,
+        let Value::Rigid {
+            head: RigidHead::Ctor(yname, _),
+            spine: yspine,
+            ..
+        } = self.val(y)
+        else {
+            return false;
         };
         let Some((num_params, num_fields, inductive_name)) = self.ctor_shape(yname) else {
             return false;
