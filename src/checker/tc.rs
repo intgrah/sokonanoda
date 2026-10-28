@@ -12,25 +12,6 @@ use std::panic::{self, AssertUnwindSafe};
 
 const CHUNK_SIZE: usize = 64;
 
-/// An enum for type safety and convenience; used during nat literal reduction, and also for testing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NatBinOp {
-    Add,
-    Sub,
-    Mul,
-    Pow,
-    Mod,
-    Div,
-    Beq,
-    Ble,
-    Gcd,
-    LAnd,
-    LOr,
-    XOr,
-    Shl,
-    Shr,
-}
-
 /// A flag that accompanies calls to type inference; if the flag is `Check`,
 /// we perform additional definitional equality checks (for example, the type of an
 /// argument to a lambda is the same type as the binder in the labmda). These checks

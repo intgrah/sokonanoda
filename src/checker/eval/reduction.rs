@@ -6,7 +6,7 @@ use crate::checker::env::{Declar, RecursorData};
 use crate::checker::nat::{
     nat_div, nat_gcd, nat_land, nat_lor, nat_mod, nat_shl, nat_shr, nat_sub, nat_xor,
 };
-use crate::checker::tc::{NatBinOp, TypeChecker};
+use crate::checker::tc::TypeChecker;
 use crate::checker::value::{EMPTY_ENV, Elim, ElimView, RigidHead, Spine, V, VT, Value};
 use crate::outcome::reject;
 use crate::term::id::{BigId, LevelsId, NameId, StrId};
@@ -768,61 +768,37 @@ impl<'t> TypeChecker<'_, 't> {
             let n = self.value_to_bignum_at(depth, args[0], deep)?;
             return self.mk_natlit_val(n + 1u8);
         }
-        if let NatRed::DivGo | NatRed::ModCoreGo = kind {
+        let (x, y) = if matches!(kind, NatRed::DivGo | NatRed::ModCoreGo) {
             if args.len() != 5 {
                 return None;
             }
             let y = self.value_to_bignum_at(depth, args[0], deep)?;
             let x = self.value_to_bignum_at(depth, args[3], deep)?;
-            let op = if let NatRed::DivGo = kind {
-                NatBinOp::Div
-            } else {
-                NatBinOp::Mod
-            };
-            return self.do_nat_bin_val(x, y, op);
-        }
-        if args.len() != 2 {
-            return None;
-        }
-        let op = match kind {
-            NatRed::Add => NatBinOp::Add,
-            NatRed::Sub => NatBinOp::Sub,
-            NatRed::Mul => NatBinOp::Mul,
-            NatRed::Pow => NatBinOp::Pow,
-            NatRed::Mod => NatBinOp::Mod,
-            NatRed::Div => NatBinOp::Div,
-            NatRed::Beq => NatBinOp::Beq,
-            NatRed::Ble => NatBinOp::Ble,
-            NatRed::LAnd => NatBinOp::LAnd,
-            NatRed::LOr => NatBinOp::LOr,
-            NatRed::XOr => NatBinOp::XOr,
-            NatRed::Gcd => NatBinOp::Gcd,
-            NatRed::Shl => NatBinOp::Shl,
-            NatRed::Shr => NatBinOp::Shr,
-            NatRed::Succ | NatRed::DivGo | NatRed::ModCoreGo => unreachable!(),
+            (x, y)
+        } else {
+            if args.len() != 2 {
+                return None;
+            }
+            let x = self.value_to_bignum_at(depth, args[0], deep)?;
+            let y = self.value_to_bignum_at(depth, args[1], deep)?;
+            (x, y)
         };
-        let xn = self.value_to_bignum_at(depth, args[0], deep)?;
-        let yn = self.value_to_bignum_at(depth, args[1], deep)?;
-        self.do_nat_bin_val(xn, yn, op)
-    }
-
-    fn do_nat_bin_val(&mut self, x: BigUint, y: BigUint, op: NatBinOp) -> Option<V> {
-        use NatBinOp::{Add, Beq, Ble, Div, Gcd, LAnd, LOr, Mod, Mul, Pow, Shl, Shr, Sub, XOr};
-        match op {
-            Add => self.mk_natlit_val(x + y),
-            Sub => self.mk_natlit_val(nat_sub(x, y)),
-            Mul => self.mk_natlit_val(x * y),
-            Pow => self.mk_natlit_val(x.pow(y)),
-            Div => self.mk_natlit_val(nat_div(x, y)),
-            Mod => self.mk_natlit_val(nat_mod(x, y)),
-            Gcd => self.mk_natlit_val(nat_gcd(&x, &y)),
-            LAnd => self.mk_natlit_val(nat_land(x, y)),
-            LOr => self.mk_natlit_val(nat_lor(x, y)),
-            XOr => self.mk_natlit_val(nat_xor(&x, &y)),
-            Shl => self.mk_natlit_val(nat_shl(x, &y)),
-            Shr => self.mk_natlit_val(nat_shr(x, &y)),
-            Beq => self.bool_val(x == y),
-            Ble => self.bool_val(x <= y),
+        match kind {
+            NatRed::Add => self.mk_natlit_val(x + y),
+            NatRed::Sub => self.mk_natlit_val(nat_sub(x, y)),
+            NatRed::Mul => self.mk_natlit_val(x * y),
+            NatRed::Pow => self.mk_natlit_val(x.pow(y)),
+            NatRed::Div | NatRed::DivGo => self.mk_natlit_val(nat_div(x, y)),
+            NatRed::Mod | NatRed::ModCoreGo => self.mk_natlit_val(nat_mod(x, y)),
+            NatRed::Gcd => self.mk_natlit_val(nat_gcd(&x, &y)),
+            NatRed::LAnd => self.mk_natlit_val(nat_land(x, y)),
+            NatRed::LOr => self.mk_natlit_val(nat_lor(x, y)),
+            NatRed::XOr => self.mk_natlit_val(nat_xor(&x, &y)),
+            NatRed::Shl => self.mk_natlit_val(nat_shl(x, &y)),
+            NatRed::Shr => self.mk_natlit_val(nat_shr(x, &y)),
+            NatRed::Beq => self.bool_val(x == y),
+            NatRed::Ble => self.bool_val(x <= y),
+            NatRed::Succ => unreachable!(),
         }
     }
 
