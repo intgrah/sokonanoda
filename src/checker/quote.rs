@@ -6,7 +6,7 @@ use crate::checker::tc::TypeChecker;
 use crate::checker::value::{EMPTY_ENV, ElimView, RigidHead, S, Spine, V, Value};
 use crate::term::id::ExprId;
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     pub(crate) fn quote(&mut self, depth: u32, v: V) -> ExprId {
         memo!(
             self.tc_cache.quote_cache,
@@ -38,7 +38,6 @@ impl<'t> TypeChecker<'_, 't> {
                     self.ctx.mk_lambda(dom_e, body_e)
                 }
                 Value::Pi { domain, body, .. } => {
-                    let domain = domain;
                     let fresh = self.mk_bvar_hc(depth, domain);
                     let body = self.apply_closure(depth + 1, body, fresh, Some(domain));
                     let dom_e = self.quote(depth, domain);

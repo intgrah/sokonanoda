@@ -53,7 +53,7 @@ fn has_deep_bvar_prefix(vals: &Vals, mut env: E) -> bool {
     true
 }
 
-impl<'t> TypeChecker<'_, 't> {
+impl TypeChecker<'_, '_> {
     fn uparam_scope(&self) -> CheckScope {
         match self.declar_info {
             Some(info) => CheckScope::Under(info.uparams),
@@ -205,12 +205,11 @@ impl<'t> TypeChecker<'_, 't> {
                         && self.vals_mut().is_closed(bt)
                         && has_deep_bvar_prefix(self.vals(), env)
                 });
-                let clo = match reuse.then_some(()) {
-                    Some(_) => Closure::mk_eval(EMPTY_ENV, binder_type, binder_loose),
-                    None => {
-                        let body_loose = self.ctx.loose(body);
-                        Closure::mk_infer(self.key_env(env, e), ctx, body, body_loose)
-                    }
+                let clo = if reuse {
+                    Closure::mk_eval(EMPTY_ENV, binder_type, binder_loose)
+                } else {
+                    let body_loose = self.ctx.loose(body);
+                    Closure::mk_infer(self.key_env(env, e), ctx, body, body_loose)
                 };
                 self.mk_pi_hc(dom, clo)
             }
@@ -303,9 +302,8 @@ impl<'t> TypeChecker<'_, 't> {
                 fty = self.eval(depth, tenv, t);
             }
             let fty_f = self.force_all(depth, fty);
-            let (domain, body) = match self.val(fty_f) {
-                Value::Pi { domain, body, .. } => (domain, body),
-                _ => reject!("expected a pi type"),
+            let Value::Pi { domain, body, .. } = self.val(fty_f) else {
+                reject!("expected a pi type")
             };
             if flag == Check {
                 let arg_ty = self.infer_value(flag, depth, env, ctx, arg);
@@ -351,13 +349,13 @@ impl<'t> TypeChecker<'_, 't> {
         let struct_ty = self.infer_value(flag, depth, env, ctx, structure);
         let struct_ty_f = self.force_all(depth, struct_ty);
         let struct_ty_is_prop = self.is_prop_type(depth, struct_ty_f);
-        let (ind_name, ind_levels, spine) = match self.val(struct_ty_f) {
-            Value::Rigid {
-                head: RigidHead::Inductive(n, ls),
-                spine,
-                ..
-            } => (n, ls, spine),
-            _ => reject!("projection structure type is not an inductive"),
+        let Value::Rigid {
+            head: RigidHead::Inductive(ind_name, ind_levels),
+            spine,
+            ..
+        } = self.val(struct_ty_f)
+        else {
+            reject!("projection structure type is not an inductive")
         };
         ensure!(
             ind_name == ty_name,

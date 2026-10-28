@@ -1011,9 +1011,9 @@ impl Vals {
         let flags = if active { flags | HEAD_ACTIVE } else { flags };
         self.intern(VNode {
             kind,
+            flags,
             a,
             b,
-            flags,
             ..BLANK
         })
     }
@@ -1066,7 +1066,7 @@ impl Vals {
 
     pub(crate) fn proj(&mut self, s: S, ty_name: NameId, idx: u16) -> V {
         let sl = *self.node(s);
-        let id = self.intern(VNode {
+        self.intern(VNode {
             kind: sl.kind,
             flags: SPINE_PROJ | IS_PROJ | (sl.flags & SPINE_FLAGS),
             loose: idx,
@@ -1075,8 +1075,7 @@ impl Vals {
             c: spine_head(s, &sl).0,
             d: spine_len(&sl) + 1,
             ..BLANK
-        });
-        id
+        })
     }
 
     pub(crate) fn snoc(&mut self, prev: S, elim: Elim) -> V {
@@ -1226,7 +1225,6 @@ impl Vals {
             lsub: lsub_code(lsub),
             tag: EnvTag::Framed,
             cut: u8::try_from(cut).expect("a frame spans at most 63 positions"),
-            ..NIL_ENV_NODE
         });
         if let Err(vacant) = found {
             self.frames.insert_at(vacant, hash, id);
