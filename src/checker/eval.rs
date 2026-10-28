@@ -316,21 +316,18 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     pub(crate) fn eval_const(&mut self, name: NameId, levels: LevelsId) -> V {
-        if let Some(cached) = self.tc_cache.const_head_value_cache.get(&(name, levels)) {
-            return cached;
-        }
-        let v = match self.const_kind(name) {
-            ConstKind::Unfoldable => self.mk_unfold_head(name, levels),
-            ConstKind::Ctor => self.mk_head_hc(RigidHead::Ctor(name, levels)),
-            ConstKind::Recursor => self.mk_head_hc(RigidHead::Recursor(name, levels)),
-            ConstKind::Quot => self.mk_head_hc(RigidHead::QuotConst(name, levels)),
-            ConstKind::Inductive => self.mk_head_hc(RigidHead::Inductive(name, levels)),
-            ConstKind::Axiom => self.mk_head_hc(RigidHead::Axiom(name, levels)),
-        };
-        self.tc_cache
-            .const_head_value_cache
-            .insert((name, levels), v);
-        v
+        memo!(
+            self.tc_cache.const_head_value_cache,
+            (name, levels),
+            match self.const_kind(name) {
+                ConstKind::Unfoldable => self.mk_unfold_head(name, levels),
+                ConstKind::Ctor => self.mk_head_hc(RigidHead::Ctor(name, levels)),
+                ConstKind::Recursor => self.mk_head_hc(RigidHead::Recursor(name, levels)),
+                ConstKind::Quot => self.mk_head_hc(RigidHead::QuotConst(name, levels)),
+                ConstKind::Inductive => self.mk_head_hc(RigidHead::Inductive(name, levels)),
+                ConstKind::Axiom => self.mk_head_hc(RigidHead::Axiom(name, levels)),
+            }
+        )
     }
 
     pub(crate) fn const_result_level(&mut self, name: NameId, levels: LevelsId) -> Option<LevelId> {
@@ -361,23 +358,18 @@ impl<'t> TypeChecker<'_, 't> {
     }
 
     pub(crate) fn const_head_type(&mut self, name: NameId, levels: LevelsId) -> V {
-        if let Some(cached) = self.tc_cache.const_head_type_cache.get(&(name, levels)) {
-            return cached;
-        }
-        let Some(d) = self.env.get_declar(name) else {
-            reject!("const_head_type: unknown const {}", self.ctx.display(name))
-        };
-        let info = *d.info();
-        ensure!(
-            self.ctx.levels(info.uparams).len() == self.ctx.levels(levels).len(),
-            "wrong number of universe levels for {}",
-            self.ctx.display(name)
-        );
-        let v = self.eval_inst(info.ty, info.uparams, levels);
-        self.tc_cache
-            .const_head_type_cache
-            .insert((name, levels), v);
-        v
+        memo!(self.tc_cache.const_head_type_cache, (name, levels), {
+            let Some(d) = self.env.get_declar(name) else {
+                reject!("const_head_type: unknown const {}", self.ctx.display(name))
+            };
+            let info = *d.info();
+            ensure!(
+                self.ctx.levels(info.uparams).len() == self.ctx.levels(levels).len(),
+                "wrong number of universe levels for {}",
+                self.ctx.display(name)
+            );
+            self.eval_inst(info.ty, info.uparams, levels)
+        })
     }
 
     pub(crate) fn lam_domain(&mut self, depth: u32, v: V) -> V {
